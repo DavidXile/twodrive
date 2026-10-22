@@ -46,6 +46,49 @@
 
 
 
+## TD-20261022-03：CFAPI 原型未接入 Explorer Shell 同步根注册
+
+- 日期：2026-10-22（Asia/Shanghai）。
+- 状态：已验证（显式生成数据的 Shell 注册、云朵/本地勾选及属性测试范围）。
+- 影响版本与环境：dev 4fad4d1c8b4faaf43075cf75f5c152e399a036f9；Windows 11 10.0.26340.9750 x64；显式生成数据实验。
+- 关联历史故障：2026-10-21 CFAPI/journal 原型；本轮继续其隔离边界，不涉及真实 OneDrive 原生挂载。
+
+### 症状与影响
+
+此前本机 CFAPI 生成文件可读取、释放和保护脏数据，但 Explorer 当前视图没有显示目标云朵/对勾；不将低层成功计为完整图标验收。
+
+### 触发条件与复现
+
+使用显式新建的实验根。当前 Session 只调用 CfRegisterSyncRoot，没有通过 StorageProviderSyncRootManager 注册 Shell 信息。
+微软 CloudMirror 分别演示 Shell 注册、CFAPI 回调与占位文件；本轮以裸 CFAPI 同级新根作对照，补充注册后再分别检查 OS 属性和真实 Explorer 视图。
+
+### 根因与证据
+
+旧路径缺少 Shell 注册。原生对照根在 CFAPI 注册后仍无 Shell 记录，新路径可以按 ID 和文件夹查询，实际 Explorer 随后显示状态列与云朵/本地勾选。此证据确认本轮缺失的注册机制，不推断所有 Explorer 图标问题同源。
+初次 WinRT 注册收到 0x800700A1、Shell 查询收到 0x80070057，原因均为将 RootGuard 的 Win32 verbatim 路径直接传入不接受该格式的 API；已按 UTF-16 保留路径并转换等价 DOS 形式。
+
+### 解决办法与恢复操作
+
+增加显式 shell-integration 和 native-shell-fixture 特性，复用 Windows StorageProvider 注册，使用每用户/每生成根独立身份，并在隔离场景结束时注销自己的注册。注销及失败回滚均核对 ID、确切目录和上下文标记；不覆盖同名既有注册。默认构建保持原有路径。
+不修改真实账号、不接管现有 OneDrive 根、不操作鼠标。
+测试清理曾错误期待未水合占位文件在注销后仍保留；调整生成数据测试为清理前读回完整内容，未进行真实数据恢复操作。
+
+### 验证结果与边界
+
+Shell 特性严格 Clippy、41 项非忽略 Rust 测试通过；显式运行忽略的原生测试通过，在线/本地/固定状态分别为 8/14/15，元数据查询不水合，固定文件禁止释放，干净文件释放后回到在线状态，两层注销均确认。保留的失败试跑不计入通过结果。
+实际重编译的桌面 engine 通过中文/长文件名读取、缓存保留、再次读取、脏文件拒绝释放及字节保留、独立注销查询；退出后保留 3 个完整生成文件。Explorer 只读截图与无障碍文本显示一项“联机时可用”蓝云、两项“在此设备上可用”绿色勾选；浏览前后 FETCH_DATA 均为 3。
+Flutter 3.41.8 / Dart 3.11.5 静态检查和全部 41 项既有 widget/model 测试通过。独立 Shell probe 发布构建及打包隐私检查通过；运行无参数能力查询不进行注册。
+未验证固定图标视觉效果、同步中/错误/冲突图标、缩略图/索引器、完整人工 GUI 矩阵、真实云原生同步、系统重启或 Linux GUI。真实 OneDrive 读取属于前一轮独立证据，不计作此生成根测试。
+
+### 防复发措施与后续
+
+加入路径规范化/身份稳定测试和需显式新目录才能运行的 shell_registration_and_metadata_states 原生测试；CI 编译/检查新特性但不自动注册主机目录。默认构建不得自动注册任何根。
+
+### 交付记录
+
+独立分支 codex/windows-explorer-status-20261022，基于最新 dev。尚未提交或创建 PR。
+详细机制与验证见 [Shell 记录](windows-shell-2026-10-22.md) 和 [脱敏验证数据](windows-shell-validation-2026-10-22.json)。完整 Explorer 截图仅保留本地，未发布私人侧栏内容。
+
 ## TD-20261021-06: stale cache digest and rejected hydration metadata mutation
 
 - Date: 2026-10-21.

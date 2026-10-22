@@ -6,6 +6,9 @@ pub mod migration;
 #[cfg(all(windows, feature = "fixture-probe"))]
 pub mod native;
 
+#[cfg(all(windows, feature = "shell-integration"))]
+mod shell;
+
 /// Keep residency, pin intent and synchronization separate. Download != upload.
 #[derive(Debug, Clone, Copy)]
 pub struct LocalStatus {

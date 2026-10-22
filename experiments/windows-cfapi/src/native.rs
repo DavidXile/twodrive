@@ -270,6 +270,8 @@ fn deny_mutation(info: &CF_CALLBACK_INFO, kind: CF_OPERATION_TYPE) {
 }
 
 pub struct Session {
+    #[cfg(feature = "shell-integration")]
+    shell: Option<crate::shell::Registration>,
     root: PathBuf,
     registered: bool,
     connection: Option<CF_CONNECTION_KEY>,
@@ -441,17 +443,26 @@ pub fn verify_unregistered(path: &Path) -> Result<()> {
     })
 }
 
+#[cfg(feature = "shell-integration")]
+pub fn verify_shell_unregistered(path: &Path) -> Result<()> {
+    crate::shell::verify_absent(path)
+}
+
 impl Session {
     /// Only a NEW empty root beneath locked non-reparse ancestors is accepted. Never
     /// updates an existing registration or adopts another client's placeholder.
     pub fn create(root: &Path) -> Result<Self> {
-        Self::create_inner(root, None)
+        Self::create_inner(root, None, cfg!(feature = "shell-integration"))
     }
     /// Same new-root guard as the probe; explicit fixture host only.
     pub fn create_with_source(root: &Path, engine: Arc<dyn HydrationSource>) -> Result<Self> {
-        Self::create_inner(root, Some(engine))
+        Self::create_inner(root, Some(engine), cfg!(feature = "shell-integration"))
     }
-    fn create_inner(root: &Path, engine: Option<Arc<dyn HydrationSource>>) -> Result<Self> {
+    fn create_inner(
+        root: &Path,
+        engine: Option<Arc<dyn HydrationSource>>,
+        _shell: bool,
+    ) -> Result<Self> {
         if !root.is_absolute() || root.file_name().is_none() {
             return Err("fixture root must be a new absolute directory".into());
         }
@@ -467,7 +478,17 @@ impl Session {
                 ..Default::default()
             }),
             _guard: guard,
+            #[cfg(feature = "shell-integration")]
+            shell: None,
         };
+        #[cfg(feature = "shell-integration")]
+        if _shell {
+            session.shell = Some(crate::shell::Registration::create(&session.root)?);
+            session.registered = true;
+            session.verify_shell_registration()?;
+            session.connect()?;
+            return Ok(session);
+        }
         let name = wide(Path::new("TwoDrive isolated CFAPI experiment"));
         let version = wide(Path::new(env!("CARGO_PKG_VERSION")));
         let registration = CF_SYNC_REGISTRATION {
@@ -506,6 +527,22 @@ impl Session {
         session.registered = true;
         session.connect()?;
         Ok(session)
+    }
+
+    #[cfg(feature = "shell-integration")]
+    pub fn verify_shell_registration(&self) -> Result<()> {
+        self.shell
+            .as_ref()
+            .ok_or("Shell registration is absent")?
+            .verify()
+    }
+
+    #[cfg(feature = "shell-integration")]
+    pub fn shell_placeholder_status(&self, path: &Path) -> Result<u32> {
+        if path.parent() != Some(self.root.as_path()) {
+            return Err("Shell query requires a generated leaf in the owned root".into());
+        }
+        crate::shell::placeholder_status(path)
     }
 
     pub fn connect(&mut self) -> Result<()> {
@@ -574,6 +611,12 @@ impl Session {
     pub fn finish(&mut self) -> Result<()> {
         self.disconnect()?;
         if self.registered {
+            #[cfg(feature = "shell-integration")]
+            if let Some(shell) = &self.shell {
+                shell.unregister()?;
+                self.registered = false;
+                return Ok(());
+            }
             hr(
                 unsafe { CfUnregisterSyncRoot(wide(&self.root).as_ptr()) },
                 "unregister generated root",
@@ -879,6 +922,77 @@ pub fn release(path: &Path, engine_state: FileState) -> Result<()> {
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(feature = "shell-integration")]
+    #[test]
+    #[ignore = "explicit new generated Shell root required; never run automatically"]
+    fn shell_registration_and_metadata_states() {
+        let root = PathBuf::from(
+            std::env::var_os("TWODRIVE_APPROVED_SHELL_FIXTURE_ROOT")
+                .expect("explicit new Shell root required"),
+        );
+        assert!(
+            root.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("twodrive-cfapi-fixture-"))
+        );
+        let bare = root.with_file_name(format!(
+            "{}-bare",
+            root.file_name().unwrap().to_string_lossy()
+        ));
+        let mut control = Session::create_inner(&bare, None, false).unwrap();
+        let baseline = (|| -> Result<()> {
+            verify_shell_unregistered(&bare)?;
+            assert!(control.verify_shell_registration().is_err());
+            Ok(())
+        })();
+        control.finish().unwrap();
+        verify_unregistered(&bare).unwrap();
+        baseline.unwrap();
+
+        let mut session = Session::create(&root).unwrap();
+        let result = (|| -> Result<serde_json::Value> {
+            session.verify_shell_registration()?;
+            let path = session.placeholder(Path::new("generated-中文.bin"))?;
+            let another = session.placeholder(Path::new("generated-clean.bin"))?;
+            let online = session.shell_placeholder_status(&path)?;
+            assert_eq!(session.calls(), 0, "Shell metadata hydrated content");
+            assert_eq!(fs::read(&path).map_err(|e| e.to_string())?, payload());
+            let local = session.shell_placeholder_status(&path)?;
+            assert_ne!(
+                online, local,
+                "Shell must distinguish cloud-only and local residency"
+            );
+            assert!(inspect(&path, FileState::Cached)?.resident);
+            pin(&path, true)?;
+            let pinned = session.shell_placeholder_status(&path)?;
+            assert_ne!(local, pinned, "Shell must distinguish pinned intent");
+            assert!(release(&path, FileState::Cached).is_err());
+            assert_eq!(fs::read(&another).map_err(|e| e.to_string())?, payload());
+            release(&another, FileState::Cached)?;
+            assert_eq!(session.shell_placeholder_status(&another)?, online);
+            // CfUnregister can remove unhydrated generated placeholders. Finish
+            // the fixture with complete generated bytes so cleanup retains both.
+            assert_eq!(fs::read(&another).map_err(|e| e.to_string())?, payload());
+            Ok(
+                serde_json::json!({"baseline_shell_absent":true,"shell_registered":true,
+                "metadata_without_hydration":true,"online_shell_status":online,
+                "local_shell_status":local,"pinned_shell_status":pinned,
+                "pinned_release_rejected":true,"clean_release_returns_online_status":true,
+                "visual_icon_acceptance":"not_run_by_this_test"}),
+            )
+        })();
+        session.finish().unwrap();
+        verify_unregistered(&root).unwrap();
+        verify_shell_unregistered(&root).unwrap();
+        let mut report = result.unwrap();
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        report["cfapi_unregistered"] = serde_json::json!(true);
+        report["shell_unregistered"] = serde_json::json!(true);
+        report["generated_files_retained"] = serde_json::json!(true);
+        if let Some(output) = std::env::var_os("TWODRIVE_SHELL_REPORT") {
+            fs::write(output, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        }
+        println!("{report}");
+    }
     #[test]
     fn only_known_unmanaged_hresult_allows_creation() {
         assert!(require_unmanaged(0x80070186u32 as i32).is_ok());
