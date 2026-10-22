@@ -1,12 +1,12 @@
 //! Windows adapter experiment. No protocol, credentials, Flutter or transport code.
 use twodrive_core::FileState;
+pub mod fixtures;
 pub mod migration;
 
 // The production desktop dependency cannot compile registration/dehydration.
 #[cfg(all(windows, feature = "fixture-probe"))]
 pub mod native;
-
-#[cfg(all(windows, feature = "shell-integration"))]
+#[cfg(all(windows, feature = "native-local-fixture"))]
 mod shell;
 
 /// Keep residency, pin intent and synchronization separate. Download != upload.

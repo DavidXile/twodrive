@@ -457,6 +457,10 @@ impl App {
                         | "local_items"
                         | "local_read"
                         | "local_dehydrate"
+                        | "local_pin"
+                        | "local_unpin"
+                        | "local_offline"
+                        | "local_reconnect"
                         | "local_stop"
                         | "quit"
                 ),
@@ -464,7 +468,8 @@ impl App {
             );
         }
         match req.op.as_str() {
-            "local_items" | "local_read" | "local_dehydrate" | "local_stop" => {
+            "local_items" | "local_read" | "local_dehydrate" | "local_pin" | "local_unpin"
+            | "local_offline" | "local_reconnect" | "local_stop" => {
                 self.native_fixture.request(&req.op, a)
             }
             "local_preflight" => local_files::preflight(a),

@@ -161,7 +161,6 @@ fn main() {
             serde_json::json!({"version":env!("CARGO_PKG_VERSION"), "schema_version":1,
             "experimental":true,"production_mount":false,"cloud_writes":false,
             "native_cfapi":cfg!(windows),"registration_requires_explicit_opt_in":true,
-            "shell_registration":cfg!(all(windows,feature="shell-integration")),
             "usage":"--allow-isolated-registration NEW_ABSOLUTE_FIXTURE_ROOT"})
         );
         return;

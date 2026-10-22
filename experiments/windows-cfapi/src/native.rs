@@ -1,7 +1,8 @@
 //! Real CldApi adapter for generated fixtures only. Registration is explicitly opt-in.
+use crate::fixtures::{BoundEntry, Dataset, RetentionManifest};
 use crate::{LocalStatus, transfer_range};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     ffi::c_void,
     mem::{offset_of, size_of},
     os::windows::ffi::OsStrExt,
@@ -9,7 +10,7 @@ use std::{
     ptr,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 use twodrive_core::FileState;
@@ -29,10 +30,26 @@ use windows_sys::{
 };
 
 type Result<T> = std::result::Result<T, String>;
-const ID: &[u8] = b"twodrive-cfapi-generated-fixture-v1";
+const ID: &[u8] = Dataset::StandardV1.root_identity();
 const SIZE: usize = 65536;
 const OFFLINE: i32 = 0xC000CF11u32 as i32;
 const FAILED: i32 = 0xC000CF12u32 as i32;
+
+struct RegisteredPlaceholder {
+    path: PathBuf,
+    identity: Vec<u8>,
+    size: usize,
+    reverted: bool,
+    directory: bool,
+}
+#[cfg(feature = "native-test-hooks")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TeardownStage {
+    AllProtected,
+    AllReverted,
+}
+#[cfg(feature = "native-test-hooks")]
+type TeardownHook = Box<dyn FnMut(TeardownStage) -> Result<()> + Send>;
 
 fn hr(value: i32, action: &str) -> Result<()> {
     if value < 0 {
@@ -79,6 +96,10 @@ struct Source {
     stopping: AtomicBool,
     engine: Option<Arc<dyn HydrationSource>>,
     active: Mutex<HashMap<(i64, i64), Arc<AtomicBool>>>,
+    requested_bytes: AtomicU64,
+    transferred_bytes: AtomicU64,
+    recent_requests: Mutex<VecDeque<serde_json::Value>>,
+    dataset: Dataset,
 }
 
 // The OS owns callback pointers until CfDisconnectSyncRoot returns. Source is
@@ -98,6 +119,9 @@ unsafe extern "system" fn fetch(
     let cancelled = Arc::new(AtomicBool::new(false));
     let key = (info.TransferKey, info.RequestKey);
     let mut claimed = false;
+    let mut requested_bytes = 0u64;
+    let mut transferred_bytes = 0u64;
+    let mut observed_identity = "unknown".to_owned();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
         if info.FileIdentity.is_null()
             || info.FileIdentityLength == 0
@@ -117,6 +141,17 @@ unsafe extern "system" fn fetch(
             None => return Err("unknown identity".into()),
         };
         let (start, end) = transfer_range(offset, length, size).ok_or("invalid range")?;
+        observed_identity = source
+            .dataset
+            .files()
+            .into_iter()
+            .find(|entry| entry.id.as_bytes() == identity)
+            .map(|entry| entry.id)
+            .unwrap_or_else(|| "probe".into());
+        requested_bytes = (end - start) as u64;
+        source
+            .requested_bytes
+            .fetch_add((end - start) as u64, Ordering::SeqCst);
         {
             let mut active = source.active.lock().map_err(|_| "request gate poisoned")?;
             if active.len() >= 32 || active.contains_key(&key) {
@@ -146,13 +181,31 @@ unsafe extern "system" fn fetch(
                 return Err("short or cancelled engine read".into());
             }
             execute_transfer(info, 0, start as i64, count as i64, &bytes)?;
+            source
+                .transferred_bytes
+                .fetch_add(count as u64, Ordering::SeqCst);
+            transferred_bytes += count as u64;
         }
         Ok(())
     }));
     if claimed && let Ok(mut active) = source.active.lock() {
         active.remove(&key);
     }
-    if matches!(outcome, Ok(Ok(()))) {
+    let success = matches!(outcome, Ok(Ok(())));
+    let caller_pid = if !info.ProcessInfo.is_null()
+        && unsafe { (*info.ProcessInfo).StructSize as usize >= size_of::<CF_PROCESS_INFO>() }
+    {
+        Some(unsafe { (*info.ProcessInfo).ProcessId })
+    } else {
+        None
+    };
+    if let Ok(mut recent) = source.recent_requests.lock() {
+        if recent.len() == 64 {
+            recent.pop_front();
+        }
+        recent.push_back(serde_json::json!({"utc_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|t|t.as_millis() as u64),"id":observed_identity,"caller_pid":caller_pid,"requested_bytes":requested_bytes,"transferred_bytes":transferred_bytes,"success":success}));
+    }
+    if success {
         return;
     }
     if source.offline.load(Ordering::SeqCst) {
@@ -270,13 +323,21 @@ fn deny_mutation(info: &CF_CALLBACK_INFO, kind: CF_OPERATION_TYPE) {
 }
 
 pub struct Session {
-    #[cfg(feature = "shell-integration")]
-    shell: Option<crate::shell::Registration>,
     root: PathBuf,
     registered: bool,
     connection: Option<CF_CONNECTION_KEY>,
     source: Box<Source>,
     _guard: RootGuard,
+    placeholders: Mutex<Vec<RegisteredPlaceholder>>,
+    teardown_started: bool,
+    dataset: Dataset,
+    directory_guards: Mutex<Vec<Handle>>,
+    retention_manifest: Option<RetentionManifest>,
+    manifest_file: Option<std::fs::File>,
+    #[cfg(feature = "native-test-hooks")]
+    teardown_hook: Option<TeardownHook>,
+    #[cfg(feature = "native-local-fixture")]
+    shell: Option<crate::shell::ShellRoot>,
 }
 
 // Handles deny DELETE sharing, preventing directory substitution while path-
@@ -443,25 +504,27 @@ pub fn verify_unregistered(path: &Path) -> Result<()> {
     })
 }
 
-#[cfg(feature = "shell-integration")]
-pub fn verify_shell_unregistered(path: &Path) -> Result<()> {
-    crate::shell::verify_absent(path)
-}
-
 impl Session {
     /// Only a NEW empty root beneath locked non-reparse ancestors is accepted. Never
     /// updates an existing registration or adopts another client's placeholder.
     pub fn create(root: &Path) -> Result<Self> {
-        Self::create_inner(root, None, cfg!(feature = "shell-integration"))
+        Self::create_inner(root, None, Dataset::StandardV1)
     }
     /// Same new-root guard as the probe; explicit fixture host only.
     pub fn create_with_source(root: &Path, engine: Arc<dyn HydrationSource>) -> Result<Self> {
-        Self::create_inner(root, Some(engine), cfg!(feature = "shell-integration"))
+        Self::create_inner(root, Some(engine), Dataset::StandardV1)
+    }
+    pub fn create_with_source_dataset(
+        root: &Path,
+        engine: Arc<dyn HydrationSource>,
+        dataset: Dataset,
+    ) -> Result<Self> {
+        Self::create_inner(root, Some(engine), dataset)
     }
     fn create_inner(
         root: &Path,
         engine: Option<Arc<dyn HydrationSource>>,
-        _shell: bool,
+        dataset: Dataset,
     ) -> Result<Self> {
         if !root.is_absolute() || root.file_name().is_none() {
             return Err("fixture root must be a new absolute directory".into());
@@ -475,28 +538,29 @@ impl Session {
             connection: None,
             source: Box::new(Source {
                 engine,
+                dataset,
                 ..Default::default()
             }),
             _guard: guard,
-            #[cfg(feature = "shell-integration")]
+            placeholders: Mutex::new(Vec::new()),
+            teardown_started: false,
+            dataset,
+            directory_guards: Mutex::new(Vec::new()),
+            retention_manifest: None,
+            manifest_file: None,
+            #[cfg(feature = "native-test-hooks")]
+            teardown_hook: None,
+            #[cfg(feature = "native-local-fixture")]
             shell: None,
         };
-        #[cfg(feature = "shell-integration")]
-        if _shell {
-            session.shell = Some(crate::shell::Registration::create(&session.root)?);
-            session.registered = true;
-            session.verify_shell_registration()?;
-            session.connect()?;
-            return Ok(session);
-        }
         let name = wide(Path::new("TwoDrive isolated CFAPI experiment"));
         let version = wide(Path::new(env!("CARGO_PKG_VERSION")));
         let registration = CF_SYNC_REGISTRATION {
             StructSize: size_of::<CF_SYNC_REGISTRATION>() as u32,
             ProviderName: name.as_ptr(),
             ProviderVersion: version.as_ptr(),
-            SyncRootIdentity: ID.as_ptr().cast(),
-            SyncRootIdentityLength: ID.len() as u32,
+            SyncRootIdentity: dataset.root_identity().as_ptr().cast(),
+            SyncRootIdentityLength: dataset.root_identity().len() as u32,
             ..Default::default()
         };
         let policies = CF_SYNC_POLICIES {
@@ -527,22 +591,6 @@ impl Session {
         session.registered = true;
         session.connect()?;
         Ok(session)
-    }
-
-    #[cfg(feature = "shell-integration")]
-    pub fn verify_shell_registration(&self) -> Result<()> {
-        self.shell
-            .as_ref()
-            .ok_or("Shell registration is absent")?
-            .verify()
-    }
-
-    #[cfg(feature = "shell-integration")]
-    pub fn shell_placeholder_status(&self, path: &Path) -> Result<u32> {
-        if path.parent() != Some(self.root.as_path()) {
-            return Err("Shell query requires a generated leaf in the owned root".into());
-        }
-        crate::shell::placeholder_status(path)
     }
 
     pub fn connect(&mut self) -> Result<()> {
@@ -583,7 +631,11 @@ impl Session {
                     wide(&self.root).as_ptr(),
                     table.as_ptr(),
                     (&*self.source as *const Source).cast::<c_void>(),
-                    CF_CONNECT_FLAG_NONE,
+                    if self.dataset == Dataset::VisualV1 {
+                        CF_CONNECT_FLAG_REQUIRE_PROCESS_INFO
+                    } else {
+                        CF_CONNECT_FLAG_NONE
+                    },
                     &mut key,
                 )
             },
@@ -609,27 +661,182 @@ impl Session {
         Ok(())
     }
     pub fn finish(&mut self) -> Result<()> {
-        self.disconnect()?;
+        // CfUnregisterSyncRoot PERMANENTLY DELETES non-hydrated placeholders.
+        // Never use unregistration as cache cleanup. The owner must first retain
+        // every generated file, including failures and dirty bytes.
         if self.registered {
-            #[cfg(feature = "shell-integration")]
-            if let Some(shell) = &self.shell {
-                shell.unregister()?;
-                self.registered = false;
-                return Ok(());
+            let mut leaves = self
+                .placeholders
+                .lock()
+                .map_err(|_| "placeholder registry poisoned")?;
+            let mut protected = Vec::new();
+            require_exact_tree(&self.root, &leaves)?;
+            let mut order = leaves
+                .iter()
+                .enumerate()
+                .filter(|(_, leaf)| !leaf.reverted)
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            order.sort_by_key(|index| leaves[*index].directory);
+            for index in order {
+                let leaf = &leaves[index];
+                // Attribute-only rejection avoids opening an incomplete file
+                // with write access. This is not the authorization: the same
+                // evidence is checked again under the protected reference.
+                let before = if leaf.directory {
+                    inspect_directory(&leaf.path, &leaf.identity)?
+                } else {
+                    inspect_item(&leaf.path, &leaf.identity, leaf.size)?
+                };
+                if !before.resident || before.logical_size != leaf.size as u64 {
+                    return Err(format!(
+                        "refusing unregister before lease: {} resident={} length={}",
+                        String::from_utf8_lossy(&leaf.identity),
+                        before.resident,
+                        before.logical_size
+                    ));
+                }
+                let handle = RetainedPlaceholder::open_node(
+                    &leaf.path,
+                    &leaf.identity,
+                    leaf.size,
+                    leaf.directory,
+                )?;
+                let os = handle.inspect()?;
+                if let Some(manifest) = &self.retention_manifest {
+                    let (volume, file_id, directory) = file_binding(handle.handle.0)?;
+                    if !manifest.authorizes(
+                        &relative_name(&self.root, &leaf.path)?,
+                        volume,
+                        file_id,
+                        directory,
+                    ) {
+                        return Err("retention filesystem identity changed".into());
+                    }
+                }
+                if !os.resident || os.logical_size != leaf.size as u64 {
+                    return Err(format!(
+                        "refusing unregister under lease: {} resident={} length={}",
+                        String::from_utf8_lossy(&leaf.identity),
+                        os.resident,
+                        os.logical_size
+                    ));
+                }
+                protected.push((index, handle));
             }
-            hr(
-                unsafe { CfUnregisterSyncRoot(wide(&self.root).as_ptr()) },
-                "unregister generated root",
-            )?;
+            #[cfg(feature = "native-test-hooks")]
+            if let Some(hook) = &mut self.teardown_hook {
+                hook(TeardownStage::AllProtected)?;
+            }
+            // All share-none leases remain held through conversion. Reverting a fully
+            // retained placeholder makes it an ordinary file before unregister,
+            // which cannot delete later writes to that file. No network runs
+            // while these three bounded generated-file leases are held.
+            self.teardown_started = true;
+            for (index, handle) in &protected {
+                hr(
+                    unsafe {
+                        CfRevertPlaceholder(handle.handle.0, CF_REVERT_FLAG_NONE, ptr::null_mut())
+                    },
+                    "revert retained generated placeholder",
+                )?;
+                leaves[*index].reverted = true;
+            }
+            drop(protected);
+            require_exact_tree(&self.root, &leaves)?;
+            drop(leaves);
+            #[cfg(feature = "native-test-hooks")]
+            if let Some(hook) = &mut self.teardown_hook {
+                hook(TeardownStage::AllReverted)?;
+            }
+        }
+        self.disconnect()?;
+        #[cfg(feature = "native-local-fixture")]
+        if let Some(shell) = &mut self.shell {
+            shell
+                .finish()
+                .map_err(|e| format!("unregister generated Shell root: {e}"))?;
+        }
+        if self.registered {
+            // Shell unregistration can also remove the Cloud Filter root.
+            if verify_unregistered(&self.root).is_err() {
+                hr(
+                    unsafe { CfUnregisterSyncRoot(wide(&self.root).as_ptr()) },
+                    "unregister generated root",
+                )?;
+            }
             self.registered = false;
         }
         Ok(())
+    }
+    pub fn serving(&self) -> bool {
+        self.connection.is_some() && !self.teardown_started
+    }
+    pub fn teardown_started(&self) -> bool {
+        self.teardown_started
+    }
+    #[cfg(feature = "native-test-hooks")]
+    pub fn set_teardown_hook(
+        &mut self,
+        hook: impl FnMut(TeardownStage) -> Result<()> + Send + 'static,
+    ) {
+        self.teardown_hook = Some(Box::new(hook));
+    }
+    #[cfg(feature = "native-local-fixture")]
+    pub fn attach_shell(&mut self) -> Result<()> {
+        if self.shell.is_some() {
+            return Err("Shell already attached".into());
+        }
+        self.shell = Some(
+            crate::shell::ShellRoot::register_generated(&self.root, self.dataset.root_identity())
+                .map_err(|e| format!("register generated Shell root: {e}"))?,
+        );
+        Ok(())
+    }
+    #[cfg(feature = "native-local-fixture")]
+    pub fn publish_shell(&mut self, path: &Path, state: &str) -> Result<()> {
+        self.shell
+            .as_mut()
+            .ok_or("Shell unavailable")?
+            .publish(
+                path,
+                state,
+                path == self.root
+                    || self
+                        .placeholders
+                        .lock()
+                        .map_err(|_| "placeholder registry poisoned")?
+                        .iter()
+                        .any(|p| p.path == path && p.directory),
+            )
+            .map_err(|e| format!("publish generated Shell state: {e}"))
+    }
+    #[cfg(feature = "native-local-fixture")]
+    pub fn verify_shell(&self) -> Result<()> {
+        self.shell
+            .as_ref()
+            .ok_or("Shell unavailable")?
+            .verify()
+            .map_err(|e| format!("verify generated Shell root: {e}"))
+    }
+    pub fn root(&self) -> &Path {
+        &self.root
     }
     pub fn calls(&self) -> usize {
         self.source.calls.load(Ordering::SeqCst)
     }
     pub fn failures(&self) -> usize {
         self.source.failures.load(Ordering::SeqCst)
+    }
+    pub fn transfer_counters(&self) -> serde_json::Value {
+        let recent = self
+            .source
+            .recent_requests
+            .lock()
+            .ok()
+            .map(|r| r.iter().cloned().collect::<Vec<_>>());
+        let inflight = self.source.active.lock().ok().map(|r| r.len());
+        serde_json::json!({"native_requested_bytes":self.source.requested_bytes.load(Ordering::SeqCst),"native_transferred_bytes":self.source.transferred_bytes.load(Ordering::SeqCst),"native_in_flight":inflight,"recent_requests":recent,"fetch_callbacks":self.calls(),"fetch_failures":self.failures()})
     }
     pub fn offline(&self, value: bool) {
         self.source.offline.store(value, Ordering::SeqCst);
@@ -644,31 +851,75 @@ impl Session {
         identity: &[u8],
         size: usize,
     ) -> Result<PathBuf> {
+        self.create_entry(relative, identity, size, false)
+    }
+    pub fn directory_for(&self, relative: &Path, identity: &[u8]) -> Result<PathBuf> {
+        self.create_entry(relative, identity, 0, true)
+    }
+    fn create_entry(
+        &self,
+        relative: &Path,
+        identity: &[u8],
+        size: usize,
+        directory: bool,
+    ) -> Result<PathBuf> {
         if identity.is_empty() || identity.len() > 4096 || size > i64::MAX as usize {
             return Err("invalid placeholder identity/size".into());
         }
-        // The harness supplies generated leaf names only, including a long leaf.
-        if relative.components().count() != 1
+        let components = relative.components().collect::<Vec<_>>();
+        if components.is_empty()
+            || components.len() > 2
+            || components
+                .iter()
+                .any(|c| !matches!(c, Component::Normal(_)))
+            || (directory && components.len() != 1)
             || relative.file_name().is_none()
             || relative.is_absolute()
         {
-            return Err("only a generated leaf name is accepted".into());
+            return Err("only bounded generated relative names are accepted".into());
         }
-        let name = wide(relative);
+        let parent = relative.parent().filter(|p| !p.as_os_str().is_empty());
+        let base = if let Some(parent) = parent {
+            let path = self.root.join(parent);
+            let nodes = self
+                .placeholders
+                .lock()
+                .map_err(|_| "placeholder registry poisoned")?;
+            let node = nodes
+                .iter()
+                .find(|p| p.path == path && p.directory)
+                .ok_or("unowned generated parent")?;
+            directory_observation(metadata_handle(&path)?.0, &node.identity)?;
+            path
+        } else {
+            self.root.clone()
+        };
+        let name = wide(Path::new(
+            relative.file_name().ok_or("missing generated leaf")?,
+        ));
         let mut entry = CF_PLACEHOLDER_CREATE_INFO {
             RelativeFileName: name.as_ptr(),
             FileIdentity: identity.as_ptr().cast(),
             FileIdentityLength: identity.len() as u32,
-            Flags: CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC,
+            Flags: CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC
+                | if directory {
+                    CF_PLACEHOLDER_CREATE_FLAG_DISABLE_ON_DEMAND_POPULATION
+                } else {
+                    0
+                },
             ..Default::default()
         };
         entry.FsMetadata.FileSize = size as i64;
-        entry.FsMetadata.BasicInfo.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+        entry.FsMetadata.BasicInfo.FileAttributes = if directory {
+            FILE_ATTRIBUTE_DIRECTORY
+        } else {
+            FILE_ATTRIBUTE_NORMAL
+        };
         let mut done = 0;
         hr(
             unsafe {
                 CfCreatePlaceholders(
-                    wide(&self.root).as_ptr(),
+                    wide(&base).as_ptr(),
                     &mut entry,
                     1,
                     CF_CREATE_FLAG_STOP_ON_ERROR,
@@ -681,7 +932,118 @@ impl Session {
         if done != 1 {
             return Err("placeholder was not created".into());
         }
-        Ok(self.root.join(relative))
+        let path = self.root.join(relative);
+        self.placeholders
+            .lock()
+            .map_err(|_| "placeholder registry poisoned")?
+            .push(RegisteredPlaceholder {
+                path: path.clone(),
+                identity: identity.to_vec(),
+                size,
+                reverted: false,
+                directory,
+            });
+        if directory {
+            let guard = directory_handle(&path)?;
+            directory_observation(guard.0, identity)?;
+            self.directory_guards
+                .lock()
+                .map_err(|_| "directory guard poisoned")?
+                .push(guard);
+        }
+        Ok(path)
+    }
+    pub fn seal_manifest(&mut self, path: &Path) -> Result<()> {
+        use std::{io::Write, os::windows::fs::OpenOptionsExt};
+        if self.retention_manifest.is_some() {
+            return Err("retention manifest already sealed".into());
+        }
+        let (volume, root_id, directory) = file_binding(metadata_handle(&self.root)?.0)?;
+        if !directory {
+            return Err("root is not a directory".into());
+        }
+        let nodes = self
+            .placeholders
+            .lock()
+            .map_err(|_| "placeholder registry poisoned")?;
+        require_exact_tree(&self.root, &nodes)?;
+        let mut entries = Vec::new();
+        for node in nodes.iter() {
+            let (node_volume, file_id, node_directory) =
+                file_binding(metadata_handle(&node.path)?.0)?;
+            if node_volume != volume || node_directory != node.directory {
+                return Err("retention filesystem identity differs".into());
+            }
+            entries.push(BoundEntry {
+                relative_path: relative_name(&self.root, &node.path)?,
+                file_id,
+                directory: node.directory,
+            });
+        }
+        let manifest = RetentionManifest {
+            schema_version: 1,
+            dataset: self.dataset,
+            volume_serial: volume,
+            root_file_id: root_id,
+            entries,
+        };
+        manifest.validate()?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        file.write_all(&serde_json::to_vec(&manifest).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        self.retention_manifest = Some(manifest);
+        self.manifest_file = Some(file);
+        Ok(())
+    }
+    pub fn binding_summary(&self) -> serde_json::Value {
+        self.retention_manifest.as_ref().map_or(serde_json::Value::Null,|m|serde_json::json!({"dataset":m.dataset,"volume_serial":m.volume_serial,"root_file_id":m.root_file_id}))
+    }
+    pub fn mark_directories_initially_in_sync(&self) -> Result<()> {
+        let nodes = self
+            .placeholders
+            .lock()
+            .map_err(|_| "placeholder registry poisoned")?;
+        require_exact_tree(&self.root, &nodes)?;
+        for node in nodes.iter().filter(|n| n.directory) {
+            let raw = unsafe {
+                CreateFileW(
+                    wide(&node.path).as_ptr(),
+                    FILE_READ_ATTRIBUTES | WRITE_DAC,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT
+                        | FILE_FLAG_BACKUP_SEMANTICS
+                        | FILE_FLAG_OPEN_NO_RECALL,
+                    ptr::null_mut(),
+                )
+            };
+            if raw == INVALID_HANDLE_VALUE {
+                return Err("cannot open initial directory metadata".into());
+            }
+            let handle = Handle(raw, false);
+            if !directory_observation(handle.0, &node.identity)?.resident {
+                return Err("generated directory population is incomplete".into());
+            }
+            hr(
+                unsafe {
+                    CfSetInSyncState(
+                        handle.0,
+                        CF_IN_SYNC_STATE_IN_SYNC,
+                        CF_SET_IN_SYNC_FLAG_NONE,
+                        ptr::null_mut(),
+                    )
+                },
+                "acknowledge initial generated directory listing",
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -711,6 +1073,324 @@ impl Drop for Handle {
     }
 }
 
+struct RetainedPlaceholder {
+    handle: Handle,
+    identity: Vec<u8>,
+    size: usize,
+    directory: bool,
+}
+impl RetainedPlaceholder {
+    #[cfg(test)]
+    fn open(path: &Path, identity: &[u8], size: usize) -> Result<Self> {
+        Self::open_node(path, identity, size, false)
+    }
+    fn open_node(path: &Path, identity: &[u8], size: usize, directory: bool) -> Result<Self> {
+        // WRITE_DAC authorizes CfRevertPlaceholder without requesting data
+        // writes. A normal share-none lease also gives deterministic refusal to
+        // concurrent writers; no oplock can be acknowledged behind this owner.
+        let raw = unsafe {
+            CreateFileW(
+                wide(path).as_ptr(),
+                FILE_READ_DATA | FILE_READ_ATTRIBUTES | WRITE_DAC,
+                0,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT
+                    | FILE_FLAG_OPEN_NO_RECALL
+                    | FILE_FLAG_BACKUP_SEMANTICS,
+                ptr::null_mut(),
+            )
+        };
+        if raw == INVALID_HANDLE_VALUE {
+            return Err(format!("exclusive retained-file lease: {}", unsafe {
+                GetLastError()
+            }));
+        }
+        let handle = Handle(raw, false);
+        Ok(Self {
+            handle,
+            identity: identity.to_vec(),
+            size,
+            directory,
+        })
+    }
+    fn inspect(&self) -> Result<NativeObservation> {
+        if self.directory {
+            directory_observation(self.handle.0, &self.identity)
+        } else {
+            observation(self.handle.0, &self.identity, self.size)
+        }
+    }
+}
+
+/// Recovery of THIS generated fixture only, without registration or connection.
+/// All bytes are retained under leases before any conversion or unregister.
+#[cfg(feature = "native-test-hooks")]
+pub fn recover_retained_generated(
+    root: &Path,
+    backup: &Path,
+    mut record_dirty: impl FnMut(Dataset, &str) -> Result<()>,
+) -> Result<()> {
+    use std::{
+        fs,
+        io::{Read, Write},
+        os::windows::{fs::OpenOptionsExt, io::FromRawHandle},
+    };
+    let mut guard = RootGuard::lock_parent(root)?;
+    guard.require_unmanaged_parent()?;
+    let root_handle = directory_handle(root)?;
+    let (volume, root_file_id, is_directory) = file_binding(root_handle.0)?;
+    if !is_directory {
+        return Err("retained root is not a directory".into());
+    }
+    guard._handles.push(root_handle);
+    guard.root = root.canonicalize().map_err(|e| e.to_string())?;
+    let mut buffer = [0u64; 1024];
+    let mut length = 0;
+    hr(
+        unsafe {
+            CfGetSyncRootInfoByPath(
+                wide(&guard.root).as_ptr(),
+                CF_SYNC_ROOT_INFO_STANDARD,
+                buffer.as_mut_ptr().cast(),
+                size_of_val(&buffer) as u32,
+                &mut length,
+            )
+        },
+        "inspect retained generated root",
+    )?;
+    let info = unsafe { &*buffer.as_ptr().cast::<CF_SYNC_ROOT_STANDARD_INFO>() };
+    let start = offset_of!(CF_SYNC_ROOT_STANDARD_INFO, SyncRootIdentity);
+    let end = start
+        .checked_add(info.SyncRootIdentityLength as usize)
+        .ok_or("invalid root identity length")?;
+    if length < size_of::<CF_SYNC_ROOT_STANDARD_INFO>() as u32
+        || end > length as usize
+        || end > size_of_val(&buffer)
+        || info.SyncRootFileId as u64 != root_file_id
+    {
+        return Err("retained root identity/binding differs".into());
+    }
+    let identity = unsafe {
+        std::slice::from_raw_parts(
+            info.SyncRootIdentity.as_ptr(),
+            info.SyncRootIdentityLength as usize,
+        )
+    };
+    let dataset = Dataset::from_identity(identity).ok_or("not a known generated dataset")?;
+    let mut shell = crate::shell::ShellRoot::retained_generated(&guard.root, identity)
+        .map_err(|e| format!("verify retained Shell: {e}"))?;
+    let manifest_path = root
+        .with_extension("engine-state")
+        .join("native-retention.json");
+    let manifest = if manifest_path.exists() {
+        let _manifest_guard = RootGuard::lock_parent(&manifest_path)?;
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OPEN_NO_RECALL)
+            .open(&manifest_path)
+            .map_err(|e| e.to_string())?;
+        let mut attr = BY_HANDLE_FILE_INFORMATION::default();
+        use std::os::windows::io::AsRawHandle;
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut attr) } == 0
+            || attr.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || file.metadata().map_err(|e| e.to_string())?.len() > 16384
+        {
+            return Err("unsafe retention manifest".into());
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        let manifest: RetentionManifest =
+            serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        manifest.validate()?;
+        if manifest.dataset != dataset
+            || manifest.root_file_id != root_file_id
+            || manifest.volume_serial != volume
+        {
+            return Err("retention root manifest differs".into());
+        }
+        Some(manifest)
+    } else {
+        if dataset == Dataset::VisualV1 {
+            return Err("visual retention manifest required".into());
+        }
+        None
+    };
+    let nodes = dataset
+        .entries()
+        .into_iter()
+        .map(|entry| RegisteredPlaceholder {
+            path: guard.root.join(&entry.relative_path),
+            identity: entry.id.into_bytes(),
+            size: entry.size,
+            reverted: false,
+            directory: entry.directory,
+        })
+        .collect::<Vec<_>>();
+    for node in nodes.iter().filter(|n| n.directory) {
+        let handle = directory_handle(&node.path)?;
+        authorize_retained_node(handle.0, node, &guard.root, manifest.as_ref())?;
+        guard._handles.push(handle);
+    }
+    require_exact_tree(&guard.root, &nodes)?;
+    let mut retained = Vec::new();
+    let mut order = (0..nodes.len()).collect::<Vec<_>>();
+    order.sort_by_key(|&i| nodes[i].directory);
+    for index in order {
+        let node = &nodes[index];
+        let handle =
+            RetainedPlaceholder::open_node(&node.path, &node.identity, node.size, node.directory)?;
+        let (os, placeholder) =
+            authorize_retained_node(handle.handle.0, node, &guard.root, manifest.as_ref())?;
+        if !os.resident || os.logical_size != node.size as u64 {
+            return Err("retained node incomplete; no conversion performed".into());
+        }
+        retained.push((index, handle, os, placeholder));
+    }
+    let backup_guard = GeneratedDirectory::create(backup)?;
+    let backup = backup_guard.path();
+    let mut backup_guards = Vec::new();
+    for entry in dataset.directories() {
+        backup_guards.push(GeneratedDirectory::create(
+            &backup.join(entry.relative_path),
+        )?);
+    }
+    for (index, handle, os, placeholder) in &retained {
+        let node = &nodes[*index];
+        if node.directory {
+            continue;
+        }
+        let id = std::str::from_utf8(&node.identity).map_err(|_| "invalid generated identity")?;
+        let file_index = dataset
+            .files()
+            .iter()
+            .position(|e| e.id == id)
+            .ok_or("unknown generated file")?;
+        let mut bytes = vec![0; node.size];
+        let mut file =
+            std::mem::ManuallyDrop::new(unsafe { fs::File::from_raw_handle(handle.handle.0) });
+        file.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+        let output_path = backup.join(relative_name(&guard.root, &node.path)?);
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output_path)
+            .map_err(|e| e.to_string())?;
+        output.write_all(&bytes).map_err(|e| e.to_string())?;
+        output.sync_all().map_err(|e| e.to_string())?;
+        if fs::read(&output_path).map_err(|e| e.to_string())? != bytes {
+            return Err("backup bytes differ; no conversion performed".into());
+        }
+        if (*placeholder && (os.modified_bytes != 0 || !os.os_in_sync))
+            || bytes != dataset.bytes(file_index)
+        {
+            record_dirty(dataset, id)?;
+        }
+    }
+    for (_, handle, _, placeholder) in &retained {
+        if *placeholder {
+            hr(
+                unsafe {
+                    CfRevertPlaceholder(handle.handle.0, CF_REVERT_FLAG_NONE, ptr::null_mut())
+                },
+                "revert retained generated node",
+            )?;
+        }
+    }
+    drop(retained);
+    require_exact_tree(&guard.root, &nodes)?;
+    shell
+        .finish()
+        .map_err(|e| format!("unregister retained Shell: {e}"))?;
+    if verify_unregistered(&guard.root).is_err() {
+        hr(
+            unsafe { CfUnregisterSyncRoot(wide(&guard.root).as_ptr()) },
+            "unregister retained generated root",
+        )?;
+    }
+    verify_unregistered(&guard.root)
+}
+
+#[cfg(any(test, feature = "native-test-hooks"))]
+fn authorize_retained_node(
+    handle: HANDLE,
+    node: &RegisteredPlaceholder,
+    root: &Path,
+    manifest: Option<&RetentionManifest>,
+) -> Result<(NativeObservation, bool)> {
+    let (volume, file_id, directory) = file_binding(handle)?;
+    if directory != node.directory {
+        return Err("retained node kind differs".into());
+    }
+    if let Some(manifest) = manifest
+        && !manifest.authorizes(
+            &relative_name(root, &node.path)?,
+            volume,
+            file_id,
+            directory,
+        )
+    {
+        return Err("retained node filesystem identity changed".into());
+    }
+    let observed = if directory {
+        directory_observation(handle, &node.identity)
+    } else {
+        observation(handle, &node.identity, node.size)
+    };
+    match observed {
+        Ok(os) => Ok((os, true)),
+        Err(error) => {
+            // Ordinary-file CfGetPlaceholderInfo errors differ across builds
+            // (NOT_A_CLOUD_FILE locally, INVALID_FUNCTION on Server 26100).
+            // An error code is not positive proof of conversion. Require the
+            // bound filesystem ID above plus independent, ordinary tag state.
+            if manifest.is_none() {
+                return Err(error);
+            }
+            let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
+            if unsafe {
+                GetFileInformationByHandleEx(
+                    handle,
+                    FileAttributeTagInfo,
+                    (&mut tag as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+                    size_of_val(&tag) as u32,
+                )
+            } == 0
+                || tag.FileAttributes
+                    & (FILE_ATTRIBUTE_REPARSE_POINT
+                        | FILE_ATTRIBUTE_OFFLINE
+                        | FILE_ATTRIBUTE_RECALL_ON_OPEN
+                        | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
+                    != 0
+                || tag.ReparseTag != 0
+                || unsafe {
+                    CfGetPlaceholderStateFromAttributeTag(tag.FileAttributes, tag.ReparseTag)
+                } != CF_PLACEHOLDER_STATE_NO_STATES
+            {
+                return Err(error);
+            }
+            let mut length = 0;
+            if !directory && unsafe { GetFileSizeEx(handle, &mut length) } == 0 {
+                return Err("ordinary retained size unknown".into());
+            }
+            Ok((
+                NativeObservation {
+                    logical_size: length as u64,
+                    resident: directory || length == node.size as i64,
+                    partial: false,
+                    pinned: false,
+                    pin_known_unpinned: true,
+                    release_requested: false,
+                    os_in_sync: false,
+                    modified_bytes: 0,
+                },
+                false,
+            ))
+        }
+    }
+}
+
 fn metadata_handle(path: &Path) -> Result<Handle> {
     // OPEN_REPARSE_POINT + attributes-only does not request file content.
     let handle = unsafe {
@@ -720,7 +1400,7 @@ fn metadata_handle(path: &Path) -> Result<Handle> {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             ptr::null(),
             OPEN_EXISTING,
-            FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
             ptr::null_mut(),
         )
     };
@@ -730,6 +1410,125 @@ fn metadata_handle(path: &Path) -> Result<Handle> {
     Ok(Handle(handle, false))
 }
 
+#[cfg(test)]
+mod retained_lease_tests {
+    use super::*;
+    #[test]
+    fn ordinary_converted_directory_and_files_require_manifest_ids_and_retain_bytes() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let dataset = Dataset::VisualV1;
+        for entry in dataset.directories() {
+            fs::create_dir(root.join(entry.relative_path)).unwrap();
+        }
+        for (index, entry) in dataset.files().into_iter().enumerate() {
+            fs::write(root.join(entry.relative_path), dataset.bytes(index)).unwrap();
+        }
+        let nodes = dataset
+            .entries()
+            .into_iter()
+            .map(|entry| RegisteredPlaceholder {
+                path: root.join(entry.relative_path),
+                identity: entry.id.into_bytes(),
+                size: entry.size,
+                directory: entry.directory,
+                reverted: true,
+            })
+            .collect::<Vec<_>>();
+        require_exact_tree(&root, &nodes).unwrap();
+        let (volume, root_file_id, _) = file_binding(metadata_handle(&root).unwrap().0).unwrap();
+        let manifest = RetentionManifest {
+            schema_version: 1,
+            dataset,
+            volume_serial: volume,
+            root_file_id,
+            entries: nodes
+                .iter()
+                .map(|node| {
+                    let (_, file_id, directory) =
+                        file_binding(metadata_handle(&node.path).unwrap().0).unwrap();
+                    BoundEntry {
+                        relative_path: relative_name(&root, &node.path).unwrap(),
+                        file_id,
+                        directory,
+                    }
+                })
+                .collect(),
+        };
+        manifest.validate().unwrap();
+        let directory_guard = directory_handle(&nodes[0].path).unwrap();
+        let mut leases = Vec::new();
+        for node in nodes
+            .iter()
+            .filter(|n| !n.directory)
+            .chain(nodes.iter().filter(|n| n.directory))
+        {
+            let lease = RetainedPlaceholder::open_node(
+                &node.path,
+                &node.identity,
+                node.size,
+                node.directory,
+            )
+            .unwrap();
+            let (observed, placeholder) =
+                authorize_retained_node(lease.handle.0, node, &root, Some(&manifest)).unwrap();
+            assert!(authorize_retained_node(lease.handle.0, node, &root, None).is_err());
+            assert!(observed.resident);
+            assert!(!placeholder);
+            leases.push(lease);
+        }
+        assert_eq!(
+            fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&nodes[1].path)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION as i32)
+        );
+        drop(leases);
+        drop(directory_guard);
+        assert_eq!(fs::read(&nodes[2].path).unwrap(), dataset.bytes(1));
+        let replacement = root.join("replacement.tmp");
+        fs::write(&replacement, dataset.bytes(0)).unwrap();
+        fs::rename(&replacement, &nodes[1].path).unwrap();
+        let lease = RetainedPlaceholder::open_node(
+            &nodes[1].path,
+            &nodes[1].identity,
+            nodes[1].size,
+            false,
+        )
+        .unwrap();
+        assert!(
+            authorize_retained_node(lease.handle.0, &nodes[1], &root, Some(&manifest)).is_err()
+        );
+        drop(lease);
+        fs::write(root.join("unexpected.bin"), b"preserve").unwrap();
+        assert!(require_exact_tree(&root, &nodes).is_err());
+    }
+    #[test]
+    fn retained_lease_refuses_truncation_until_conversion_owner_releases_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ordinary-generated.bin");
+        std::fs::write(&path, b"complete retained data").unwrap();
+        let lease = RetainedPlaceholder::open(&path, b"unused-ordinary-identity", 22).unwrap();
+        let denied = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap_err();
+        assert_eq!(denied.raw_os_error(), Some(ERROR_SHARING_VIOLATION as i32));
+        drop(lease);
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete retained data");
+        std::fs::write(&path, b"ordinary write after conversion").unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"ordinary write after conversion"
+        );
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct NativeObservation {
     pub logical_size: u64,
@@ -737,6 +1536,7 @@ pub struct NativeObservation {
     pub partial: bool,
     pub pinned: bool,
     pub pin_known_unpinned: bool,
+    pub release_requested: bool,
     pub os_in_sync: bool,
     pub modified_bytes: i64,
 }
@@ -746,6 +1546,17 @@ impl NativeObservation {
     }
 }
 fn observation(handle: HANDLE, expected_identity: &[u8], size: usize) -> Result<NativeObservation> {
+    node_observation(handle, expected_identity, size, false)
+}
+fn directory_observation(handle: HANDLE, expected_identity: &[u8]) -> Result<NativeObservation> {
+    node_observation(handle, expected_identity, 0, true)
+}
+fn node_observation(
+    handle: HANDLE,
+    expected_identity: &[u8],
+    size: usize,
+    directory: bool,
+) -> Result<NativeObservation> {
     // u64 buffer provides alignment for the variable-length standard-info blob.
     let mut buffer = [0u64; 1024];
     let mut returned = 0;
@@ -778,16 +1589,42 @@ fn observation(handle: HANDLE, expected_identity: &[u8], size: usize) -> Result<
         return Err("foreign placeholder identity".into());
     }
     let mut logical_size = 0i64;
-    if unsafe { GetFileSizeEx(handle, &mut logical_size) } == 0 || logical_size < 0 {
+    if !directory && (unsafe { GetFileSizeEx(handle, &mut logical_size) } == 0 || logical_size < 0)
+    {
         return Err("cannot inspect logical size".into());
     }
+    let (resident, partial) = if directory {
+        let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
+        if unsafe {
+            GetFileInformationByHandleEx(
+                handle,
+                FileAttributeTagInfo,
+                (&mut tag as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+                size_of_val(&tag) as u32,
+            )
+        } == 0
+            || tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+        {
+            return Err("not a generated directory".into());
+        }
+        let flags =
+            unsafe { CfGetPlaceholderStateFromAttributeTag(tag.FileAttributes, tag.ReparseTag) };
+        let partial = flags & CF_PLACEHOLDER_STATE_PARTIAL != 0;
+        (!partial, partial)
+    } else {
+        (
+            info.OnDiskDataSize >= size as i64,
+            info.OnDiskDataSize > 0 && info.OnDiskDataSize < size as i64,
+        )
+    };
     Ok(NativeObservation {
         logical_size: logical_size as u64,
-        resident: info.OnDiskDataSize >= size as i64,
-        partial: info.OnDiskDataSize > 0 && info.OnDiskDataSize < size as i64,
+        resident,
+        partial,
         pinned: info.PinState == CF_PIN_STATE_PINNED,
         pin_known_unpinned: info.PinState == CF_PIN_STATE_UNPINNED
             || info.PinState == CF_PIN_STATE_UNSPECIFIED,
+        release_requested: info.PinState == CF_PIN_STATE_UNPINNED,
         os_in_sync: info.InSyncState == CF_IN_SYNC_STATE_IN_SYNC,
         modified_bytes: info.ModifiedDataSize,
     })
@@ -808,6 +1645,74 @@ fn status(handle: HANDLE, engine_state: FileState) -> Result<LocalStatus> {
 
 pub fn inspect_item(path: &Path, identity: &[u8], size: usize) -> Result<NativeObservation> {
     observation(metadata_handle(path)?.0, identity, size)
+}
+pub fn inspect_directory(path: &Path, identity: &[u8]) -> Result<NativeObservation> {
+    directory_observation(metadata_handle(path)?.0, identity)
+}
+
+fn directory_handle(path: &Path) -> Result<Handle> {
+    let handle = unsafe {
+        CreateFileW(
+            wide(path).as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(format!("lock generated directory: {}", unsafe {
+            GetLastError()
+        }));
+    }
+    Ok(Handle(handle, false))
+}
+fn relative_name(root: &Path, path: &Path) -> Result<String> {
+    path.strip_prefix(root)
+        .map_err(|_| "path outside fixture")?
+        .components()
+        .map(|c| match c {
+            Component::Normal(name) => name
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "invalid generated name".into()),
+            _ => Err("invalid relative component".into()),
+        })
+        .collect::<Result<Vec<String>>>()
+        .map(|c| c.join("/"))
+}
+fn file_binding(handle: HANDLE) -> Result<(u32, u64, bool)> {
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        return Err("cannot inspect filesystem identity".into());
+    }
+    Ok((
+        info.dwVolumeSerialNumber,
+        ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+        info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+    ))
+}
+fn require_exact_tree(root: &Path, nodes: &[RegisteredPlaceholder]) -> Result<()> {
+    for parent in std::iter::once(root.to_path_buf())
+        .chain(nodes.iter().filter(|n| n.directory).map(|n| n.path.clone()))
+    {
+        let expected = nodes
+            .iter()
+            .filter(|n| n.path.parent() == Some(parent.as_path()))
+            .map(|n| n.path.file_name().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        let actual = std::fs::read_dir(&parent)
+            .map_err(|e| e.to_string())?
+            .map(|e| e.map(|d| d.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        if expected.len() != actual.len() || expected.iter().any(|n| !actual.contains(n)) {
+            return Err("unexpected or missing fixture tree entry; root retained".into());
+        }
+    }
+    Ok(())
 }
 
 /// Scope-bound OS guard. It cannot be detached into a release-ready boolean.
@@ -879,6 +1784,20 @@ pub fn inspect(path: &Path, engine_state: FileState) -> Result<LocalStatus> {
 }
 
 pub fn pin(path: &Path, pinned: bool) -> Result<()> {
+    set_pin_state(
+        path,
+        if pinned {
+            CF_PIN_STATE_PINNED
+        } else {
+            CF_PIN_STATE_UNSPECIFIED
+        },
+    )
+}
+#[cfg(feature = "native-test-hooks")]
+pub fn test_release_intent(path: &Path) -> Result<()> {
+    set_pin_state(path, CF_PIN_STATE_UNPINNED)
+}
+fn set_pin_state(path: &Path, state: CF_PIN_STATE) -> Result<()> {
     let mut handle = ptr::null_mut();
     hr(
         unsafe {
@@ -892,18 +1811,7 @@ pub fn pin(path: &Path, pinned: bool) -> Result<()> {
     )?;
     let handle = Handle(handle, true);
     hr(
-        unsafe {
-            CfSetPinState(
-                handle.0,
-                if pinned {
-                    CF_PIN_STATE_PINNED
-                } else {
-                    CF_PIN_STATE_UNSPECIFIED
-                },
-                CF_SET_PIN_FLAG_NONE,
-                ptr::null_mut(),
-            )
-        },
+        unsafe { CfSetPinState(handle.0, state, CF_SET_PIN_FLAG_NONE, ptr::null_mut()) },
         "set pin intent",
     )
 }
@@ -922,77 +1830,6 @@ pub fn release(path: &Path, engine_state: FileState) -> Result<()> {
 mod tests {
     use super::*;
     use std::fs;
-    #[cfg(feature = "shell-integration")]
-    #[test]
-    #[ignore = "explicit new generated Shell root required; never run automatically"]
-    fn shell_registration_and_metadata_states() {
-        let root = PathBuf::from(
-            std::env::var_os("TWODRIVE_APPROVED_SHELL_FIXTURE_ROOT")
-                .expect("explicit new Shell root required"),
-        );
-        assert!(
-            root.file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with("twodrive-cfapi-fixture-"))
-        );
-        let bare = root.with_file_name(format!(
-            "{}-bare",
-            root.file_name().unwrap().to_string_lossy()
-        ));
-        let mut control = Session::create_inner(&bare, None, false).unwrap();
-        let baseline = (|| -> Result<()> {
-            verify_shell_unregistered(&bare)?;
-            assert!(control.verify_shell_registration().is_err());
-            Ok(())
-        })();
-        control.finish().unwrap();
-        verify_unregistered(&bare).unwrap();
-        baseline.unwrap();
-
-        let mut session = Session::create(&root).unwrap();
-        let result = (|| -> Result<serde_json::Value> {
-            session.verify_shell_registration()?;
-            let path = session.placeholder(Path::new("generated-中文.bin"))?;
-            let another = session.placeholder(Path::new("generated-clean.bin"))?;
-            let online = session.shell_placeholder_status(&path)?;
-            assert_eq!(session.calls(), 0, "Shell metadata hydrated content");
-            assert_eq!(fs::read(&path).map_err(|e| e.to_string())?, payload());
-            let local = session.shell_placeholder_status(&path)?;
-            assert_ne!(
-                online, local,
-                "Shell must distinguish cloud-only and local residency"
-            );
-            assert!(inspect(&path, FileState::Cached)?.resident);
-            pin(&path, true)?;
-            let pinned = session.shell_placeholder_status(&path)?;
-            assert_ne!(local, pinned, "Shell must distinguish pinned intent");
-            assert!(release(&path, FileState::Cached).is_err());
-            assert_eq!(fs::read(&another).map_err(|e| e.to_string())?, payload());
-            release(&another, FileState::Cached)?;
-            assert_eq!(session.shell_placeholder_status(&another)?, online);
-            // CfUnregister can remove unhydrated generated placeholders. Finish
-            // the fixture with complete generated bytes so cleanup retains both.
-            assert_eq!(fs::read(&another).map_err(|e| e.to_string())?, payload());
-            Ok(
-                serde_json::json!({"baseline_shell_absent":true,"shell_registered":true,
-                "metadata_without_hydration":true,"online_shell_status":online,
-                "local_shell_status":local,"pinned_shell_status":pinned,
-                "pinned_release_rejected":true,"clean_release_returns_online_status":true,
-                "visual_icon_acceptance":"not_run_by_this_test"}),
-            )
-        })();
-        session.finish().unwrap();
-        verify_unregistered(&root).unwrap();
-        verify_shell_unregistered(&root).unwrap();
-        let mut report = result.unwrap();
-        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
-        report["cfapi_unregistered"] = serde_json::json!(true);
-        report["shell_unregistered"] = serde_json::json!(true);
-        report["generated_files_retained"] = serde_json::json!(true);
-        if let Some(output) = std::env::var_os("TWODRIVE_SHELL_REPORT") {
-            fs::write(output, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
-        }
-        println!("{report}");
-    }
     #[test]
     fn only_known_unmanaged_hresult_allows_creation() {
         assert!(require_unmanaged(0x80070186u32 as i32).is_ok());

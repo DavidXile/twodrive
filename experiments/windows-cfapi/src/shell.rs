@@ -1,14 +1,14 @@
-//! Shell registration for explicitly requested generated roots only.
-//! No account, provider protocol, existing root adoption or content access.
-use sha2::{Digest, Sha256};
+//! Shell presentation for an already guarded generated root. Never enumerates
+//! other registrations, installs a COM extension, or accepts account identities.
 use std::{
+    collections::HashMap,
     marker::PhantomData,
     path::{Path, PathBuf},
     rc::Rc,
 };
 use windows::{
     Security::Cryptography::CryptographicBuffer,
-    Storage::{Provider::*, StorageFolder},
+    Storage::{IStorageItem, Provider::*, StorageFile, StorageFolder},
     Win32::{
         Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree},
         Security::{
@@ -19,10 +19,10 @@ use windows::{
             Threading::{GetCurrentProcess, OpenProcessToken},
             WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
         },
+        UI::Shell::{SHCNE_UPDATEDIR, SHCNE_UPDATEITEM, SHCNF_PATHW, SHChangeNotify},
     },
-    core::{HSTRING, Result},
+    core::{GUID, HSTRING, Result},
 };
-const CONTEXT: &[u8] = b"twodrive-generated-shell-v1";
 
 struct Apartment(PhantomData<Rc<()>>);
 impl Apartment {
@@ -35,11 +35,13 @@ impl Apartment {
 }
 impl Drop for Apartment {
     fn drop(&mut self) {
-        unsafe { RoUninitialize() }
+        unsafe {
+            RoUninitialize();
+        }
     }
 }
 
-fn current_sid() -> Result<String> {
+fn user_sid() -> Result<String> {
     let mut token = HANDLE::default();
     unsafe {
         OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
@@ -51,228 +53,339 @@ fn current_sid() -> Result<String> {
         }
     }
     let token = Token(token);
-    let mut needed = 0;
-    let _ = unsafe { GetTokenInformation(token.0, TokenUser, None, 0, &mut needed) };
-    let mut buffer = vec![0u64; (needed as usize).div_ceil(8)];
+    let mut bytes = 0;
+    let _ = unsafe { GetTokenInformation(token.0, TokenUser, None, 0, &mut bytes) };
+    if bytes == 0 || bytes > 65536 {
+        return Err(windows::core::Error::from_thread());
+    }
+    let mut buffer = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
     unsafe {
         GetTokenInformation(
             token.0,
             TokenUser,
             Some(buffer.as_mut_ptr().cast()),
-            needed,
-            &mut needed,
+            bytes,
+            &mut bytes,
         )?;
     }
     let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
-    let mut text = windows::core::PWSTR::null();
+    let mut sid = windows::core::PWSTR::null();
     unsafe {
-        ConvertSidToStringSidW(user.User.Sid, &mut text)?;
+        ConvertSidToStringSidW(user.User.Sid, &mut sid)?;
     }
-    let result = unsafe { text.to_string() };
+    let result = unsafe { sid.to_string() };
     unsafe {
-        let _ = LocalFree(Some(HLOCAL(text.0.cast())));
+        LocalFree(Some(HLOCAL(sid.0.cast())));
     }
-    result.map_err(|_| {
-        windows::core::Error::from_hresult(windows::core::HRESULT(0x80070057u32 as i32))
-    })
+    result.map_err(Into::into)
 }
 
-fn registration_id(sid: &str, path: &Path) -> HSTRING {
-    // Match the documented provider!SID!account shape. The account component
-    // identifies this generated root, never a cloud account or private label.
-    let path = folder_path(path);
-    let mut hash = Sha256::new();
-    for unit in path.iter() {
-        hash.update(unit.to_le_bytes());
-    }
-    let digest = hash.finalize();
-    HSTRING::from(format!("TwoDriveGenerated!{sid}!{:x}", digest))
-}
-
-fn folder_path(path: &Path) -> HSTRING {
-    let value = HSTRING::from(path);
-    // RootGuard produces a Win32 verbatim path; the WinRT folder broker
-    // requires the equivalent DOS path. Keep the UTF-16 spelling intact.
-    let prefix = [b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
-    if value.starts_with(&prefix) {
-        HSTRING::from_wide(&value[4..])
-    } else {
-        value
-    }
-}
-
-pub(crate) struct Registration {
+pub struct ShellRoot {
     id: HSTRING,
     root: PathBuf,
-    // WinRT initialization must be released on its creating thread.
+    context: Vec<u8>,
+    registered: bool,
+    published: HashMap<PathBuf, String>,
+    // Destroy WinRT objects and registration before leaving this apartment.
     _apartment: Apartment,
 }
-impl Registration {
-    pub(crate) fn create(root: &Path) -> std::result::Result<Self, String> {
-        Self::create_inner(root).map_err(|e| {
-            format!(
-                "register generated Shell root: HRESULT 0x{:08X}",
-                e.code().0 as u32
-            )
-        })
-    }
-    fn create_inner(root: &Path) -> Result<Self> {
+impl ShellRoot {
+    #[cfg(feature = "native-test-hooks")]
+    pub fn retained_generated(root: &Path, context: &[u8]) -> Result<Self> {
         let apartment = Apartment::new()?;
-        let id = registration_id(&current_sid()?, root);
-        for existing in StorageProviderSyncRootManager::GetCurrentSyncRoots()? {
-            if existing.Id()? == id {
-                return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
-                    0x800700B7u32 as i32,
-                )));
-            }
+        let folder = StorageFolder::GetFolderFromPathAsync(&storage_path(root))?.join()?;
+        let info = StorageProviderSyncRootManager::GetSyncRootInformationForFolder(&folder)?;
+        let id = info.Id()?;
+        let prefix = format!("TwoDrive.Generated!{}!", user_sid()?);
+        let mut actual = windows::core::Array::<u8>::new();
+        CryptographicBuffer::CopyToByteArray(&info.Context()?, &mut actual)?;
+        if !id.to_string().starts_with(&prefix) || &actual[..] != context {
+            return Err(windows::core::Error::new(
+                windows::core::HRESULT(0x8007000Du32 as i32),
+                "retained root is not this user's generated fixture",
+            ));
         }
+        let result = Self {
+            id,
+            root: root.into(),
+            context: context.to_vec(),
+            registered: true,
+            published: HashMap::new(),
+            _apartment: apartment,
+        };
+        result.verify()?;
+        Ok(result)
+    }
+    /// Only call after Session has atomically created and guarded a NEW root.
+    pub fn register_generated(root: &Path, context: &[u8]) -> Result<Self> {
+        let apartment = Apartment::new()?;
+        let id = HSTRING::from(format!(
+            "TwoDrive.Generated!{}!{:?}",
+            user_sid()?,
+            GUID::new()?
+        ));
         let info = StorageProviderSyncRootInfo::new()?;
         info.SetId(&id)?;
-        info.SetPath(&StorageFolder::GetFolderFromPathAsync(&folder_path(root))?.join()?)?;
-        info.SetDisplayNameResource(&HSTRING::from("TwoDrive generated verification"))?;
+        info.SetPath(&StorageFolder::GetFolderFromPathAsync(&storage_path(root))?.join()?)?;
+        info.SetDisplayNameResource(&HSTRING::from("TwoDrive Development (generated files)"))?;
         info.SetIconResource(&HSTRING::from("%SystemRoot%\\system32\\shell32.dll,0"))?;
-        info.SetVersion(&HSTRING::from(env!("CARGO_PKG_VERSION")))?;
         info.SetHydrationPolicy(StorageProviderHydrationPolicy::Full)?;
         info.SetHydrationPolicyModifier(StorageProviderHydrationPolicyModifier::None)?;
         info.SetPopulationPolicy(StorageProviderPopulationPolicy::AlwaysFull)?;
-        info.SetInSyncPolicy(StorageProviderInSyncPolicy(
-            windows_sys::Win32::Storage::CloudFilters::CF_INSYNC_POLICY_TRACK_ALL,
-        ))?;
+        info.SetInSyncPolicy(StorageProviderInSyncPolicy(0x3ff))?;
         info.SetHardlinkPolicy(StorageProviderHardlinkPolicy::None)?;
         info.SetShowSiblingsAsGroup(false)?;
-        info.SetContext(&CryptographicBuffer::CreateFromByteArray(CONTEXT)?)?;
-        let registration = Self {
+        info.SetVersion(&HSTRING::from(env!("CARGO_PKG_VERSION")))?;
+        info.SetContext(&CryptographicBuffer::CreateFromByteArray(context)?)?;
+        let definition = StorageProviderItemPropertyDefinition::new()?;
+        definition.SetId(1)?;
+        definition.SetDisplayNameResource(&HSTRING::from("TwoDrive synchronization"))?;
+        info.StorageProviderItemPropertyDefinitions()?
+            .Append(&definition)?;
+        StorageProviderSyncRootManager::Register(&info)?;
+        let mut result = Self {
             id,
-            root: root.to_owned(),
+            root: root.into(),
+            context: context.to_vec(),
+            registered: true,
+            published: HashMap::new(),
             _apartment: apartment,
         };
-        if let Err(error) = StorageProviderSyncRootManager::Register(&info) {
-            // A failed OS call can have partially published registration. Only
-            // remove an entry whose identity, exact root and marker are ours.
-            if let Ok(existing) =
-                StorageProviderSyncRootManager::GetSyncRootInformationForId(&registration.id)
-                && registration.owns(&existing).unwrap_or(false)
-                && let Err(cleanup) = StorageProviderSyncRootManager::Unregister(&registration.id)
-            {
-                eprintln!(
-                    "generated Shell registration rollback incomplete: HRESULT 0x{:08X}",
-                    cleanup.code().0 as u32
-                );
-            }
+        // Failure after registration must still undo this exact registration.
+        if let Err(error) = result.verify() {
+            let _ = result.finish();
             return Err(error);
         }
-        Ok(registration)
+        notify(root, true);
+        Ok(result)
     }
-    fn owns(&self, info: &StorageProviderSyncRootInfo) -> Result<bool> {
-        Ok(info.Id()? == self.id
-            && info.Path()?.Path()? == folder_path(&self.root)
-            && CryptographicBuffer::Compare(
-                &info.Context()?,
-                &CryptographicBuffer::CreateFromByteArray(CONTEXT)?,
-            )?)
-    }
-    pub(crate) fn verify(&self) -> std::result::Result<(), String> {
-        let check = || -> Result<bool> {
-            let info = StorageProviderSyncRootManager::GetSyncRootInformationForId(&self.id)?;
-            let folder = StorageProviderSyncRootManager::GetSyncRootInformationForFolder(
-                &StorageFolder::GetFolderFromPathAsync(&folder_path(self.root.as_path()))?
-                    .join()?,
-            )?;
-            Ok(self.owns(&info)? && self.owns(&folder)?)
-        };
-        match check() {
-            Ok(true) => Ok(()),
-            Ok(false) => Err("generated Shell registration identity mismatch".into()),
-            Err(e) => Err(format!(
-                "query generated Shell registration: HRESULT 0x{:08X}",
-                e.code().0 as u32
-            )),
+    pub fn verify(&self) -> Result<()> {
+        let info = StorageProviderSyncRootManager::GetSyncRootInformationForId(&self.id)?;
+        let folder = StorageFolder::GetFolderFromPathAsync(&storage_path(&self.root))?.join()?;
+        let by_folder = StorageProviderSyncRootManager::GetSyncRootInformationForFolder(&folder)?;
+        let expected = CryptographicBuffer::CreateFromByteArray(&self.context)?;
+        if PathBuf::from(info.Path()?.Path()?.to_string())
+            .canonicalize()
+            .ok()
+            .as_ref()
+            != Some(&self.root)
+            || by_folder.Id()? != self.id
+            || !CryptographicBuffer::Compare(&info.Context()?, &expected)?
+            || !CryptographicBuffer::Compare(&by_folder.Context()?, &expected)?
+        {
+            return Err(windows::core::Error::new(
+                windows::core::HRESULT(0x8007000Du32 as i32),
+                "generated Shell binding differs",
+            ));
         }
+        Ok(())
     }
-    pub(crate) fn unregister(&self) -> std::result::Result<(), String> {
-        self.verify()?;
-        StorageProviderSyncRootManager::Unregister(&self.id).map_err(|e| {
-            format!(
-                "unregister generated Shell root: HRESULT 0x{:08X}",
-                e.code().0 as u32
-            )
-        })
+    /// Writes metadata only. Availability/pin icons remain OS-derived. Unknown
+    /// sync states are never translated into success, progress or a conflict.
+    pub fn publish(&mut self, path: &Path, state: &str, directory: bool) -> Result<()> {
+        use windows::core::Interface;
+        if self.published.get(path).is_some_and(|old| old == state) {
+            return Ok(());
+        }
+        let property = StorageProviderItemProperty::new()?;
+        property.SetId(1)?;
+        property.SetValue(&HSTRING::from(state))?;
+        let values =
+            windows_collections::IIterable::<StorageProviderItemProperty>::from(vec![Some(
+                property,
+            )]);
+        let item: IStorageItem = if directory {
+            storage_folder(&self.root, path)?.cast()?
+        } else {
+            storage_file(&self.root, path)?.cast()?
+        };
+        StorageProviderItemProperties::SetAsync(&item, &values)?.join()?;
+        self.published.insert(path.into(), state.into());
+        notify(path, false);
+        notify(&self.root, true);
+        Ok(())
+    }
+    pub fn finish(&mut self) -> Result<()> {
+        if self.registered {
+            // Never unregister a foreign replacement if our binding changed.
+            self.verify()?;
+            StorageProviderSyncRootManager::Unregister(&self.id)?;
+            self.registered = false;
+            notify(&self.root, true);
+        }
+        Ok(())
     }
 }
-
-pub(crate) fn verify_absent(root: &Path) -> std::result::Result<(), String> {
-    let query = || -> Result<bool> {
-        let _apartment = Apartment::new()?;
-        let id = registration_id(&current_sid()?, root);
-        for existing in StorageProviderSyncRootManager::GetCurrentSyncRoots()? {
-            if existing.Id()? == id {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    };
-    match query() {
-        Ok(true) => Ok(()),
-        Ok(false) => Err("generated Shell root remains registered".into()),
-        Err(e) => Err(format!(
-            "query Shell cleanup: HRESULT 0x{:08X}",
-            e.code().0 as u32
-        )),
-    }
-}
-
-/// Read the Shell property store without requesting file content.
-pub(crate) fn placeholder_status(path: &Path) -> std::result::Result<u32, String> {
-    let query = || -> Result<u32> {
-        let _apartment = Apartment::new()?;
-        let item: windows::Win32::UI::Shell::IShellItem2 = unsafe {
-            windows::Win32::UI::Shell::SHCreateItemFromParsingName(&folder_path(path), None)?
-        };
-        unsafe {
-            item.GetUInt32(&windows::Win32::Storage::EnhancedStorage::PKEY_FilePlaceholderStatus)
-        }
-    };
-    query().map_err(|e| {
-        format!(
-            "query Shell placeholder status: HRESULT 0x{:08X}",
-            e.code().0 as u32
+fn storage_file(root: &Path, path: &Path) -> Result<StorageFile> {
+    use std::os::windows::ffi::OsStrExt;
+    let parent = path.parent().ok_or_else(|| {
+        windows::core::Error::new(
+            windows::core::HRESULT(0x80070057u32 as i32),
+            "missing generated parent",
         )
-    })
+    })?;
+    if path.strip_prefix(root).ok().is_none_or(|p| {
+        p.components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            || p.components().count() > 2
+    }) {
+        return Err(windows::core::Error::new(
+            windows::core::HRESULT(0x80070057u32 as i32),
+            "metadata item must be a bounded generated-root leaf",
+        ));
+    }
+    let name = path.file_name().ok_or_else(|| {
+        windows::core::Error::new(
+            windows::core::HRESULT(0x80070057u32 as i32),
+            "missing generated leaf",
+        )
+    })?;
+    let name = HSTRING::from_wide(&name.encode_wide().collect::<Vec<_>>());
+    storage_folder(root, parent)?.GetFileAsync(&name)?.join()
+}
+fn storage_folder(root: &Path, path: &Path) -> Result<StorageFolder> {
+    use std::os::windows::ffi::OsStrExt;
+    let relative = path.strip_prefix(root).map_err(|_| {
+        windows::core::Error::new(
+            windows::core::HRESULT(0x80070057u32 as i32),
+            "folder outside generated root",
+        )
+    })?;
+    if relative.components().count() > 1
+        || relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(windows::core::Error::new(
+            windows::core::HRESULT(0x80070057u32 as i32),
+            "unbounded generated directory",
+        ));
+    }
+    let mut folder = StorageFolder::GetFolderFromPathAsync(&storage_path(root))?.join()?;
+    for part in relative.components() {
+        folder = folder
+            .GetFolderAsync(&HSTRING::from_wide(
+                &part.as_os_str().encode_wide().collect::<Vec<_>>(),
+            ))?
+            .join()?;
+    }
+    Ok(folder)
+}
+
+impl Drop for ShellRoot {
+    fn drop(&mut self) {
+        // Session owns the retention gate. A destructor must never bypass it:
+        // Shell unregister can itself delete unhydrated placeholders.
+        if self.registered {
+            eprintln!("generated Shell registration retained; safe teardown unconfirmed");
+        }
+    }
+}
+fn storage_path(path: &Path) -> HSTRING {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    // The guarded fixture accepts local disks only. WinRT uses a regular DOS
+    // path, while native file/CFAPI calls keep the canonical extended path.
+    let start = if wide.starts_with(&[92, 92, 63, 92]) {
+        4
+    } else {
+        0
+    };
+    HSTRING::from_wide(&wide[start..])
+}
+pub fn notify(path: &Path, directory: bool) {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe {
+        SHChangeNotify(
+            if directory {
+                SHCNE_UPDATEDIR
+            } else {
+                SHCNE_UPDATEITEM
+            },
+            SHCNF_PATHW,
+            Some(wide.as_ptr().cast()),
+            None,
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn winrt_folder_path_preserves_unicode_and_removes_local_verbatim_prefix() {
-        assert_eq!(
-            folder_path(Path::new(r"\\?\C:\generated-中文")),
-            HSTRING::from(r"C:\generated-中文")
+    #[ignore = "requires an explicit new generated root; never register automatically"]
+    fn changed_context_is_not_owned_even_when_id_and_folder_match() {
+        let root = PathBuf::from(
+            std::env::var_os("TWODRIVE_APPROVED_SHELL_FIXTURE_ROOT")
+                .expect("explicit new Shell root required"),
         );
-        assert_eq!(
-            folder_path(Path::new(r"C:\generated-中文")),
-            HSTRING::from(r"C:\generated-中文")
+        assert!(root.file_name().is_some_and(|name| {
+            name.to_string_lossy()
+                .starts_with("twodrive-cfapi-fixture-")
+        }));
+        let mut session = crate::native::Session::create(&root).unwrap();
+        session.attach_shell().unwrap();
+        let folder = StorageFolder::GetFolderFromPathAsync(&storage_path(session.root()))
+            .unwrap()
+            .join()
+            .unwrap();
+        let info =
+            StorageProviderSyncRootManager::GetSyncRootInformationForFolder(&folder).unwrap();
+        let mut actual = windows::core::Array::<u8>::new();
+        CryptographicBuffer::CopyToByteArray(&info.Context().unwrap(), &mut actual).unwrap();
+        // A non-owning view queries our fresh fixture. It must never unregister
+        // it or publish metadata, including while the assertion is failing.
+        let mut view = ShellRoot {
+            id: info.Id().unwrap(),
+            root: session.root().into(),
+            context: b"different-generated-owner".to_vec(),
+            registered: false,
+            published: HashMap::new(),
+            _apartment: Apartment::new().unwrap(),
+        };
+        let mismatch_rejected = view.verify().is_err();
+        view.context = actual.to_vec();
+        let original_accepted = view.verify().is_ok();
+        drop(view);
+        drop(info);
+        drop(folder);
+        let canonical_root = session.root().to_owned();
+        session.finish().unwrap();
+        crate::native::verify_unregistered(&canonical_root).unwrap();
+        assert!(
+            original_accepted,
+            "the original generated binding must match"
         );
+        assert!(mismatch_rejected, "changed context must veto ownership");
     }
     #[test]
-    fn generated_registration_identity_is_stable_and_root_specific() {
-        let a = registration_id("S-1-5-21-1", Path::new(r"C:\generated-a"));
+    fn metadata_lookup_accepts_chinese_file_beyond_max_path() {
+        let _apartment = Apartment::new().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("generated-parent-".repeat(5));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join(format!("生成-{}.bin", "long-".repeat(35)));
+        std::fs::write(&path, b"generated ordinary data").unwrap();
+        assert!(path.as_os_str().len() > 260);
+        let file = storage_file(&root, &path).unwrap();
         assert_eq!(
-            a,
-            registration_id("S-1-5-21-1", Path::new(r"C:\generated-a"))
+            file.Name().unwrap().to_string(),
+            path.file_name().unwrap().to_str().unwrap()
         );
+        let child = root.join("generated-目录");
+        std::fs::create_dir(&child).unwrap();
+        let nested = child.join(path.file_name().unwrap());
+        std::fs::write(&nested, b"generated nested ordinary data").unwrap();
         assert_eq!(
-            a,
-            registration_id("S-1-5-21-1", Path::new(r"\\?\C:\generated-a"))
+            storage_file(&root, &nested)
+                .unwrap()
+                .Name()
+                .unwrap()
+                .to_string(),
+            nested.file_name().unwrap().to_str().unwrap()
         );
-        assert_ne!(
-            a,
-            registration_id("S-1-5-21-1", Path::new(r"C:\generated-b"))
-        );
-        assert_ne!(
-            a,
-            registration_id("S-1-5-21-2", Path::new(r"C:\generated-a"))
-        );
-        assert!(!a.to_string().contains("generated-a"));
+        assert!(storage_file(&root, &root.join("../outside.bin")).is_err());
+        assert!(storage_folder(&root, &child.join("unbounded")).is_err());
     }
 }

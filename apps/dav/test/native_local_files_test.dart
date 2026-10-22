@@ -7,6 +7,7 @@ import 'package:twodrive_dav/native_local_files.dart';
 class NativeClient extends StorageClient {
   Completer<Json>? pending;
   final calls = <String>[];
+  final arguments = <Json>[];
   Json reply = {
     'schema_version': 1,
     'scope': 'generated_fixture_only',
@@ -45,6 +46,7 @@ class NativeClient extends StorageClient {
     int? requestId,
   ]) async {
     calls.add(op);
+    arguments.add(args);
     expect(args['schema_version'], 1);
     return pending?.future ?? reply;
   }
@@ -121,6 +123,69 @@ void main() {
     c.status['local_files']['item_status']['schema_version'] = 1;
     c.status['local_files']['item_status']['scope'] = 'real_account';
     expect(c.canInspectNativeItems, isFalse);
+    c.dispose();
+  });
+  testWidgets('pin and offline actions require negotiated capabilities', (
+    tester,
+  ) async {
+    final c = NativeClient();
+    await show(tester, c);
+    await tester.tap(find.text('读取原生文件状态'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextButton>(find.widgetWithText(TextButton, '固定保留'))
+          .onPressed,
+      isNull,
+    );
+    c.status['local_files']['item_status']['pin'] = true;
+    c.status['local_files']['item_status']['offline_test'] = true;
+    await show(tester, c);
+    await tester.tap(find.widgetWithText(TextButton, '固定保留'));
+    await tester.pumpAndSettle();
+    expect(c.calls.last, 'local_pin');
+    expect(c.arguments.last['id'], 'generated-0');
+    await tester.tap(find.text('模拟生成数据源离线'));
+    await tester.pumpAndSettle();
+    expect(c.calls.last, 'local_offline');
+    expect(c.arguments.last['offline'], isTrue);
+    c.reply['items'][0]['pinned'] = true;
+    c.reply['items'][0]['residency'] = 'pin_pending';
+    c.reply['items'][0]['sync'] = 'error';
+    c.reply['items'][0]['local_intent'] = {
+      'pending': true,
+      'kind': 'pin',
+      'failure': 'offline',
+    };
+    await tester.tap(find.text('读取原生文件状态'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('固定待下载'), findsOneWidget);
+    expect(find.textContaining('待完成的本机操作'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextButton>(find.widgetWithText(TextButton, '释放原生副本（保留引擎缓存）'))
+          .onPressed,
+      isNull,
+    );
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+  test('unknown controls and unsupported pin cannot reach IPC', () async {
+    final c = NativeClient();
+    await expectLater(
+      c.nativeItems('local_pin', 'generated-0'),
+      throwsStateError,
+    );
+    await expectLater(
+      c.nativeItems('local_offline', null, true),
+      throwsStateError,
+    );
+    await expectLater(c.nativeItems('local_reconnect'), throwsStateError);
+    await expectLater(
+      c.nativeItems('local_write', 'generated-0'),
+      throwsStateError,
+    );
+    expect(c.calls, isEmpty);
     c.dispose();
   });
 }

@@ -1,7 +1,6 @@
 param(
     [Parameter(Mandatory=$true)][string]$OutputDirectory,
-    [switch]$Offline,
-    [switch]$IncludeShellIntegration
+    [switch]$Offline
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
@@ -18,8 +17,7 @@ try {
     $flags += "--remap-path-prefix=$repo=source"
     $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]31
     $env:CARGO_TARGET_DIR = Join-Path $repo 'experiments/windows-cfapi/target'
-    $feature = if ($IncludeShellIntegration) { 'shell-integration' } else { 'fixture-probe' }
-    $arguments = @('build','--manifest-path',$manifest,'--features',$feature,'--release','--locked','-j','1')
+    $arguments = @('build','--manifest-path',$manifest,'--features','fixture-probe','--release','--locked','-j','1')
     if ($Offline) { $arguments += '--offline' }
     & cargo @arguments
     if ($LASTEXITCODE) { throw 'CFAPI probe build failed' }
@@ -41,7 +39,6 @@ $capabilities = $capabilityLines[-1] | ConvertFrom-Json
 if (!$capabilities.experimental -or $capabilities.production_mount -or !$capabilities.registration_requires_explicit_opt_in) {
     throw 'Unexpected probe capabilities'
 }
-if ([bool]$capabilities.shell_registration -ne [bool]$IncludeShellIntegration) { throw 'Shell feature does not match requested package' }
 New-Item -ItemType Directory -Path $output | Out-Null
 Copy-Item -LiteralPath $binary -Destination $output
 Copy-Item -LiteralPath (Join-Path $repo 'experiments/windows-cfapi/README.md') -Destination $output
@@ -49,7 +46,6 @@ $readme = Join-Path $output 'README.md'
 $text = [IO.File]::ReadAllText($readme).Replace('../../doc/windows-cfapi-2026-10-21.md', 'windows-cfapi-2026-10-21.md')
 [IO.File]::WriteAllText($readme, $text, [Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath (Join-Path $repo 'doc/windows-cfapi-2026-10-21.md') -Destination $output
-if ($IncludeShellIntegration) { Copy-Item -LiteralPath (Join-Path $repo 'doc/windows-shell-2026-10-22.md') -Destination $output }
 Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination $output
 $capabilityLines | Set-Content -LiteralPath (Join-Path $output 'capabilities.jsonl') -Encoding utf8
 Write-Output "Built isolated probe $($capabilities.version); no registration performed."

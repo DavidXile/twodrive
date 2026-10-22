@@ -1,0 +1,168 @@
+{
+  "os": "Windows 11 build 26300",
+  "native_test_source": "0cc1d4dd45ca219420200b42bb1889092a5582dd",
+  "generated_files_per_root": 3,
+  "bytes_per_file": 65536,
+  "registrations_per_approved_root": 1,
+  "retention_root": {
+    "test": "untouched_placeholders_survive_normal_exit",
+    "result": "passed",
+    "initial_fetch_callbacks": 0,
+    "final_cfapi_hresult": "0x80070186",
+    "full_content_verified": true
+  },
+  "native_root": {
+    "test": "native_engine_end_to_end_requires_explicit_registration",
+    "result": "failed",
+    "original_validation_error": "masked by cleanup assertion; not recoverable from original log",
+    "cleanup_error": "generated placeholder is not fully retained",
+    "concurrent_generated_edit_sha256": "7bd5cfcce5e3b74a52ccbc3765db216d4113766fc2b6bb6e5070f0a43e2beea6",
+    "recovery": "complete actual bytes copied twice, modified file durably vetoed, all leaves converted to ordinary files, Shell and CFAPI unregistered",
+    "recovery_created_or_connected_registration": false,
+    "final_cfapi_hresult": "0x80070186",
+    "all_original_and_backup_bytes_equal": true,
+    "modified_file_generation": 1,
+    "modified_file_acknowledged_generation": 0,
+    "native_dirty": true,
+    "recovery_required": true
+  },
+  "all_six_files_exact_verified": true,
+  "private_cache_deleted": false,
+  "explorer_or_os_restarted": false,
+  "real_accounts_or_other_sync_roots_touched": false,
+  "visual_icons_menus_thumbnails": "unverified; native desktop control unavailable",
+  "revised_normal_teardown_native_test": "passed once on a separately approved new root at 9be73fe",
+  "recheck": {
+    "source_commit": "9be73fe060a5a8861761d0d8bdca3f6df2ab8532",
+    "harness_sha256": "ac9f137631fab6a9d7301fd207481aa2b9ac0eb7386888b335ccf7331fc65d49",
+    "registrations": 1,
+    "seconds": 3.7,
+    "all_file_leases_veto_concurrent_writer_until_conversion": true,
+    "whole_concurrent_edit_verified_after_unregister": true,
+    "final_cfapi_hresult": "0x80070186",
+    "report": {
+      "explorer_icons": "unverified",
+      "files_retained": true,
+      "real_cloud": "not_tested",
+      "result": {
+        "chinese_long_leaf": true,
+        "final_status": {
+          "fetch_callbacks": 9,
+          "fetch_failures": 5,
+          "items": [
+            {
+              "acknowledged_generation": 0,
+              "cache_resident": true,
+              "downloaded": true,
+              "generation": 1,
+              "id": "generated-object-0",
+              "local_intent": {
+                "attempts": 0,
+                "failure": null,
+                "kind": null,
+                "pending": false
+              },
+              "modified_bytes": 65536,
+              "name": "generated-涓枃.bin",
+              "native_dirty": true,
+              "os_in_sync": false,
+              "pending_operations": false,
+              "pin_state_known": true,
+              "pinned": false,
+              "readers": 0,
+              "recovery_required": true,
+              "residency": "locally_available",
+              "size": 65536,
+              "sync": "pending_sync",
+              "writers": 0
+            },
+            {
+              "acknowledged_generation": 0,
+              "cache_resident": true,
+              "downloaded": true,
+              "generation": 0,
+              "id": "generated-object-1",
+              "local_intent": {
+                "attempts": 0,
+                "failure": null,
+                "kind": null,
+                "pending": false
+              },
+              "modified_bytes": 0,
+              "name": "generated-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-.bin",
+              "native_dirty": false,
+              "os_in_sync": true,
+              "pending_operations": false,
+              "pin_state_known": true,
+              "pinned": false,
+              "readers": 0,
+              "recovery_required": false,
+              "residency": "locally_available",
+              "size": 65536,
+              "sync": "in_sync",
+              "writers": 0
+            },
+            {
+              "acknowledged_generation": 0,
+              "cache_resident": true,
+              "downloaded": true,
+              "generation": 0,
+              "id": "generated-object-2",
+              "local_intent": {
+                "attempts": 0,
+                "failure": null,
+                "kind": null,
+                "pending": false
+              },
+              "modified_bytes": 0,
+              "name": "generated-offline.bin",
+              "native_dirty": false,
+              "os_in_sync": true,
+              "pending_operations": false,
+              "pin_state_known": true,
+              "pinned": true,
+              "readers": 0,
+              "recovery_required": false,
+              "residency": "locally_available",
+              "size": 65536,
+              "sync": "in_sync",
+              "writers": 0
+            }
+          ],
+          "offline": false,
+          "schema_version": 1,
+          "scope": "generated_fixture_only",
+          "shell_registered": true,
+          "shell_state_error": false,
+          "summary": {
+            "files": 3,
+            "local_intents_pending": 0,
+            "native_resident": 3,
+            "pinned": 1,
+            "private_cache_resident": 3,
+            "sync": "pending_sync"
+          }
+        },
+        "metadata_no_hydration": true,
+        "native_copy_dehydration": true,
+        "native_dirty_durable_veto": true,
+        "normal_os_reads_through_engine": true,
+        "offline_cached_read": true,
+        "offline_missing_cache_failure_and_retry": true,
+        "open_handle_veto": true,
+        "pin_veto": true,
+        "private_cache_retained": true,
+        "whole_dirty_file_preserved": true
+      },
+      "unregistered": true
+    }
+  },
+  "all_three_roots_unregistered": true,
+  "all_nine_files_exact_verified": true,
+  "screenshots": {
+    "current_ci_gui": "captured with new empty state, no native-root argument",
+    "explorer": "captured retained ordinary files after unregister",
+    "native_glyphs_menus_thumbnails": "unverified",
+    "actual_gui_to_registered_root_interaction": "unverified"
+  }
+}

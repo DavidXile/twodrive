@@ -92,15 +92,34 @@ class StorageClient extends ChangeNotifier {
       nativeItemCapabilities['schema_version'] == 1 &&
       nativeItemCapabilities['supported'] == true &&
       nativeItemCapabilities['scope'] == 'generated_fixture_only';
-  Future<Json> nativeItems(String op, [String? id]) async {
+  Future<Json> nativeItems(String op, [String? id, bool? offline]) async {
     if (!canInspectNativeItems ||
-        !const ['local_items', 'local_read', 'local_dehydrate'].contains(op) ||
+        !const [
+          'local_items',
+          'local_read',
+          'local_dehydrate',
+          'local_pin',
+          'local_unpin',
+          'local_offline',
+          'local_reconnect',
+        ].contains(op) ||
+        (const ['local_pin', 'local_unpin'].contains(op) &&
+            nativeItemCapabilities['pin'] != true) ||
+        (op == 'local_offline' &&
+            (nativeItemCapabilities['offline_test'] != true ||
+                offline == null)) ||
+        (op == 'local_reconnect' &&
+            nativeItemCapabilities['reconnect'] != true) ||
         (op == 'local_read' && nativeItemCapabilities['read'] != true) ||
         (op == 'local_dehydrate' &&
             nativeItemCapabilities['native_copy_dehydrate'] != true)) {
       throw StateError('本机文件能力不可用');
     }
-    final result = await request(op, {'schema_version': 1, 'id': ?id});
+    final result = await request(op, {
+      'schema_version': 1,
+      'id': ?id,
+      'offline': ?offline,
+    });
     if (result['schema_version'] != 1 ||
         result['scope'] != 'generated_fixture_only' ||
         result['items'] is! List) {

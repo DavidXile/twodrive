@@ -1038,6 +1038,13 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
         ),
         if (c.canPreflightLocalFile) LocalFilePreflightCard(client: c),
         if (c.canInspectNativeItems) NativeLocalFilesCard(client: c),
+        if (c.nativeItemCapabilities['owner_unavailable'] == true)
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(20),
+              child: Text('本机文件所有者不可用。原生操作已关闭，请保留目录与恢复日志。'),
+            ),
+          ),
         if (c.canMount)
           Card(
             color: Colors.white,

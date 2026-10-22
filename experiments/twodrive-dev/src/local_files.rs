@@ -23,20 +23,35 @@ pub struct LocalFileBridge {
 }
 impl LocalFileBridge {
     #[cfg(all(windows, feature = "native-local-fixture"))]
+    #[cfg(test)]
     pub(crate) fn generated_fixture(
         db: twodrive_core::Database,
         cache: &Path,
+    ) -> anyhow::Result<Self> {
+        Self::generated_fixture_dataset(
+            db,
+            cache,
+            twodrive_local_files::fixtures::Dataset::StandardV1,
+            Arc::default(),
+        )
+    }
+    #[cfg(all(windows, feature = "native-local-fixture"))]
+    pub(crate) fn generated_fixture_dataset(
+        db: twodrive_core::Database,
+        cache: &Path,
+        dataset: twodrive_local_files::fixtures::Dataset,
+        counters: Arc<twodrive_local_files::fixtures::DownloadCounters>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             journal: CacheJournal::open(
                 db,
                 cache,
-                &format!(
-                    "{:x}",
-                    Sha256::digest(b"twodrive-owned-generated-provider-v1")
-                ),
+                &format!("{:x}", Sha256::digest(dataset.provider_binding())),
             )?,
-            backend: Backend::new(crate::native_local_fixture::GeneratedProvider),
+            backend: Backend::new(crate::native_local_fixture::GeneratedProvider {
+                dataset,
+                counters,
+            }),
         })
     }
     // Real-provider construction is not exposed until the registered adapter's

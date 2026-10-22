@@ -1,70 +1,76 @@
-# Generated Windows Shell registration
+# Windows Shell validation and registration ownership
 
-This adds an opt-in `shell-integration` feature to the existing CFAPI adapter.
-It registers only the new generated root accepted by the existing locked-parent
-guard. Ordinary desktop startup and real-provider native mounting remain disabled.
+This work began at dev `4fad4d1`. Its independent implementation and native
+evidence are retained at `00ff180`. During delivery, upstream merged PR #41 into
+dev `0fc9e12`, including a more complete generated Explorer host, retention gate,
+intent retries and custom properties. The final PR preserves that upstream
+implementation. It does not add a parallel Shell backend or new feature names.
 
-`StorageProviderSyncRootManager` registers both the platform root and its Shell
-information, replacing the bare `CfRegisterSyncRoot` path in this feature only.
-Callbacks, streaming, journal guards and file identities continue through the
-existing adapter. It does not add an overlay DLL or guess synchronization from
-downloaded bytes.
+The remaining source change stores the expected generated context and checks it
+for both the ID and folder lookups in `ShellRoot::verify`, which gates teardown.
+Matching an ID and path alone no longer establishes ownership of a registration
+with a different context. The WinRT apartment owner is also non-Send/non-Sync so
+its destructor cannot uninitialize a different thread's apartment.
 
-The Shell ID follows `provider!SID!generated-root-digest`. Win32 verbatim and DOS
-path spellings produce the same ID. Conversion to WinRT folder/Shell APIs keeps
-UTF-16 intact and removes the local verbatim prefix. Cleanup checks ID, exact
-folder and context marker before unregistering. Failed registrations attempt
-rollback only when all three ownership checks match. Generated data is retained;
-unhydrated placeholders are hydrated in the acceptance fixture before unregister.
+## Integrated validation
 
-## Build and opt-in checks
+The ignored `changed_context_is_not_owned_even_when_id_and_folder_match` regression
+creates a new guarded generated root and a non-owning view with the same ID and
+folder but a different expected context. On the old verification logic, it failed
+with `changed context must veto ownership` (exit 101). After the fix it passed on
+a different new root. The original context still verifies. Both runs cleaned the
+empty generated root before asserting the result; the test does not modify an
+existing OS context or enumerate other registrations.
 
 ```powershell
-cargo test --manifest-path experiments/windows-cfapi/Cargo.toml --features shell-integration --locked
-cargo clippy --manifest-path experiments/windows-cfapi/Cargo.toml --features shell-integration --all-targets --locked -- -D warnings
-./scripts/build-cfapi-probe.ps1 -IncludeShellIntegration -OutputDirectory NEW_PACKAGE_DIRECTORY
+cargo fmt --manifest-path experiments/windows-cfapi/Cargo.toml -- --check
+cargo clippy --manifest-path experiments/windows-cfapi/Cargo.toml --all-features --all-targets --locked -- -D warnings
+cargo test --manifest-path experiments/windows-cfapi/Cargo.toml --all-features --locked
+# Explicit new local generated leaf, with an existing unmanaged parent:
+$env:TWODRIVE_APPROVED_SHELL_FIXTURE_ROOT = 'C:\YOUR_TEST_PARENT\twodrive-cfapi-fixture-NEW'
+cargo test --manifest-path experiments/windows-cfapi/Cargo.toml --features native-local-fixture --locked changed_context_is_not_owned_even_when_id_and_folder_match -- --ignored --nocapture
 ```
 
-The no-argument executable only queries capabilities. Registering a generated root
-still requires `--allow-isolated-registration NEW_ABSOLUTE_FIXTURE_ROOT`; do not use
-an existing directory. The separate ignored `shell_registration_and_metadata_states`
-test requires `TWODRIVE_APPROVED_SHELL_FIXTURE_ROOT` naming a new leaf that begins
-`twodrive-cfapi-fixture-`. It creates a second new `-bare` sibling as a control.
-It checks Shell queries, metadata without hydration, online/local/pin distinctions,
-pin release rejection, clean dehydration and both Shell/CFAPI cleanup.
+On Windows 11 10.0.26340.9750 x64 / Rust 1.99.1, strict Clippy and 76 nonignored
+Rust test executions passed; five ignored executions were not counted as passes.
+Flutter 3.41.8 / Dart 3.11.5 analyzer and all 43 current widget/model tests passed.
+The explicit context regression passed separately. See the
+[sanitized validation record](windows-shell-validation-2026-10-22.json) for the
+recompiled actual-engine checks and read-only Explorer observations.
 
-For the existing generated desktop host, compile the engine with
-`native-shell-fixture`; the existing explicit new native fixture root/state flags
-remain required. Normal cloud account behavior is unchanged.
+The integrated engine passed real OS reads of all three generated files,
+including independent PNG CRC/zlib/pixel checks, dehydration/cache preservation,
+reread, dirty-file veto/byte retention, and clean unregister retaining the files
+and directory. Explorer browsing left FETCH_DATA at 3. Its new-window capture
+did not expose usable status glyphs or accessibility text, so integrated visual
+acceptance remains **unverified**, despite the earlier independent visual pass.
+The cause of this capture result is not established. An initial harness attempt
+used the old flat names/IDs against the new nested visual_v1 dataset and failed;
+its cleanup succeeded, and the corrected run used another fresh generated root.
 
-## Current evidence and limits
+## Initial independent evidence and limits
 
-Windows 11 build 26340: the bare CFAPI control had no Shell registration. The
-Shell-enabled generated root was queryable by ID and folder. Shell placeholder
-status was 8 (cloud placeholder), 14 (full stream/accessibility), and 15 (also
-marked for offline availability). Shell metadata did not call FETCH_DATA. Pinned
-release was refused, clean release restored the online value, and both registered
-layers were absent after cleanup.
+Before integrating PR #41, the independent implementation at `00ff180` was
+tested against a bare CFAPI control. Shell status values were 8 (online), 14
+(resident) and 15 (pin intent); metadata caused no FETCH_DATA, pinned release was
+refused, clean release restored online status, and cleanup retained complete
+generated files. Actual Explorer displayed a blue cloud ("联机时可用") and two
+outlined green checks ("在此设备上可用"). Browsing left FETCH_DATA at 3. These
+results belong to that exact initial implementation, not automatically to a
+later source revision. The initial probe package is likewise frozen at that
+implementation and is not the final integrated build.
 
-The actual generated desktop engine was then opened in Windows Explorer. Its
-Details view displayed a blue cloud for the released Chinese-named file
-("联机时可用") and outlined green checks for two resident files ("在此设备上可用").
-The screenshot and accessibility text were captured read-only; no mouse or
-keyboard input was sent. FETCH_DATA remained at 3 before and after browsing.
-The full screenshot is retained locally rather than committed because Explorer's
-sidebar contains personal shortcuts. The sanitized record is
-[windows-shell-validation-2026-10-22.json](windows-shell-validation-2026-10-22.json).
-Pinned intent was checked through the OS property, not a visual pinned-icon check.
+Failed initial attempts are retained: WinRT rejected verbatim paths with
+0x800700A1 and Shell parsing with 0x80070057; equivalent DOS paths preserved UTF-16.
+An intermediate test incorrectly expected unhydrated placeholders to survive
+unregister. The final integrated code uses upstream's stronger retention and
+ordinary-file conversion gates rather than that initial fixture-only workaround.
 
-First attempts exposed WinRT rejection of verbatim paths (0x800700A1), then Shell
-parsing rejection (0x80070057); both conversions were corrected. An intermediate
-fixture expected unhydrated placeholders to survive unregister; the final fixture
-reads back generated bytes before cleanup. Failed runs are not counted as passes.
-
-Syncing/error/conflict and pinned icon appearance, thumbnail/indexer behavior,
-native root restart, production writable synchronization and live-provider native
-binding remain unverified or disabled. No real cloud changes were used.
-Flutter analyzer and all 41 existing widget/model tests passed with Flutter 3.41.8.
+Pinned icon appearance, syncing/error/conflict icons, full manual GUI acceptance,
+thumbnails/indexer, native root restart, Linux GUI and live-provider native
+synchronization remain unverified or disabled. No mouse or keyboard input was
+sent, and no live cloud data was changed. Full screenshots remain local because
+Explorer's sidebar contains personal shortcuts.
 
 References: [CloudMirror](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/CloudMirror/CloudMirror/CloudProviderRegistrar.cpp),
 [Shell placeholder flags](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/ne-shobjidl_core-placeholder_states),

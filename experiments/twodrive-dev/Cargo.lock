@@ -3771,9 +3771,9 @@ version = "0.1.7-alpha.2"
 dependencies = [
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "twodrive-core",
  "windows",
+ "windows-collections",
  "windows-sys 0.61.2",
 ]
 

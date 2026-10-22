@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'client.dart';
+import 'file_manager.dart';
 
 /// Engine/OS evidence only. Flutter never opens the files or infers completion
 /// from an app icon. This panel exists only for the opt-in generated fixture.
@@ -26,7 +27,7 @@ class _NativeLocalFilesCardState extends State<NativeLocalFilesCard> {
     }
   }
 
-  Future<void> run(String op, [String? id]) async {
+  Future<void> run(String op, [String? id, bool? offline]) async {
     final requestGeneration = ++generation;
     final client = widget.client;
     bool current() =>
@@ -38,7 +39,7 @@ class _NativeLocalFilesCardState extends State<NativeLocalFilesCard> {
       error = null;
     });
     try {
-      final next = await client.nativeItems(op, id);
+      final next = await client.nativeItems(op, id, offline);
       if (current()) setState(() => report = next);
     } catch (_) {
       if (current()) {
@@ -68,10 +69,54 @@ class _NativeLocalFilesCardState extends State<NativeLocalFilesCard> {
             onPressed: busy ? null : () => run('local_items'),
             child: const Text('读取原生文件状态'),
           ),
+          Wrap(
+            spacing: 12,
+            children: [
+              TextButton(
+                onPressed: busy || report?['root_path'] is! String
+                    ? null
+                    : () => openLocalDirectory(report!['root_path'] as String),
+                child: const Text('在 Explorer 中打开生成目录'),
+              ),
+              TextButton(
+                onPressed:
+                    busy ||
+                        widget.client.nativeItemCapabilities['offline_test'] !=
+                            true
+                    ? null
+                    : () => run(
+                        'local_offline',
+                        null,
+                        report?['offline'] != true,
+                      ),
+                child: Text(
+                  report?['offline'] == true ? '恢复生成数据源并允许重试' : '模拟生成数据源离线',
+                ),
+              ),
+              TextButton(
+                onPressed:
+                    busy ||
+                        widget.client.nativeItemCapabilities['reconnect'] !=
+                            true
+                    ? null
+                    : () => run('local_reconnect'),
+                child: const Text('重连原生回调'),
+              ),
+            ],
+          ),
           if (busy) const LinearProgressIndicator(),
           if (error != null)
             Text(error!, style: const TextStyle(color: Colors.red)),
           if (report != null) ...[
+            if (report!['shell_state_error'] == true)
+              const Text(
+                'Explorer 状态发布失败；可见图标需重新验收。',
+                style: TextStyle(color: Colors.red),
+              ),
+            if (report!['summary'] is Map)
+              Text(
+                '目录：原生副本 ${report!['summary']['native_resident']} / 引擎缓存 ${report!['summary']['private_cache_resident']} / 共 ${report!['summary']['files']} 个文件',
+              ),
             Text(
               'OS 读取回调：${report!['fetch_callbacks']}；失败：${report!['fetch_failures']}',
             ),
@@ -88,6 +133,7 @@ class _NativeLocalFilesCardState extends State<NativeLocalFilesCard> {
       'online_only': '仅联机',
       'locally_available': '本地可用',
       'partially_available': '部分已下载',
+      'pin_pending': '固定待下载',
     };
     const sync = {
       'in_sync': '当前世代已同步',
@@ -95,8 +141,10 @@ class _NativeLocalFilesCardState extends State<NativeLocalFilesCard> {
       'remote_version_known': '已知远端版本，尚无本地确认',
       'conflict': '冲突',
       'error': '错误',
+      'hydrating': '正在读取数据源',
     };
     final caps = widget.client.nativeItemCapabilities;
+    final localIntent = value['local_intent'];
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Column(
@@ -104,14 +152,31 @@ class _NativeLocalFilesCardState extends State<NativeLocalFilesCard> {
         children: [
           Text(value['name'] as String),
           Text(
-            '${residence[value['residency']] ?? '未知驻留状态'} · ${value['pinned'] == true ? '固定保留' : '未固定'} · ${sync[value['sync']] ?? '未知同步状态'}',
+            '${residence[value['residency']] ?? '未知驻留状态'} · ${value['pin_state_known'] == false
+                ? '固定状态未知'
+                : value['pinned'] == true
+                ? '固定保留'
+                : '未固定'} · ${sync[value['sync']] ?? '未知同步状态'}',
           ),
           Text(
             '已下载：${value['downloaded'] == true ? '是' : '否'}；引擎缓存：${value['cache_resident'] == true ? '保留' : '无'}；世代 ${value['generation'] ?? '—'} / 已确认 ${value['acknowledged_generation'] ?? '—'}',
           ),
+          if (localIntent is Map && localIntent['pending'] == true)
+            Text(
+              '待完成的本机操作：${localIntent['kind']}；${localIntent['failure'] ?? '等待执行'}',
+            ),
           Wrap(
             spacing: 12,
             children: [
+              TextButton(
+                onPressed: busy || caps['pin'] != true
+                    ? null
+                    : () => run(
+                        value['pinned'] == true ? 'local_unpin' : 'local_pin',
+                        value['id'] as String,
+                      ),
+                child: Text(value['pinned'] == true ? '取消固定（保留副本）' : '固定保留'),
+              ),
               TextButton(
                 onPressed: busy || caps['read'] != true
                     ? null
@@ -124,6 +189,7 @@ class _NativeLocalFilesCardState extends State<NativeLocalFilesCard> {
                         caps['native_copy_dehydrate'] != true ||
                         value['downloaded'] != true ||
                         value['pinned'] == true ||
+                        value['pin_state_known'] == false ||
                         value['sync'] != 'in_sync'
                     ? null
                     : () => run('local_dehydrate', value['id'] as String),

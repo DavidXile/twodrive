@@ -455,6 +455,7 @@ dependencies = [
  "tempfile",
  "twodrive-core",
  "windows",
+ "windows-collections",
  "windows-sys",
 ]
 

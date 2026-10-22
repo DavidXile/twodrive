@@ -46,48 +46,412 @@
 
 
 
-## TD-20261022-03：CFAPI 原型未接入 Explorer Shell 同步根注册
+## TD-20261022-04：Shell 注册归属未持续核对上下文标记
 
 - 日期：2026-10-22（Asia/Shanghai）。
-- 状态：已验证（显式生成数据的 Shell 注册、云朵/本地勾选及属性测试范围）。
-- 影响版本与环境：dev 4fad4d1c8b4faaf43075cf75f5c152e399a036f9；Windows 11 10.0.26340.9750 x64；显式生成数据实验。
-- 关联历史故障：2026-10-21 CFAPI/journal 原型；本轮继续其隔离边界，不涉及真实 OneDrive 原生挂载。
+- 状态：已验证（生成根的归属检查范围）。
+- 影响版本与环境：dev 0fc9e12 / PR #41；Windows 11 10.0.26340.9750 x64。
+- 关联历史故障：TD-20261021-08 至 11 的保留/注销机制；本轮不替换这些保护。
 
 ### 症状与影响
 
-此前本机 CFAPI 生成文件可读取、释放和保护脏数据，但 Explorer 当前视图没有显示目标云朵/对勾；不将低层成功计为完整图标验收。
+ShellRoot::verify 只持续核对目录和 ID，未保存并再次核对注册时的上下文。不同上下文的视图仍可被认作相同归属；未观察到真实用户注册遭误删。
 
 ### 触发条件与复现
 
-使用显式新建的实验根。当前 Session 只调用 CfRegisterSyncRoot，没有通过 StorageProviderSyncRootManager 注册 Shell 信息。
-微软 CloudMirror 分别演示 Shell 注册、CFAPI 回调与占位文件；本轮以裸 CFAPI 同级新根作对照，补充注册后再分别检查 OS 属性和真实 Explorer 视图。
+显式新建空生成根并附加 Shell。构造不执行注销的查询视图，保留同一 ID/目录但使用不同的期望上下文。旧验证逻辑错误通过，回归断言失败（exit 101）。测试未篡改 OS 注册；断言前已经清理自己的空根。
 
 ### 根因与证据
 
-旧路径缺少 Shell 注册。原生对照根在 CFAPI 注册后仍无 Shell 记录，新路径可以按 ID 和文件夹查询，实际 Explorer 随后显示状态列与云朵/本地勾选。此证据确认本轮缺失的注册机制，不推断所有 Explorer 图标问题同源。
-初次 WinRT 注册收到 0x800700A1、Shell 查询收到 0x80070057，原因均为将 RootGuard 的 Win32 verbatim 路径直接传入不接受该格式的 API；已按 UTF-16 保留路径并转换等价 DOS 形式。
+初次保留根恢复会检查 context，但 ShellRoot 没有保存期望值，后续 verify/finish 仅检查 ID 和目录。本轮原生回归隔离该遗漏，不能推断所有注销问题同源。
 
 ### 解决办法与恢复操作
 
-增加显式 shell-integration 和 native-shell-fixture 特性，复用 Windows StorageProvider 注册，使用每用户/每生成根独立身份，并在隔离场景结束时注销自己的注册。注销及失败回滚均核对 ID、确切目录和上下文标记；不覆盖同名既有注册。默认构建保持原有路径。
-不修改真实账号、不接管现有 OneDrive 根、不操作鼠标。
-测试清理曾错误期待未水合占位文件在注销后仍保留；调整生成数据测试为清理前读回完整内容，未进行真实数据恢复操作。
+注册和恢复构造均保留期望 context，verify 同时检查按 ID、按目录取得的 context。保留上游全部文件保留/转换/重试逻辑。Apartment 添加非 Send/Sync 标记，限制初始化与析构在同一线程。未恢复或修改真实数据。
 
 ### 验证结果与边界
 
-Shell 特性严格 Clippy、41 项非忽略 Rust 测试通过；显式运行忽略的原生测试通过，在线/本地/固定状态分别为 8/14/15，元数据查询不水合，固定文件禁止释放，干净文件释放后回到在线状态，两层注销均确认。保留的失败试跑不计入通过结果。
-实际重编译的桌面 engine 通过中文/长文件名读取、缓存保留、再次读取、脏文件拒绝释放及字节保留、独立注销查询；退出后保留 3 个完整生成文件。Explorer 只读截图与无障碍文本显示一项“联机时可用”蓝云、两项“在此设备上可用”绿色勾选；浏览前后 FETCH_DATA 均为 3。
-Flutter 3.41.8 / Dart 3.11.5 静态检查和全部 41 项既有 widget/model 测试通过。独立 Shell probe 发布构建及打包隐私检查通过；运行无参数能力查询不进行注册。
-未验证固定图标视觉效果、同步中/错误/冲突图标、缩略图/索引器、完整人工 GUI 矩阵、真实云原生同步、系统重启或 Linux GUI。真实 OneDrive 读取属于前一轮独立证据，不计作此生成根测试。
+旧逻辑原生测试失败、修复后在另一新根通过；正确原始 context 仍验证通过，两个空根都已正常注销。严格全特性 Clippy、76 次非忽略 Rust 测试执行通过；5 次忽略执行未计入。Flutter analyzer 与全部 43 项当前测试通过。
+重编译 engine 和 Explorer 证据见脱敏记录；截图仅本地保存。未验证完整图标/GUI 矩阵、系统重启、Linux GUI 或真实云原生同步。
 
 ### 防复发措施与后续
 
-加入路径规范化/身份稳定测试和需显式新目录才能运行的 shell_registration_and_metadata_states 原生测试；CI 编译/检查新特性但不自动注册主机目录。默认构建不得自动注册任何根。
+保留需显式新目录的 changed_context_is_not_owned_even_when_id_and_folder_match 回归。CI 默认不运行注册场景。后续继续 GUI 与图标矩阵，不能以属性查询代替视觉验收。
 
 ### 交付记录
 
-独立分支 codex/windows-explorer-status-20261022，基于最新 dev。尚未提交或创建 PR。
-详细机制与验证见 [Shell 记录](windows-shell-2026-10-22.md) 和 [脱敏验证数据](windows-shell-validation-2026-10-22.json)。完整 Explorer 截图仅保留本地，未发布私人侧栏内容。
+[PR #45](https://github.com/LumiaBlack51/twodrive/pull/45) 向 dev 提交；整合基线 0fc9e1203433144fcd8a69ce0580123880b50d1d。详细记录：[Shell 验证](windows-shell-2026-10-22.md)、[脱敏数据](windows-shell-validation-2026-10-22.json)。
+
+## TD-20261022-03：独立 CFAPI Shell 注册调查与上游整合
+
+本轮自 dev 4fad4d1 开始调查裸 CFAPI 缺少 Shell 注册的问题，独立实现与本机证据保留在 00ff1807b21c4c547b7f153d2399da72f14d2ab0。生成根对照验证了属性 8/14/15、元数据不水合、固定/脏文件拒绝释放、完整文件保留及 Explorer 蓝云/本地勾选。初次 verbatim 路径与注销保留预期失败已在详细记录中保留。
+交付期间上游 PR #41 已合入，最终主动采用其更完整实现，初始代码不作为另一条并行生产路径。此历史证据不自动证明整合后相同场景通过；后续实际运行单独记入验证数据。真实云、完整 GUI、固定/同步/错误/冲突视觉结果仍不在该历史证据范围。
+
+## TD-20261021-16: hosted tray fixture failed one foreground transfer
+
+- Date: 2026-10-21; status: original failure retained; one unchanged-source failed-job rerun passed. Exact cause remains unconfirmed.
+- Scope: source 0c746cc, hosted Windows desktop job. Related: TD-20261015-05 failed the earlier source-foreground precondition; the present failure occurred after that precondition passed, so the mechanisms are not assumed identical.
+
+The [first Windows job](https://github.com/LumiaBlack51/twodrive/actions/runs/39626444352/job/119312819727)
+passed compilation, IPC and Flutter checks, then test-desktop-windows-ui.py failed
+at SetForegroundWindow(helper). The native trace showed the test panel visible
+and focused; the helper transfer returned false. The log does not contain the
+post-call foreground owner, so it cannot establish whether timing, session policy
+or a fixture/product interaction caused the refusal. Unsigned MSIX checks were
+skipped in this first attempt. No product UI code or this test changed since the
+earlier 9be73fe baseline, and no local foreground reproduction was attempted.
+
+Only the failed hosted job was rerun once on the **same source**, without relaxing
+or skipping any focus assertion. The [retry](https://github.com/LumiaBlack51/twodrive/actions/runs/39626444352/job/119320446479)
+passed background-hidden startup, repeated tray toggles/stable position, external
+focus dismissal, Escape dismissal and unsigned MSIX validation. All seven
+workflows at 0c746cc then succeeded. This bounds the event as non-deterministic in
+these two attempts; it is not a proved product fix or evidence of local Explorer
+interaction. A recurrence needs actual foreground/owner/session diagnostics,
+not suppression of the failure. No system focus policy, application code,
+user process, real account, root registration, Release or merge was changed.
+
+## TD-20261021-15: PNG validator omitted its rejected CFAPI result
+
+- Date: 2026-10-21; status: safe validation split verified at 0c746cc on both CI platforms. The Server's native outside-root evidence remains unavailable/skipped; no generic failure is accepted as an unmanaged root.
+- Scope: ca81956 Windows Server 26100 adapter. Related: TD-20261021-14's Rust recovery regression now passes; this failure is in the separate Python ordinary-data preflight, before PNG decoding.
+
+The [Windows job](https://github.com/LumiaBlack51/twodrive/actions/runs/39618567696/job/119285630646)
+passed strict Clippy and all 76 Rust test executions, including the corrected
+ordinary-node regression. The exporter completed, then the Python validator
+rejected CfGetSyncRootInfoByPath/BASIC because it did not return 0x80070186. The
+assertion omitted the actual HRESULT; decoding and release packaging did not run.
+The exact value and root cause are therefore unknown from the original log.
+
+The first diagnostic correction prints the actual HRESULT, filesystem type,
+root-exists and root-reparse booleans before refusal; it retains the same gate.
+The [diagnostic Server job](https://github.com/LumiaBlack51/twodrive/actions/runs/39620680094/job/119292956248)
+recorded `0x80070001`, `NTFS`, `root_exists=true`, `root_reparse=false`.
+[Microsoft's API contract](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfgetsyncrootinfobypath)
+states that an outside-root query fails, but does not promise one error for all
+environments. Failure alone is not proof of an ordinary, unregistered location.
+
+The validator still requires the specific NOT_UNDER_SYNC_ROOT result and now
+independently refuses non-directory, symlink/reparse or unreadable ancestry before
+any fixture content. Six regressions cover signed HRESULT normalization, success,
+generic/permission/NOT_A_CLOUD_FILE failures, ordinary ancestry, reparse/symlink,
+missing/file paths and permission denial. Unknown errors include their exact
+HRESULT and stop decoding; an ordinary-file error cannot prove absence of a root.
+Local regressions and full PNG decode pass.
+
+The [44f4577 Server job](https://github.com/LumiaBlack51/twodrive/actions/runs/39622625423/job/119299776936)
+disproved the stopped-driver explanation: CldFlt was already Running/Auto before
+setup, so no driver-start call executed. A fresh ordinary directory on the system
+volume still returned 0x80070001 on NTFS. The six Python checks, strict Clippy and
+all Rust tests passed; content decoding remained blocked. The unused startup
+branch has been removed. CldFlt implements the
+[CFAPI minifilter](https://learn.microsoft.com/en-us/windows/win32/cfapi/build-a-cloud-file-sync-engine#cloud-files-api-architecture);
+driver state alone does not establish an attached volume instance or root absence.
+
+The next read-only diagnostic records Basic/Standard queries by path and an
+attributes-only/no-recall/no-reparse-traversal directory handle, plus filter
+instances on the disposable hosted runner. A seventh Windows test performs only
+this ordinary-directory metadata preflight before the expensive build. Local
+queries all return 0x80070186 and all seven checks pass. The Server result is
+confirmed in [990a4ae's job](https://github.com/LumiaBlack51/twodrive/actions/runs/39624152224/job/119305046234):
+all five query variants returned 0x80070001, and `fltmc instances -f CldFlt`
+succeeded with **No instances for this filter**. The seventh check correctly
+refused before any PNG/content read. Running driver state alone was insufficient.
+
+A proposed hosted-only filter attachment was rejected by automatic approval
+review before its commit/push command executed: a driver-level operation was not
+explicitly authorized, including on a hosted runner. It was not retried or routed
+through another tool. The proposal remains private review evidence and is absent
+from the executable workflow. No attachment, root registration or driver/service
+configuration occurred.
+
+The safe correction keeps filesystem validation strict: a generic failure still
+throws before any fixture content. Only the real Windows metadata *test* may be
+marked skipped when both a successful read-only filter enumeration explicitly
+reports no instances and the probe returns INVALID_FUNCTION. Other unexpected
+results still fail. Skipped means outside-root evidence is unavailable; it never
+means the directory is unregistered. The normal directory validator has no
+fallback/skip flag and still requires 0x80070186 plus ordinary ancestry.
+
+PNG format validation now independently consumes the owned deterministic Rust
+generator's stdout. This mode creates/reads no filesystem fixture and never asks
+CFAPI to interpret an unknown root. Windows CI can verify exact size, CRCs, zlib,
+all pixels and digest while preserving the native-runtime limitation. Linux also
+retains the complete ordinary-directory/layout validation; supported local
+Windows directory validation and decoding already passed. The corrected
+[adapter workflow](https://github.com/LumiaBlack51/twodrive/actions/runs/39626444403)
+passed on Windows and Ubuntu at 0c746cc. Server Python reported six passes and
+one explicit native-evidence skip; all 76 Rust executions, strict Clippy, generated
+PNG decoding (SHA-256 de207d01b8cf2091ca00e4093aee8f4de45bd05e9974829593d41aba6385e7a6),
+release build and probe packaging passed. This is not registered-root/visual
+acceptance. No foreground action, data restoration, Release or merge occurs.
+
+## TD-20261021-14: ordinary retained-node CFAPI errors vary by Windows build
+
+- Date: 2026-10-21; status: old code failed at 0cd9dd9; corrected ordinary-node regression passed in Server 26100 CI at ca81956. Local Windows 26300 also passed.
+- Related: TD-20261021-12 concerned WinRT long-path lookup; that nested-path regression passed in this failed job. TD-20261021-13 added the ordinary-node recovery guard and exposed this separate compatibility issue.
+
+### Symptom, reproduction and cause
+
+The [Windows adapter job](https://github.com/LumiaBlack51/twodrive/actions/runs/39616576509/job/119279156349)
+passed strict Clippy and 13 library tests, but
+`ordinary_converted_directory_and_files_require_manifest_ids_and_retain_bytes`
+failed with `inspect placeholder: HRESULT 0x80070001`. Linux adapter checks
+passed. The recovery guard expected ordinary CfGetPlaceholderInfo failure to be
+0x80070178, as observed locally. The Server runner instead returned
+INVALID_FUNCTION for the same ordinary fixture. No registration or data recovery
+was performed by this test, and the existing native roots were not touched.
+
+### Correction and verification boundary
+
+An arbitrary CFAPI error no longer proves conversion. Under the existing
+share-none lease, the code first checks the original persisted volume/file ID
+and kind, then requires FileAttributeTagInfo to report no reparse tag, no
+reparse/offline/recall attributes, and exactly CF_PLACEHOLDER_STATE_NO_STATES.
+The [documented state](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfgetplaceholderstatefromattributetag)
+identifies an ordinary node independently of the failing placeholder-info API.
+Missing manifests, foreign IDs, Cloud/unknown state and incomplete content still
+refuse recovery. The actual ordinary-file/directory regression is retained and
+now also checks that the same ordinary nodes are refused without a manifest.
+No allowlist of generic failure HRESULTs is introduced.
+
+The failing CI evidence is retained. The corrected source passes all 76 local
+test executions and strict all-feature/all-target Clippy. The same Server
+regression passed at ca81956; its later Python preflight failure is tracked
+separately as TD-20261021-15. New registered directory
+teardown and all visual behavior remain unverified. There is no local data
+restoration, permission/policy change, new Release or merge for this CI fix.
+
+## TD-20261021-13: visual acceptance fixture lacked directory/image coverage
+
+- Date: 2026-10-21; status: preparation implemented and ordinary-data regressions passed; registered directory, active-root observer and all native visuals remain unverified.
+- Scope: PR #41 through c26b508 used three root-level binary files and a short native test lifetime. Related: TD-20261021-11/12; their successful API recheck does not prove image handlers, folder summaries or physical Shell refresh.
+
+### Symptom, reproduction and evidence
+
+The 9be73fe registered-root test ended in 3.70 seconds. It did not provide an
+interactive visual interval or a valid image/nested directory. Native API success
+therefore could not complete the requested Explorer acceptance. A first prepared
+long-path PNG passed independent CRC/zlib/pixel checks and Windows stream decode,
+but Windows GDI+ FromFile failed. Target capture without DPI awareness clipped a
+150%-scaled window; a target Explorer observer also rejected a process main
+window outside the expected fixture. Those captures are not accepted as glyph
+evidence. No original account data or cache was affected.
+
+### Cause and correction
+
+The dataset and automatic test lifetime were insufficient for visual coverage.
+Use the existing persistent GUI/FixtureService path with a separate VisualV1
+dataset: three exact 64 KiB files, one directory, a valid short-path PNG and a
+separate long binary. Retain old StandardV1 identities. Root-relative nested
+WinRT lookup, filesystem-ID-bound retention/recovery and all-node leases cover
+the new shape. A bounded phase log separates Provider download bytes, served
+cache ranges and native requests/transfers. Capture uses target DPI awareness,
+process/package/root binding and an optional exact Explorer window handle.
+It never restores/focuses a window or sends input.
+
+### Verification, recovery and remaining limits
+
+76 local test executions passed, with registration cases ignored. Strict Clippy,
+GUI-feature compilation, independent full PNG decode and Windows FromFile decode
+passed. Ordinary-file tests cover nested long lookup, manifest replacement/extra
+entry refusal, directory/file leases, phase budgets, timer completion and range
+counter/offline semantics. No claim is made that an old native visual test was
+reproduced or that the new directory CFAPI chain passed. Existing roots, journals,
+files and backups remain unchanged; no native recovery was required in this
+preparation phase.
+
+The user now requires an isolated virtual screen while coding. No supported
+independent native screen/input session is exposed by current tools. Foreground
+interaction has stopped; permission for another root alone cannot resolve this
+display limitation. No new registration was attempted. The
+[bounded one-session plan and remaining matrix](windows-explorer-visual-acceptance-2026-10-21.md)
+separate the future native/visual work from completed preparation. No release or
+merge accompanies this change.
+
+## TD-20261021-12: WinRT full-path metadata lookup differs across Windows builds
+
+- Date: 2026-10-21; status: old code fails in Windows adapter CI; 9be73fe passes the same Windows 26100 regression and local Windows 26300 checks.
+- Scope: PR #41 7072ba7, Windows Server 2025 build 26100 runner; local Windows 11 build 26300 passed the same ordinary-file test.
+- Related: TD-20261021-11 includes a suspected long-path property failure but its original error was masked; these mechanisms are not assumed identical.
+
+`metadata_lookup_accepts_chinese_file_beyond_max_path` passed locally and failed
+the Windows adapter job with HRESULT 0x800700CE from
+StorageFile.GetFileFromPathAsync. The generated ordinary file existed, and the
+same CI job passed the truncation-lease test and strict Clippy. Failure evidence:
+[Windows job](https://github.com/LumiaBlack51/twodrive/actions/runs/39596970297/job/119211569794).
+No registry or long-path policy was changed to make the test pass.
+
+Shell metadata now obtains the known root StorageFolder, verifies that the target
+is an immediate generated leaf and calls GetFileAsync with its UTF-16 file name.
+It does not fall back to enumerating unrelated folders, opening file contents or
+claiming successful publication after error. The same >260-character Chinese
+ordinary-file regression is retained. CI on build 26100 confirmed the fix;
+the separately approved 9be73fe native recheck also passed property publication
+with zero initial hydration callbacks. Glyph/menu/thumbnail visuals remain
+unverified. There was no account/root/data recovery for this CI failure.
+
+## TD-20261021-11: native acceptance failure retains a generated root
+
+- Date: 2026-10-21; status: real failure and safe local recovery verified; original validation cause unresolved; revised generated-root operation/concurrency recheck passed at 9be73fe.
+- Scope: unmerged PR #41 source 0cc1d4d, Windows 11 build 26300. Related: TD-20261021-07 and 10; neither synthetic owner tests nor untouched-file exit established full native acceptance.
+
+The two specifically approved generated roots were each registered once. The
+untouched-file test passed. The full native test failed; its final assertion
+reported that the root remained registered after the retention gate refused
+cleanup. The test asserted cleanup before reporting its original validation
+error, so the original error is unavailable. No claim is made that pin, offline,
+reconnect or all-file teardown passed. Long-path property publication is a
+suspect only: ordinary-file WinRT lookup beyond 260 characters passes locally.
+
+The failed root remained registered and its process had exited. Read-only CFAPI
+inspection found three complete 64 KiB files; one had a full generated concurrent
+teardown edit, while the private journal still described its previous generation.
+An independent share-none read copied every actual byte with NO_RECALL, checked
+all three identities and compared complete content. No old cache was substituted.
+
+A test-feature-only recovery command verifies the unmanaged parent, original
+ancestor locks, generated CFAPI context, current user's exact Shell folder binding
+and three known leaf identities. It never registers or connects a root. Ordinary
+share-none read/WRITE_DAC leases hold all complete files through another fsynced
+backup, durable native-dirty recording and CfRevertPlaceholder. WRITE_DAC is a
+documented authorization for conversion without data-write access. The exact
+existing Shell registration was then removed; CFAPI independently returned
+0x80070186 for both roots. All six original files and both modified-file backups
+were byte-for-byte verified. The modified item is generation 1, acknowledged 0,
+with native_dirty and recovery_required set. Files, private cache and journal
+remain. No Explorer restart, real account access or other-root operation occurred.
+
+The normal teardown now uses the same ordinary leases and documented Win32
+handle conversion. A real ordinary-file regression verifies that truncation is
+refused until lease release. The ignored native test now logs original and
+cleanup errors before assertions and enables its concurrent writer only after
+the main validation succeeds. Per-item Shell publication failures are logged.
+The source and full local regressions compile; this does not establish that the
+revised normal exit or full operation chain passed native acceptance at that point.
+After explicit approval of one additional finite root scope, the 9be73fe exact
+harness passed the full generated-provider operation and concurrency test in
+3.70 seconds. All-file leases refused the writer until conversion; complete
+concurrent bytes survived unregister. Pin, handle-close retry, offline pin
+recovery, callback reconnect and durable dirty veto passed. An independent query
+confirmed all three roots unregistered (0x80070186), and all nine 64 KiB files
+were exact verified. Each root was registered once. This does not resolve the
+masked original error or establish native glyph/menu/thumbnail visuals or GUI
+interaction with a registered root. Existing roots will not be registered again.
+
+Sanitized evidence: [native result record](windows-explorer-native-results-2026-10-21.json).
+Raw local logs, hashes, journals and generated data are retained outside Git.
+Recovery is limited to generated fixture identities; persistent production-root
+restart and real cloud writes remain disabled. No release was published here.
+
+## TD-20261021-10: metadata-only teardown check leaves a concurrent-write window
+
+- Date: 2026-10-21; status: first correction failed real native acceptance; see TD-20261021-11 for recovery and revised gate.
+- Scope: unmerged PR #41 source f321b48. Related: TD-20261021-07 covers untouched online-only files, not concurrency.
+
+The old teardown released each short-lived metadata handle before unregistering.
+A concurrent writer could change the file after validation. The untouched-file
+test cannot establish safety across that window; no destructive old-root test was
+run to create a data-loss demonstration.
+
+Teardown now rejects incomplete files with attributes-only checks, acquires and
+retains exclusive protected CFAPI references to every known generated file,
+rechecks identity/residency/length under those references, and reverts all complete
+placeholders to ordinary files before unregister. Later ordinary-file writes are
+outside CfUnregisterSyncRoot's placeholder deletion behavior. Conversion progress
+is retained in the live Session; partial teardown closes native capabilities and
+reports cleanup/registration as unconfirmed. No reference is held over a Provider
+download. Existing dirty bytes and private journal/cache remain preserved.
+
+The initial correction used an opt-in `native-test-hooks` observation barrier that compiles in adapter CI but is
+absent from ordinary GUI release builds. The ignored real-engine test starts a
+concurrent generated writer while all references are held, waits for its ordinary
+file write after conversion, then checks complete bytes after unregister. It has
+subsequently run once on an explicitly approved new root and failed, retaining the
+root. TD-20261021-11 records the preservation, successful unregister recovery and
+remaining uncertainty. No physical/concurrent CFAPI pass is claimed.
+
+## TD-20261021-09: refused stop loses the owner while capabilities remain active
+
+- Date: 2026-10-21; status: old loop reproduced failing; corrected owner-loop regression passes locally.
+- Scope: unmerged PR #41 f321b48; related: TD-20261021-07 retention refusal.
+
+The worker exited on every stop command, even when retention refused cleanup;
+the public stopped flag changed only on success. After extracting that unchanged
+loop for a generated-file owner harness, `rejected_stop_keeps_owner_for_status_read_and_reconnect`
+failed with `fixture owner disconnected`. The same regression passes after the
+worker exits only on successful stop. Status, real generated-file reading and
+reconnect requests remain possible after refusal.
+
+Worker liveness is explicit; a terminal incomplete teardown disables capabilities
+and marks owner unavailable. Drop closes its channel before joining, avoiding a
+hang when stop remains refused. These are owner/control regressions, not a real
+CFAPI stop-refusal run. No local client or user data recovery was performed.
+
+## TD-20261021-08: failed Shell intentions are lost and polling starves retry
+
+- Date: 2026-10-21; status: three focused old-behavior failures reproduced, corrected regressions pass locally.
+- Scope: unmerged PR #41 f321b48; related: no released native Shell intent implementation.
+
+The old tuple was recorded before trying pin/free-space work, then errors were
+discarded. The same tuple after an open-handle veto or offline read therefore
+never retried. `free_space_intent_retries_after_real_handle_closes` failed using
+an actual Windows sharing handle; `pin_intent_retries_actual_engine_after_offline_recovery`
+failed against the actual generated Provider/cache bridge. The old receive-timeout
+loop also failed `status_traffic_does_not_starve_pending_intent_tick`: frequent
+read-only status requests prevented its timeout from firing.
+
+The owner now keeps an explicit pending intent, classifies offline/guarded/dirty
+recovery failures, and uses 1/2/4/8/16/30-second capped backoff (dirty recovery at
+30 seconds). Only completion of the requested state or a changed/cancelled OS
+intent clears it. The OS pin state persists; this in-process retry ledger does
+not add persistent root restart support. Timer deadlines survive message traffic.
+Each retry still enters the existing native oplock, dirty/pin/open-handle,
+journal/generation and digest gates; no failed guard is bypassed.
+
+All three focused regressions fail under their previous loop semantics and pass
+after correction. IPC and GUI show local pending intent separately from cloud
+acknowledgement. Shell pending/error output remains custom **text properties**,
+not accepted native synchronization/error glyphs. Real Shell clicks, native
+intent recovery and screenshots remain unverified; registration is still blocked.
+
+## TD-20261021-07: generated-root shutdown can delete untouched placeholders
+
+- Date: 2026-10-21.
+- Status: mechanism identified and guarded; native new-root verification pending.
+- Scope: opt-in CFAPI generated fixture in unmerged PR #39 / alpha.3; no real-account production native mount is enabled.
+- Related: TD-20261021-05/06 protect cache/journal ownership; this is a distinct OS unregistration lifetime issue.
+
+### Symptoms, trigger and evidence
+
+The previous Session::finish unconditionally disconnected and unregistered a root.
+Microsoft's CfUnregisterSyncRoot contract says unhydrated placeholders are permanently
+deleted. An untouched online-only fixture can therefore disappear on normal exit.
+Earlier native tests hydrated all three files before exit, so their complete-byte
+checks did not cover this trigger. No real user-data loss is reported, and no risky
+old-code unregistration was run to manufacture a reproduction.
+
+### Mechanism, fix and recovery
+
+The generated host now materializes its deterministic internal data before normal
+shutdown. The adapter keeps its created-placeholder identities/sizes and refuses
+Shell/CFAPI unregister while any is incomplete or has changed length. An incomplete
+dirty file requires recovery; cleanup is explicitly unconfirmed and the root is kept.
+This does not authorize adoption/cleanup of an existing cloud root. No user-data
+recovery operation or installed client modification was performed.
+
+### Validation and prevention
+
+The separately ignored `untouched_placeholders_survive_normal_exit` requires its
+own newly approved root. It checks that premature unregister is refused without
+hydration, then normal stop preserves all full bytes and removes the registration.
+Final native results and any remaining desktop blockers are recorded in
+[Explorer acceptance](windows-explorer-2026-10-21.md). Physical icons, thumbnails,
+live accounts, process/OS restart recovery and writable native operations must not
+be inferred from unit or API results. Follow-up implementation is in
+[draft PR #41](https://github.com/LumiaBlack51/twodrive/pull/41); f321b48 is its
+initial source checkpoint. The concurrency gap in that checkpoint is separately
+recorded in TD-20261021-10 above; it is not covered by the untouched-file test.
 
 ## TD-20261021-06: stale cache digest and rejected hydration metadata mutation
 
