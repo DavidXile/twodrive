@@ -37,3 +37,5 @@
 本地 123 次默认 Rust 测试执行、78 项 Flutter、严格 Clippy、分析与 Windows release 构建通过，5 项组件测试默认忽略不计入执行数。release 引擎的 7 组真实 WinFsp 检查通过，另有既有只读挂载 5 组、启动恢复 6 组及本地 IPC/签名发现/QUIC 配对写入回归通过。包校验及部署结果在交付后追加。**尚未对用户真实 OneDrive、iCloud、百度进行写入验收**；必须由用户在新界面设置密码并用专门的小文件验证。没有向用户真实网盘写入测试文件，也没有改动原账号凭据。
 
 主要协议来源：[Rclone iCloud 实现](https://github.com/rclone/rclone/blob/v1.75.2/backend/iclouddrive/iclouddrive.go)、[百度创建文件官方文档](https://pan.baidu.com/union/doc/%E5%9F%BA%E7%A1%80%E7%BD%91%E7%9B%98%E6%9C%8D%E5%8A%A1/%E4%B8%8A%E4%BC%A0/%E5%88%9B%E5%BB%BA%E6%96%87%E4%BB%B6/)、[百度官方 SDK](https://github.com/baidu-netdisk/baidu-drive-sdk-go)。创建文件策略以当前官方文档为准：SDK 注释与文档对 `rtype` 的说明不一致，未将 SDK 注释当覆盖语义依据。
+
+本机交付记录：代码 `0d9c09a2bfa3621e56d238dd61f3bd648cc83279` 已推送 PR #47。`TwoDrive-0.1.7-write-lock-20261028` 包含 42 个经过 SHA-256 核对的运行及说明文件；实际包再次通过上述 7 组 WinFsp 检查。原版仍在运行，待用户正常退出后切换；尚未修改真实账号配置或部署写入包。
