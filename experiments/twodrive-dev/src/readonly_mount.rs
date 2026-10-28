@@ -40,6 +40,7 @@ struct QuotaSample {
 }
 struct Inner {
     backend: Backend,
+    writer: Option<Arc<crate::mount_write::Writer>>,
     cache: Mutex<VecDeque<Arc<Cached>>>,
     quota: Mutex<Option<QuotaSample>>,
     directory: tempfile::TempDir,
@@ -107,11 +108,18 @@ impl RemoteFs {
     }
     fn entry(&self, path: &str) -> FsResult<MetadataEntry> {
         self.check().map_err(|_| FsError::GeneralFailure)?;
-        self.0
+        let entry = self
+            .0
             .backend
             .get_metadata_by_path(path)
             .map_err(|_| FsError::GeneralFailure)?
-            .ok_or(FsError::NotFound)
+            .ok_or(FsError::NotFound)?;
+        if let Some(writer) = &self.0.writer {
+            writer
+                .observe(&entry)
+                .map_err(|_| FsError::GeneralFailure)?;
+        }
+        Ok(entry)
     }
     fn materialize(&self, entry: MetadataEntry) -> anyhow::Result<Arc<Cached>> {
         let mut cache = self
@@ -290,7 +298,7 @@ impl DavFileSystem for RemoteFs {
                 return Err(FsError::GeneralFailure);
             }
             let mut result: Vec<FsResult<Box<dyn DavDirEntry>>> = Vec::new();
-            for entry in entries {
+            for entry in &entries {
                 if valid_path(&entry.path).is_err()
                     || entry.parent_path != path
                     || entry.path == path
@@ -300,6 +308,13 @@ impl DavFileSystem for RemoteFs {
                 {
                     return Err(FsError::GeneralFailure);
                 }
+            }
+            if let Some(writer) = &self.0.writer {
+                writer
+                    .observe_many(&entries)
+                    .map_err(|_| FsError::GeneralFailure)?;
+            }
+            for entry in entries {
                 result.push(Ok(Box::new(Entry(Meta(entry)))));
             }
             Ok(Box::pin(futures_util::stream::iter(result)) as _)
@@ -318,12 +333,28 @@ pub struct Bridge {
 }
 impl Bridge {
     pub fn start(backend: Backend, cache_parent: &Path) -> anyhow::Result<Self> {
+        Self::start_inner(backend, cache_parent, None)
+    }
+    pub fn start_writable(
+        backend: Backend,
+        cache_parent: &Path,
+        spool: &Path,
+    ) -> anyhow::Result<Self> {
+        let writer = crate::mount_write::Writer::new(backend.clone(), spool)?;
+        Self::start_inner(backend, cache_parent, Some(writer))
+    }
+    fn start_inner(
+        backend: Backend,
+        cache_parent: &Path,
+        writer: Option<Arc<crate::mount_write::Writer>>,
+    ) -> anyhow::Result<Self> {
         let directory = tempfile::Builder::new()
             .prefix("readonly-mount-")
             .tempdir_in(cache_parent)?;
         let stop = Arc::new(AtomicBool::new(false));
         let fs = RemoteFs(Arc::new(Inner {
             backend,
+            writer: writer.clone(),
             cache: Mutex::default(),
             quota: Mutex::default(),
             directory,
@@ -359,11 +390,13 @@ impl Bridge {
                     };
                     let handler = handler.clone();
                     let auth = auth.clone();
+                    let writer = writer.clone();
                     tokio::spawn(async move {
                         let _permit = permit;
                         let service = service_fn(move |request: Request<Incoming>| {
                             let handler = handler.clone();
                             let auth = auth.clone();
+                            let writer = writer.clone();
                             async move {
                                 let actual = request
                                     .headers()
@@ -375,14 +408,19 @@ impl Bridge {
                                 } else if !matches!(
                                     request.method().as_str(),
                                     "GET" | "HEAD" | "OPTIONS" | "PROPFIND"
-                                ) || request.method().as_str() == "PROPFIND"
-                                    && !matches!(
-                                        request
-                                            .headers()
-                                            .get("Depth")
-                                            .and_then(|v| v.to_str().ok()),
-                                        Some("0" | "1")
-                                    )
+                                ) && !(writer.is_some()
+                                    && matches!(
+                                        request.method().as_str(),
+                                        "PUT" | "MKCOL" | "DELETE" | "MOVE"
+                                    ))
+                                    || request.method().as_str() == "PROPFIND"
+                                        && !matches!(
+                                            request
+                                                .headers()
+                                                .get("Depth")
+                                                .and_then(|v| v.to_str().ok()),
+                                            Some("0" | "1")
+                                        )
                                 {
                                     Some(StatusCode::FORBIDDEN)
                                 } else if request.uri().query().is_some() {
@@ -396,6 +434,18 @@ impl Bridge {
                                         .body(Body::empty())
                                         .unwrap()
                                 } else {
+                                    if matches!(
+                                        request.method().as_str(),
+                                        "PUT" | "MKCOL" | "DELETE" | "MOVE"
+                                    ) {
+                                        let response = crate::mount_write::handle(
+                                            writer.unwrap(),
+                                            request,
+                                            address,
+                                        )
+                                        .await;
+                                        return Ok::<_, Infallible>(response);
+                                    }
                                     match tokio::time::timeout(
                                         Duration::from_secs(330),
                                         handler.handle(request.map(|body| {

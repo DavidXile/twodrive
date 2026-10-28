@@ -22,6 +22,16 @@ pub(super) struct Job {
     handle: thread::JoinHandle<()>,
 }
 pub(super) type Jobs = HashMap<u64, Job>;
+impl Job {
+    pub(super) fn belongs_to(&self, id: &str) -> bool {
+        self.profile == id && !self.handle.is_finished()
+    }
+}
+impl Parked {
+    pub(super) fn is_mounted(&self) -> bool {
+        self.mounted.is_some()
+    }
+}
 
 pub(super) fn aggregate_accounts(accounts: &[Value]) -> Value {
     let mut active = Vec::new();
@@ -67,6 +77,11 @@ pub(super) fn aggregate_accounts(accounts: &[Value]) -> Value {
                 "挂载进程已退出，请卸载后重试",
             ),
             (account["gateway_failed"] == true, "连接进程已退出，请重连"),
+            (
+                account["cache"]["write_error"] == true
+                    || account["cache"]["recovery_files"].as_u64().unwrap_or(0) > 0,
+                "挂载写入需要处理；编辑内容保留在本机，请打开该网盘的写入恢复目录",
+            ),
             (
                 account["backup_failed"] == true || account["backup"]["state"] == "error",
                 "备份需要处理，请查看该网盘的备份状态",
@@ -187,7 +202,7 @@ impl App {
                 .unwrap_or(json!({"active":[]}));
             states.push(json!({"profile":p.id,"revision":p.revision,"name":p.name,
                 "account_name":self.account_name(&p),"connected":connected,"mounted":mounted,
-                "mount_path":p.mount_path,"mount_failed":mount_failed,"backup_failed":backup_failed,
+                "mount_path":p.mount_path,"writable":twodrive_dev::write_lock::unlocked(&self.state,&p),"mount_failed":mount_failed,"backup_failed":backup_failed,
                 "gateway_failed":gateway_failed,"route_fallback":fallback,
                 "cache":self.cache(&p,false)?,"backup":backup::report(&self.state,&p)?,"mount_activity":activity}));
         }
@@ -238,7 +253,7 @@ impl App {
             self.inactive.insert(saved.profile.id.clone(), saved);
         }
     }
-    fn restore_active(&mut self, id: &str) -> bool {
+    pub(super) fn restore_active(&mut self, id: &str) -> bool {
         if let Some(saved) = self.inactive.remove(id) {
             self.connected = Some(saved.profile);
             self.backend = saved.backend;
@@ -332,7 +347,7 @@ impl App {
             } else {
                 self.inactive.get(id).is_some_and(|s| s.mounted.is_some())
             };
-            if mounted {
+            if mounted && twodrive_dev::write_lock::unlocked(&self.state, &self.profile(id)?) {
                 ensure!(
                     self.cache(&self.profile(id)?, false)?["pending"] == 0,
                     "挂载仍有未上传或冲突的数据，请先完成同步；缓存已保留"
@@ -495,7 +510,7 @@ impl FileContext {
                     }
                     Ok(())
                 });
-                Ok(metadata(self.backend.upload_path(
+                Ok(metadata(self.backend.manual_upload_path(
                     path,
                     Path::new(string(a, "source")?),
                     a["etag"].as_str(),

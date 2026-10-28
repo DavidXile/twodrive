@@ -42,7 +42,8 @@ def run(args):
             public = engine.call('profiles')['profiles'][0]
             target = {'profile':public['id'],'revision':public['revision']}
             status = engine.call('status')
-            assert status['mount_support']['readonly'] is True
+            assert status['mount_support']['editable'] is True
+            assert not status['capabilities']['upload'], 'a saved writable flag cannot bypass the local write lock'
             engine.call('mount',dict(target,revision='stale'),failure=True)
             engine.call('unmount',dict(target,revision='stale'),failure=True)
             report['checks']['profile_revision_guard'] = True

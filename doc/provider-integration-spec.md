@@ -165,3 +165,12 @@ Add third-party drives only at the provider composition boundary. Flutter consum
 Enable writing only with atomic create-only and version-checked replacement, bounded streaming, cancellation and recoverable ambiguous outcomes. Paths select entries; opaque IDs select remote objects; metadata and media versions may differ. Shared backup/FUSE services must use the same guarantees. Preserve pending local work on conflicts, logout, account changes and upgrades.
 
 Ship protocol/auth/contract/UI/recovery regressions and clearly separate mock, isolated desktop and live cloud validation. Include this specification, supporting components, installers, source, checksums and verified build provenance in development releases; never include a user's credentials. Planned interfaces in this document are not implemented product features.
+
+
+## 2026-10-28：显式手动写入与本机写入锁
+
+用户明确要求三家网盘的客户端及 Windows 挂载都可编辑，并要求修改前增加密码/锁。新增 `manual_upload_supported/manual_upload` 明确区分不具备原子 CAS 的手动编辑；原 `upload_controlled`、`upload_path/upload_snapshot` 与自动备份的原子版本合同保持不变。前端仅在实际 `upload && (conditional_upload || manual_upload)` 时允许手动上传，不使用网盘类型分支。iCloud/百度普通写入必须先保存原内容和编辑内容、核对版本、上传后核对内容，并公开不具备原子覆盖的边界；它们不因此获得 backup 能力。
+
+通用 `set_access {profile,revision,mode,password?}` 从后端保存的原配置复制，仅修改权限及新 revision；密码校验通过后才解锁。在线切换先检查传输、卸载该账号，再非交互恢复相同 binding、发布实际新 worker recipe 并重新挂载。其余连接和选中浏览对象保留；失败尽量恢复原配置及挂载，不能改账号凭据。所有 provider 工厂按本机锁决定实际 writable，直接保存 writable=true 不能绕过密码。许可绑定 profile/revision/本次进程运行，底层变异和进度回调重复检查，读取不受写锁影响。重启恢复为已连接、已挂载的锁定只读状态。
+
+Windows 持久缓存以账号 binding 摘要隔离，重启前的版本声明持久化，不能将旧缓存重新绑定新账号。未完成原生写入阻止普通权限切换/卸载/退出；异常结束仍保留编辑及版本，重启不越过写入锁自动上传。恢复说明及本地验证范围见 [Windows 写入锁](windows-write-lock.md)。Linux FUSE 的既有条件上传约束没有放宽，本轮可编辑挂载适配与验证范围为 Windows。

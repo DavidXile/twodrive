@@ -19,9 +19,9 @@ use twodrive_dev::{
 pub fn descriptor() -> Value {
     json!({"id":"baidu","label":"百度网盘","account_label":"百度账号","icon":"cloud",
         "identity_fields":["baidu_state","root_path"],"protected_paths":["baidu_state"],
-        "network_modes":["system","direct"],"login_action":"configure",
-        "help":"使用你自己的百度开放平台应用，在百度官方网页授权。当前只读；可见文件受应用权限和授权根目录限制。AppKey、SecretKey 是应用凭据，无需在此输入百度账号密码。",
-        "capabilities":{"upload":false,"conditional_upload":false,"mkdir":false,"rename":false,"delete":false,"backup":false},
+        "network_modes":["system","direct"],"write_recovery_field":"baidu_state","write_policy":"覆盖前核对版本并保留本机恢复副本；云端不提供原子版本覆盖，同时编辑仍可能冲突。","login_action":"configure",
+        "help":"使用你自己的百度开放平台应用，在百度官方网页授权。解锁后可手动编辑；可见及可写文件受应用权限和授权根目录限制。AppKey、SecretKey 是应用凭据，无需在此输入百度账号密码。",
+        "capabilities":{"upload":true,"manual_upload":true,"conditional_upload":false,"mkdir":true,"rename":true,"delete":true,"backup":false},
         "actions":[{"id":"configure","label":"百度官方网页登录 / 更新授权","input_fields":["baidu_state","root_path"],"credential_fields":["app_key","secret_key"]}],
         "fields":[{"key":"app_key","label":"应用 AppKey / API Key","transient":true,"omit_from_profile":true},
             {"key":"secret_key","label":"应用 SecretKey","secret":true,"transient":true,"omit_from_profile":true},
@@ -48,7 +48,6 @@ pub fn validate(p: &Profile) -> anyhow::Result<()> {
         "百度登录目录必须是绝对路径"
     );
     valid_path(p.option("root_path"))?;
-    ensure!(!p.writable, "百度当前只读，请关闭“允许修改远端文件”");
     ensure!(
         matches!(p.network_route.as_str(), "system" | "direct"),
         "百度请选择系统路由或仅直连"
@@ -72,11 +71,11 @@ pub fn connect(
             Ok(())
         },
     )?;
-    network.record("network: Baidu official read-only API");
+    network.record("network: Baidu official API");
     let binding = backend.binding.clone();
     let account_name = backend.account_name.clone();
     Ok(Connection {
-        backend: Backend::new(backend),
+        backend: Backend::new(backend.with_writable(p.writable)),
         binding: binding.clone(),
         account_name,
         worker: json!({"kind":p.kind,"revision":p.revision,"binding":binding,"route":p.network_route}),
@@ -94,7 +93,7 @@ pub fn restore(p: &Profile, recipe: &Value) -> anyhow::Result<Backend> {
         recipe["binding"].as_str() == Some(backend.binding.as_str()),
         "百度登录身份已改变，旧缓存保留，请重新连接"
     );
-    Ok(Backend::new(backend))
+    Ok(Backend::new(backend.with_writable(p.writable)))
 }
 pub fn sign_out(p: &Profile) -> anyhow::Result<()> {
     auth::logout(&State::new(PathBuf::from(p.option("baidu_state")))?)

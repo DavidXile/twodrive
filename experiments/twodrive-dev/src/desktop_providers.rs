@@ -40,7 +40,7 @@ pub fn catalog() -> Value {
         icloud::descriptor()
     ])
 }
-fn descriptor(kind: &str) -> anyhow::Result<Value> {
+pub(super) fn descriptor(kind: &str) -> anyhow::Result<Value> {
     match kind {
         "dav" => Ok(dav::descriptor()),
         "peer" => Ok(paired::descriptor()),
@@ -179,6 +179,34 @@ pub fn connect(
     cancel: &AtomicBool,
     network: Arc<twodrive_dev::network::Diagnostics>,
 ) -> anyhow::Result<Connection> {
+    let (effective, guard) = effective_access(p, &args.state)?;
+    let mut connection = connect_raw(&effective, args, cancel, network)?;
+    connection.backend = connection
+        .backend
+        .with_write_access(effective.writable, guard);
+    Ok(connection)
+}
+fn effective_access(
+    p: &Profile,
+    root: &Path,
+) -> anyhow::Result<(Profile, Option<(std::path::PathBuf, String)>)> {
+    let state = twodrive_dev::state::State::new(root.to_owned())?;
+    let mut effective = p.clone();
+    effective.writable = twodrive_dev::write_lock::unlocked(&state, p);
+    let guard = if twodrive_dev::write_lock::configured(&state) {
+        effective.writable = twodrive_dev::write_lock::unlocked(&state, p);
+        Some(twodrive_dev::write_lock::guard(&state, p)?)
+    } else {
+        None
+    };
+    Ok((effective, guard))
+}
+fn connect_raw(
+    p: &Profile,
+    args: &Args,
+    cancel: &AtomicBool,
+    network: Arc<twodrive_dev::network::Diagnostics>,
+) -> anyhow::Result<Connection> {
     validate(p)?;
     match p.kind.as_str() {
         "dav" => dav::connect(p, cancel, network),
@@ -196,6 +224,9 @@ pub fn restore(p: &Profile, recipe: &Value, paused: &Path) -> anyhow::Result<Bac
             && recipe["revision"].as_str() == Some(&p.revision),
         "worker session belongs to another profile revision"
     );
+    let (effective, guard) =
+        effective_access(p, paused.parent().context("missing desktop state")?)?;
+    let p = &effective;
     let backend = match p.kind.as_str() {
         "dav" => dav::restore(p, recipe)?,
         "peer" => paired::restore(p, recipe)?,
@@ -205,7 +236,9 @@ pub fn restore(p: &Profile, recipe: &Value, paused: &Path) -> anyhow::Result<Bac
         "baidu" => baidu::restore(p, recipe)?,
         _ => anyhow::bail!("unsupported provider"),
     };
-    Ok(backend.with_pause_file(paused.to_path_buf()))
+    Ok(backend
+        .with_write_access(effective.writable, guard)
+        .with_pause_file(paused.to_path_buf()))
 }
 /// Recreate an owned connection using existing credentials only. Unlike worker
 /// restoration, paired connections must start a new owned gateway process.
@@ -226,7 +259,9 @@ pub fn resume(
         .filter(|v| !v.is_empty())
         .context("缺少已保存的账号身份，请手动连接")?;
     validate(p)?;
-    let connection = match p.kind.as_str() {
+    let (effective, guard) = effective_access(p, &args.state)?;
+    let p = &effective;
+    let mut connection = match p.kind.as_str() {
         "onedrive" => onedrive::resume(p, cancel, network)?,
         "google" => google::resume(p, cancel, network)?,
         "peer" => {
@@ -238,12 +273,15 @@ pub fn resume(
             );
             paired::connect(p, args, cancel, network)?
         }
-        _ => connect(p, args, cancel, network)?,
+        _ => connect_raw(p, args, cancel, network)?,
     };
     ensure!(
         connection.binding == expected,
         "登录账号已改变，旧缓存保留，请手动连接确认"
     );
+    connection.backend = connection
+        .backend
+        .with_write_access(effective.writable, guard);
     Ok(connection)
 }
 pub fn session(connection: &Connection, p: &Profile) -> Value {
@@ -306,10 +344,11 @@ pub fn sign_out(p: &Profile) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     #[test]
-    fn baidu_schema_uses_private_per_account_credentials_and_readonly_workers() {
+    fn baidu_schema_keeps_private_credentials_and_separates_manual_from_conditional_writes() {
         let d = descriptor("baidu").unwrap();
         assert_eq!(d["login_action"], "configure");
-        assert_eq!(d["capabilities"]["upload"], false);
+        assert_eq!(d["capabilities"]["upload"], true);
+        assert_eq!(d["capabilities"]["conditional_upload"], false);
         assert_eq!(d["capabilities"]["backup"], false);
         let dir = tempfile::tempdir().unwrap();
         let state = twodrive_dev::state::State::new(dir.path().join("state")).unwrap();
@@ -333,10 +372,10 @@ mod tests {
             .is_err()
         );
         p.writable = true;
-        assert!(validate(&p).is_err());
+        assert!(validate(&p).is_ok());
     }
     #[test]
-    fn icloud_schema_is_registered_read_only_and_owns_its_private_state() {
+    fn icloud_schema_separates_manual_from_conditional_writes_and_owns_private_state() {
         let entries = catalog();
         let d = entries
             .as_array()
@@ -344,7 +383,8 @@ mod tests {
             .iter()
             .find(|d| d["id"] == "icloud")
             .expect("iCloud must be available through normal provider discovery");
-        assert_eq!(d["capabilities"]["upload"], false);
+        assert_eq!(d["capabilities"]["upload"], true);
+        assert_eq!(d["capabilities"]["conditional_upload"], false);
         assert_eq!(d["capabilities"]["backup"], false);
         let dir = tempfile::tempdir().unwrap();
         let state = twodrive_dev::state::State::new(dir.path().join("state")).unwrap();
@@ -365,7 +405,7 @@ mod tests {
         prepare(&mut other, &state).unwrap();
         assert_ne!(p.option("icloud_state"), other.option("icloud_state"));
         p.writable = true;
-        assert!(validate(&p).is_err());
+        assert!(validate(&p).is_ok());
     }
     #[test]
     fn legacy_profiles_roundtrip_and_redact_secrets() {

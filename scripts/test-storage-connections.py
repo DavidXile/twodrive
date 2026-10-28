@@ -39,6 +39,7 @@ def run(args):
                           writable=True, **credentials)
             engine.call('save_profile', active)
             engine.call('connect', {'id': active['id']})
+            engine.unlock_for_test(active['id'])
             revision = engine.active_revision
             engine.call('save_profile', dict(id='od-test', name='OneDrive test', kind='onedrive'))
             public = engine.call('profiles')
@@ -93,6 +94,7 @@ def run(args):
             if os.name != 'nt':
                 assert private.stat().st_mode & 0o077 == 0
             engine.call('connect', {'id': 'pc-test'})
+            engine.unlock_for_test('pc-test')
             assert not private.exists()
             source = root/'source.txt'
             source.write_bytes(b'disposable connection write\n')

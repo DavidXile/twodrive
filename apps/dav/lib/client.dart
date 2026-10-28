@@ -214,7 +214,8 @@ class StorageClient extends ChangeNotifier {
   bool capability(String key) =>
       connected && status['capabilities']?[key] == true;
   bool get canUpload =>
-      capability('upload') && capability('conditional_upload');
+      capability('upload') &&
+      (capability('conditional_upload') || capability('manual_upload'));
   bool get canMkdir => capability('mkdir');
   bool get canRename => capability('rename');
   bool get canDelete => capability('delete');
@@ -698,6 +699,34 @@ class StorageClient extends ChangeNotifier {
       }
     },
   );
+  Future<void> openWriteRecovery(String id) => action('正在打开恢复目录', () async {
+    final result = await request('write_recovery', {'profile': id});
+    final directories = result['directories'] as List;
+    for (final directory in directories) {
+      await openLocalDirectory(directory as String);
+    }
+  });
+  Future<void> setAccess(Json owner, String mode, String password) => action(
+    '正在调整网盘权限',
+    () async {
+      try {
+        if (mode == 'editable' && status['write_lock']?['configured'] != true) {
+          await request('set_write_password', {'password': password});
+        }
+        await request('set_access', {
+          'profile': owner['id'],
+          'revision': owner['revision'],
+          'mode': mode,
+          if (mode == 'editable') 'password': password,
+        });
+      } finally {
+        await loadProfiles();
+        await refreshStatus();
+        _directoryStale = true;
+      }
+    },
+  );
+
   Future<void> disconnect([String? profileId]) => action('正在断开', () async {
     final id = profileId ?? selected;
     await request('disconnect', {'id': ?id});

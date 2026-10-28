@@ -13,9 +13,9 @@ use twodrive_dev::{profile::Profile, provider::Backend, rclone_drive::RcloneDriv
 pub fn descriptor() -> Value {
     json!({"id":"icloud","label":"iCloud Drive","account_label":"Apple 账号","icon":"cloud",
         "account_key":"name","summary_key":"name","identity_fields":["icloud_state"],"protected_paths":["icloud_state"],
-        "network_modes":["system","direct"],
-        "capabilities":{"upload":false,"conditional_upload":false,"mkdir":false,"rename":false,"delete":false,"backup":false},
-        "help":"填写 Apple 账号和密码后点击登录；需要双重认证时会提示输入验证码。当前支持目录浏览和下载。",
+        "network_modes":["system","direct"],"write_recovery_field":"icloud_state","write_policy":"写入前核对版本并保留本机原文件副本；云端不提供原子版本覆盖，同时编辑仍可能冲突。",
+        "capabilities":{"upload":true,"manual_upload":true,"conditional_upload":false,"mkdir":true,"rename":true,"delete":true,"backup":false},
+        "help":"填写 Apple 账号和密码后点击登录；需要双重认证时会提示输入验证码。支持浏览、下载及解锁后的手动编辑；覆盖前保留本机恢复副本。",
         "login_action":"configure",
         "actions":[{"id":"configure","label":"登录 iCloud / 更新授权","input_fields":["icloud_state"],"credential_fields":["apple_id","password"]}],
         "fields":[
@@ -50,10 +50,6 @@ pub fn validate(p: &Profile) -> anyhow::Result<()> {
         "请先使用登录助手创建 iCloud 连接"
     );
     ensure!(
-        !p.writable,
-        "iCloud 当前仅支持读取，请关闭“允许修改远端文件”"
-    );
-    ensure!(
         matches!(p.network_route.as_str(), "system" | "direct"),
         "iCloud 连接请选择系统路由或仅直连"
     );
@@ -74,7 +70,7 @@ pub fn connect(
     network.record(&format!("network: iCloud route={}", p.network_route));
     let binding = backend.binding.clone();
     Ok(Connection {
-        backend: Backend::new(backend),
+        backend: Backend::new(backend.with_writable(p.writable)),
         binding: binding.clone(),
         account_name: p.name.clone(),
         worker: json!({"kind":p.kind,"revision":p.revision,"route":p.network_route,"binding":binding}),
@@ -92,7 +88,7 @@ pub fn restore(p: &Profile, recipe: &Value) -> anyhow::Result<Backend> {
         recipe["binding"].as_str() == Some(backend.binding.as_str()),
         "iCloud 登录已改变，保留原缓存，请重新连接"
     );
-    Ok(Backend::new(backend))
+    Ok(Backend::new(backend.with_writable(p.writable)))
 }
 pub fn sign_out(p: &Profile) -> anyhow::Result<()> {
     twodrive_dev::rclone_drive::sign_out(State::new(PathBuf::from(p.option("icloud_state")))?)

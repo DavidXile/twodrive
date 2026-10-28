@@ -19,7 +19,9 @@ class ConnectionCard extends StatelessWidget {
     this.mounted = false,
     this.onMount,
     this.onOpenMount,
+    this.accessControl,
   });
+  final Widget? accessControl;
   final Json profile;
   final bool online, selected;
   final bool mountSupported, mounted;
@@ -50,6 +52,7 @@ class ConnectionCard extends StatelessWidget {
       spacing: 2,
       runSpacing: 4,
       children: [
+        ?accessControl,
         Column(
           mainAxisSize: MainAxisSize.min,
           children: [

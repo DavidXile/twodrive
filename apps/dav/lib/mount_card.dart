@@ -16,7 +16,7 @@ Future<void> showMountHelp(BuildContext context) => showDialog<void>(
           SizedBox(height: 12),
           SelectableText('https://winfsp.dev/rel/'),
           SizedBox(height: 12),
-          Text('挂载为只读文件夹，可浏览、打开和复制文件。'),
+          Text('默认只读；在网盘的连接权限中解锁后，客户端和挂载都允许编辑。'),
         ],
       ),
     ),
@@ -46,6 +46,7 @@ class MountCard extends StatelessWidget {
     final p = c.profiles.where((p) => p['id'] == id).firstOrNull;
     final mount = id == null ? null : c.mountForProfile(id);
     final isMounted = mount != null;
+    final readOnly = mount?['writable'] != true;
     return Card(
       color: Colors.white,
       child: Padding(
@@ -59,7 +60,7 @@ class MountCard extends StatelessWidget {
                 style: Theme.of(context).textTheme.titleMedium,
               ),
             Text(
-              c.readOnlyMount ? '文件管理器挂载 · 只读' : '文件管理器挂载',
+              readOnly ? '文件管理器挂载 · 只读' : '文件管理器挂载',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 10),
@@ -97,9 +98,20 @@ class MountCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (id != null) ...[
+              const SizedBox(height: 12),
+              OutlinedButton(
+                onPressed: () => c.openWriteRecovery(id),
+                child: const Text('打开写入恢复目录'),
+              ),
+            ],
+            const SizedBox(height: 8),
+            const Text(
+              '恢复目录中的 before.bin 是原文件，edited.bin 或 .content 是保留的编辑内容，record.json 记录原路径。请先复制到其他位置，再恢复文件。',
+            ),
             const SizedBox(height: 12),
             Text(
-              c.readOnlyMount
+              readOnly
                   ? '可浏览、打开和复制文件，不能在挂载内修改或删除。首次打开文件需下载到临时缓存，较大文件可能需要等待。切换网盘保留挂载；卸载或退出前，请先完成资源管理器中的文件复制。'
                   : '挂载按需下载。写入先保存到本地缓存，待上传完成后才代表服务器已收到。',
             ),

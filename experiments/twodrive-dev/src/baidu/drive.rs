@@ -36,6 +36,7 @@ pub struct BaiduDrive {
     pub binding: String,
     pub account_name: String,
     _auth_lock: File,
+    writable: bool,
 }
 fn number(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
@@ -73,6 +74,7 @@ impl BaiduDrive {
             binding: session.generation,
             account_name: session.name,
             _auth_lock: auth_lock,
+            writable: false,
         };
         let user = backend.get("/rest/2.0/xpan/nas", &[("method", "uinfo")], check)?;
         ensure!(
@@ -352,7 +354,26 @@ impl BaiduDrive {
 }
 impl Provider for BaiduDrive {
     fn capabilities(&self) -> Capabilities {
-        Capabilities::default()
+        Capabilities {
+            upload: self.writable,
+            conditional_upload: false,
+            mkdir: self.writable,
+            rename: self.writable,
+            delete: self.writable,
+        }
+    }
+    fn manual_upload_supported(&self) -> bool {
+        self.writable
+    }
+    fn manual_upload(
+        &self,
+        path: &str,
+        source: &Path,
+        id: Option<&str>,
+        version: Option<&str>,
+        progress: Progress,
+    ) -> anyhow::Result<MetadataEntry> {
+        self.put_manual(path, source, id, version, progress)
     }
     fn storage_usage(
         &self,
@@ -520,13 +541,16 @@ impl CloudBackend for BaiduDrive {
     ) -> anyhow::Result<MetadataEntry> {
         anyhow::bail!("百度网盘当前只读")
     }
-    fn create_folder(&self, _: &str) -> anyhow::Result<MetadataEntry> {
-        anyhow::bail!("百度网盘当前只读")
+    fn create_folder(&self, path: &str) -> anyhow::Result<MetadataEntry> {
+        self.mkdir_manual(path)
     }
-    fn rename(&self, _: &str, _: &str) -> anyhow::Result<MetadataEntry> {
-        anyhow::bail!("百度网盘当前只读")
+    fn rename(&self, id: &str, path: &str) -> anyhow::Result<MetadataEntry> {
+        self.rename_manual(id, path)
     }
-    fn delete(&self, _: &str) -> anyhow::Result<()> {
-        anyhow::bail!("百度网盘当前只读")
+    fn delete(&self, id: &str) -> anyhow::Result<()> {
+        self.delete_manual(id)
     }
 }
+
+#[path = "write.rs"]
+mod write;

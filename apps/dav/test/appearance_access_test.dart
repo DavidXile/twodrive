@@ -96,8 +96,8 @@ void main() {
       await tester.pumpWidget(DavApp(client: c));
       await tester.tap(find.byKey(const ValueKey('connection-access')));
       await tester.pumpAndSettle();
-      expect(find.textContaining('此连接未开启“允许修改远端文件”'), findsOneWidget);
-      expect(find.textContaining('先断开连接'), findsOneWidget);
+      expect(find.text('客户端和挂载权限'), findsOneWidget);
+      expect(find.textContaining('客户端和 D 盘挂载共用权限'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
       c.dispose();
     },
@@ -124,7 +124,7 @@ void main() {
       await tester.pumpWidget(DavApp(client: c));
       final button = find.byKey(const ValueKey('connection-access'));
       expect(
-        find.descendant(of: button, matching: find.text('读写')),
+        find.descendant(of: button, matching: find.text('可编辑')),
         findsOneWidget,
       );
       await tester.tap(button);
@@ -138,7 +138,7 @@ void main() {
       await tester.pumpWidget(DavApp(client: c));
       await tester.tap(find.byKey(const ValueKey('connection-access')));
       await tester.pumpAndSettle();
-      expect(find.textContaining('当前连接未获得写入能力'), findsOneWidget);
+      expect(find.text('客户端和挂载权限'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
       c.dispose();
     },

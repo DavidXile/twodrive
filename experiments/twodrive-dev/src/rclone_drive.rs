@@ -1,5 +1,5 @@
-//! Read-only iCloud adapter through the bundled, separately versioned Rclone.
-//! No real credentials cross public IPC; no WebDAV gateway or native mount.
+//! iCloud adapter with opt-in manual writes through the bundled, separately versioned Rclone.
+//! Credentials remain private; the generic mount bridge uses this Provider.
 use crate::{
     model::{CloudBackend, DeltaResult, MetadataEntry},
     provider::{Capabilities, Progress, Provider, valid_path},
@@ -34,6 +34,7 @@ const JSON_LIMIT: usize = 16 * 1024 * 1024;
 
 mod gui;
 mod quota;
+mod write;
 pub use gui::action as gui_auth;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -207,7 +208,13 @@ fn stream(
     });
     let result = (|| -> anyhow::Result<u64> {
         let start = Instant::now();
-        let budget = Duration::from_secs(if limit == JSON_LIMIT as u64 { 45 } else { 300 });
+        let budget = Duration::from_secs(if limit == u64::MAX {
+            7200
+        } else if limit == JSON_LIMIT as u64 {
+            45
+        } else {
+            300
+        });
         let mut done = 0u64;
         loop {
             ensure!(!cancel.load(Ordering::Relaxed), "连接已取消");
@@ -318,6 +325,7 @@ pub struct RcloneDrive {
     pass: String,
     route: String,
     pub binding: String,
+    writable: bool,
     _account_lock: File,
     cancel: Arc<AtomicBool>,
 }
@@ -384,6 +392,7 @@ impl RcloneDrive {
             pass,
             route: route.into(),
             binding: auth.binding,
+            writable: false,
             _account_lock: account_lock,
             cancel: Arc::new(AtomicBool::new(false)),
         };
@@ -501,7 +510,26 @@ impl Provider for RcloneDrive {
         quota::read(self, check)
     }
     fn capabilities(&self) -> Capabilities {
-        Capabilities::default()
+        Capabilities {
+            upload: self.writable,
+            mkdir: self.writable,
+            rename: self.writable,
+            delete: self.writable,
+            conditional_upload: false,
+        }
+    }
+    fn manual_upload_supported(&self) -> bool {
+        self.writable
+    }
+    fn manual_upload(
+        &self,
+        path: &str,
+        source: &Path,
+        id: Option<&str>,
+        version: Option<&str>,
+        progress: Progress,
+    ) -> anyhow::Result<MetadataEntry> {
+        self.put_manual(path, source, id, version, progress)
     }
     fn list_directory(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
         self.list_directory_checked(path, &mut || Ok(()))
@@ -639,14 +667,14 @@ impl CloudBackend for RcloneDrive {
     ) -> anyhow::Result<MetadataEntry> {
         bail!("iCloud 当前只读")
     }
-    fn create_folder(&self, _: &str) -> anyhow::Result<MetadataEntry> {
-        bail!("iCloud 当前只读")
+    fn create_folder(&self, path: &str) -> anyhow::Result<MetadataEntry> {
+        self.mkdir_manual(path)
     }
-    fn rename(&self, _: &str, _: &str) -> anyhow::Result<MetadataEntry> {
-        bail!("iCloud 当前只读")
+    fn rename(&self, id: &str, path: &str) -> anyhow::Result<MetadataEntry> {
+        self.rename_manual(id, path)
     }
-    fn delete(&self, _: &str) -> anyhow::Result<()> {
-        bail!("iCloud 当前只读")
+    fn delete(&self, id: &str) -> anyhow::Result<()> {
+        self.delete_manual(id)
     }
 }
 
@@ -799,10 +827,20 @@ mod tests {
             pass: "synthetic".into(),
             route: "direct".into(),
             binding: "icloud:synthetic:epoch-a".into(),
+            writable: false,
             _account_lock: lock,
             cancel: Arc::new(AtomicBool::new(false)),
         };
         (temp, backend)
+    }
+    #[test]
+    fn manual_writes_are_opt_in_and_never_claim_atomic_conditional_support() {
+        let (_root, backend) = fixture();
+        assert!(!backend.manual_upload_supported());
+        assert!(backend.create_folder("/locked").is_err());
+        let enabled = backend.with_writable(true);
+        assert!(enabled.capabilities().upload && enabled.manual_upload_supported());
+        assert!(!enabled.capabilities().conditional_upload && !enabled.capabilities().backup());
     }
     fn row() -> Value {
         json!({"ID":"opaque-cloud-id","Name":"中文.bin","Path":"中文.bin","Size":12,"IsDir":false,"ModTime":"2026-10-28T00:00:00Z"})

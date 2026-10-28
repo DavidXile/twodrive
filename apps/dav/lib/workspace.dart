@@ -912,6 +912,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
       for (final p in c.profiles)
         ConnectionCard(
           key: ValueKey('connection-${p['id']}'),
+          accessControl: ConnectionAccess(client: c, profile: p),
           mountSupported: c.mountSupported,
           mounted: c.isProfileMounted(p['id'] as String),
           onMount:

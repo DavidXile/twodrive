@@ -9,6 +9,7 @@ pub(super) struct Api {
     pub client: Client,
     api: String,
     oauth: String,
+    pcs: String,
     #[cfg(test)]
     pub test_origin: Option<String>,
 }
@@ -34,6 +35,7 @@ impl Api {
             client,
             api: "https://pan.baidu.com".into(),
             oauth: "https://openapi.baidu.com".into(),
+            pcs: "https://d.pcs.baidu.com".into(),
             #[cfg(test)]
             test_origin: None,
         })
@@ -43,6 +45,7 @@ impl Api {
         let mut api = Self::new("direct").unwrap();
         api.api = origin.clone();
         api.oauth = origin.clone();
+        api.pcs = origin.clone();
         api.test_origin = Some(origin);
         api
     }
@@ -91,6 +94,55 @@ impl Api {
             }
         }
         unreachable!()
+    }
+    pub fn post(
+        &self,
+        token: &str,
+        query: &[(&str, &str)],
+        form: &[(&str, &str)],
+    ) -> anyhow::Result<Value> {
+        // Never retry a mutation after an ambiguous network failure.
+        let response = self
+            .client
+            .post(format!("{}/rest/2.0/xpan/file", self.api))
+            .query(&[("access_token", token)])
+            .query(query)
+            .form(form)
+            .send()
+            .map_err(|_| anyhow::anyhow!("百度写入未确认，恢复副本已保留；请刷新后再决定重试"))?;
+        let value = bounded_json(response)?;
+        errno(&value)?;
+        Ok(value)
+    }
+    pub fn slice(
+        &self,
+        token: &str,
+        path: &str,
+        upload: &str,
+        index: usize,
+        bytes: Vec<u8>,
+    ) -> anyhow::Result<Value> {
+        let part = reqwest::blocking::multipart::Part::bytes(bytes).file_name("slice");
+        let response = self
+            .client
+            .post(format!("{}/rest/2.0/pcs/superfile2", self.pcs))
+            .query(&[
+                ("method", "upload"),
+                ("type", "tmpfile"),
+                ("access_token", token),
+                ("path", path),
+                ("uploadid", upload),
+                ("partseq", &index.to_string()),
+            ])
+            .multipart(reqwest::blocking::multipart::Form::new().part("file", part))
+            .send()
+            .map_err(|_| anyhow::anyhow!("百度分片上传未确认，编辑副本保留"))?;
+        let value = bounded_json(response)?;
+        // Some PCS responses omit errno on a successful slice, but must return MD5.
+        if value.get("errno").is_some() || value.get("error_code").is_some() {
+            errno(&value)?;
+        }
+        Ok(value)
     }
     pub fn trusted_download(&self, url: &Url) -> bool {
         #[cfg(test)]

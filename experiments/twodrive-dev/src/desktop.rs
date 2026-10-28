@@ -27,6 +27,8 @@ use twodrive_dev::{
     state::State,
 };
 
+#[path = "desktop_access.rs"]
+mod access;
 #[path = "desktop_backup.rs"]
 mod backup;
 #[path = "desktop_connections.rs"]
@@ -217,6 +219,8 @@ impl App {
                 public["account_name"] = json!(self.account_name(p));
                 public["connected"] = json!(self.online(&p.id));
                 public["startup_ready"] = json!(self.saved_session(p).is_some());
+                public["write_locked"] =
+                    json!(p.writable && !twodrive_dev::write_lock::unlocked(&self.state, p));
                 public
             })
             .collect();
@@ -228,6 +232,9 @@ impl App {
     fn cache(&self, p: &Profile, clear: bool) -> anyhow::Result<Value> {
         let path = self.mount_state(p).join("mount.sqlite3");
         if !path.exists() {
+            #[cfg(windows)]
+            return windows_mount::cache_status(self, p);
+            #[cfg(not(windows))]
             return Ok(json!({"bytes":0,"pending":0,"released":0}));
         }
         let db = Database::new(path);
@@ -284,10 +291,18 @@ impl App {
             "state":if matches!(d.failure_kind, Some(twodrive_core::DeleteFailureKind::Permission | twodrive_core::DeleteFailureKind::Authentication | twodrive_core::DeleteFailureKind::Rejected)) {"云端删除被拒绝，任务已保留"} else {"本地已删除，云端删除待确认"},
             "next_retry_unix":d.next_retry_unix,"http_status":d.last_status
         })));
-        Ok(
-            json!({"bytes":bytes,"pending":pending,"released":released,"waiting":waiting,
-            "deletes_pending":deletes.len(),"deletes_deferred":deferred,"deletes_rejected":rejected,"delete_next_retry_unix":next_retry}),
-        )
+        let mut result = json!({"bytes":bytes,"pending":pending,"released":released,"waiting":waiting,
+            "deletes_pending":deletes.len(),"deletes_deferred":deferred,"deletes_rejected":rejected,"delete_next_retry_unix":next_retry});
+        result["legacy_pending"] = json!(pending);
+        #[cfg(windows)]
+        {
+            let native = windows_mount::cache_status(self, p)?;
+            result["pending"] = json!(pending as u64 + native["pending"].as_u64().unwrap_or(0));
+            for key in ["write_error", "recovery_files", "recovery_directories"] {
+                result[key] = native[key].clone();
+            }
+        }
+        Ok(result)
     }
     fn unmount(&mut self, check_pending: bool) -> anyhow::Result<()> {
         if self.mounted.is_none() {
@@ -295,7 +310,15 @@ impl App {
         }
         #[cfg(windows)]
         {
-            let _ = check_pending;
+            if check_pending
+                && let Some(p) = &self.connected
+                && twodrive_dev::write_lock::unlocked(&self.state, p)
+            {
+                ensure!(
+                    windows_mount::cache_status(self, p)?["pending"] == 0,
+                    "挂载仍有未上传内容，请关闭编辑器并等待同步完成；本机缓存已保留"
+                );
+            }
             windows_mount::stop(self.mounted.as_mut().unwrap())?;
             self.mounted.take();
             Ok(())
@@ -513,6 +536,11 @@ impl App {
             .unwrap_or_default();
         let mut value = serde_json::to_value(c).unwrap();
         value["backup"] = json!(c.backup());
+        value["manual_upload"] = json!(
+            self.backend
+                .as_ref()
+                .is_some_and(|b| b.manual_upload_supported())
+        );
         #[cfg(windows)]
         let supported_mount = windows_mount::installed();
         #[cfg(not(windows))]
@@ -531,7 +559,7 @@ impl App {
             .filter(|a| a["mounted"] == true)
             .map(|a| {
                 json!({"profile":a["profile"],"revision":a["revision"],"name":a["name"],
-                "path":a["mount_path"],"failed":a["mount_failed"]})
+                "path":a["mount_path"],"writable":a["writable"],"failed":a["mount_failed"]})
             })
             .collect();
         let gateway_dead = self
@@ -584,6 +612,7 @@ impl App {
             "multi_connection":true,"storage_usage":true,"connections":self.config.profiles.iter().filter(|p|self.online(&p.id)).map(|p|json!({"id":p.id,"revision":p.revision,"account_name":self.account_name(p)})).collect::<Vec<_>>(),
             "mounted":self.mounted.is_some(),"mount_failed":mount_dead,"gateway_failed":gateway_dead,"mount_support":mount_support,
             "accounts":accounts,"overall":overall,"mounts":mounts,
+            "write_lock":{"configured":twodrive_dev::write_lock::configured(&self.state)},
             "cache":cache,"network":network,
             "account_name": self.connected.as_ref().and_then(|p| self.account_name(p)),
             "autostart":self.autostart_path()?.exists()}),
@@ -642,6 +671,23 @@ impl App {
                 &cancel,
             ),
             "profiles" => Ok(self.public_profiles()),
+            "write_recovery" => {
+                let p = self.profile(string(a, "profile")?)?;
+                let mut directories = vec![self.mount_state(&p).join("windows-accounts")];
+                if let Some(key) = providers::descriptor(&p.kind)?["write_recovery_field"].as_str()
+                {
+                    directories.push(PathBuf::from(p.option(key)).join("recovery"));
+                }
+                for directory in &directories {
+                    State::new(directory.clone())?;
+                }
+                Ok(json!({"directories":directories}))
+            }
+            "set_write_password" => {
+                twodrive_dev::write_lock::set_password(&self.state, string(a, "password")?)?;
+                self.status()
+            }
+            "set_access" => self.change_access(a, &cancel),
             "save_profile" => {
                 let mut p: Profile = serde_json::from_value(a.clone())?;
                 p.revision = twodrive_dev::state::random_secret();
@@ -910,6 +956,7 @@ pub fn run() -> anyhow::Result<()> {
         return windows_mount::worker(&app, &app.profile(id)?);
     }
     let _lock = app.state.run_lock()?;
+    twodrive_dev::write_lock::begin_run(&app.state)?;
     if let Some(root) = &app.args.native_local_fixture_root {
         app.native_fixture = local_files::NativeFixture::start(root)?;
     }

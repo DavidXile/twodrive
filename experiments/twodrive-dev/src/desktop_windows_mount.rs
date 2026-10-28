@@ -1,5 +1,6 @@
 //! Owned Windows read-only mount over a generic private Provider bridge.
 use super::*;
+use sha2::{Digest, Sha256};
 use std::path::{Component, Prefix};
 use twodrive_dev::{rclone_drive, readonly_mount::Bridge, state::random_secret};
 
@@ -14,8 +15,8 @@ pub(super) fn installed() -> bool {
         })
 }
 pub(super) fn support() -> Value {
-    json!({"supported":true,"platform":"windows","driver_installed":installed(),"readonly":true,
-        "help":"Windows 挂载为只读文件夹，可浏览、打开和复制文件。首次打开需下载文件到临时缓存；关闭客户端会卸载。",
+    json!({"supported":true,"platform":"windows","driver_installed":installed(),"readonly":false,"editable":true,
+        "help":"挂载权限跟随每个网盘的写入锁；解锁后可编辑。保存先进入本机缓存，请等待上传完成再卸载。",
         "driver_url":"https://winfsp.dev/rel/"})
 }
 pub(super) fn require_owner(profile: &Profile, args: &Value) -> anyhow::Result<()> {
@@ -72,7 +73,7 @@ pub(super) fn start(app: &App, p: &Profile, cancel: &AtomicBool) -> anyhow::Resu
         &providers::protected_paths(p)?,
     )?;
     ensure!(
-        app.cache(p, false)?["pending"] == 0,
+        app.cache(p, false)?["legacy_pending"].as_u64().unwrap_or(0) == 0,
         "旧挂载缓存仍有待处理数据，请先恢复原挂载"
     );
     let mut command = Command::new(std::env::current_exe()?);
@@ -171,6 +172,7 @@ fn start_component(
     exe: &Path,
     bridge_address: std::net::SocketAddr,
     bridge_token: &str,
+    cache_path: &Path,
 ) -> anyhow::Result<(Process, Control)> {
     let reservation = std::net::TcpListener::bind("127.0.0.1:0")?;
     let address = reservation.local_addr()?;
@@ -207,6 +209,7 @@ fn start_component(
             "--timeout=330s",
             "--contimeout=5s",
         ])
+        .env("RCLONE_CACHE_DIR", cache_path)
         .env("RCLONE_RC_ADDR", address.to_string())
         .env("RCLONE_RC_USER", &control.username)
         .env("RCLONE_RC_PASS", &control.password)
@@ -267,13 +270,28 @@ pub(super) fn worker(app: &App, p: &Profile) -> anyhow::Result<()> {
         &providers::protected_paths(p)?,
     )?;
     let session = app.state.read(&format!("session-{}.json", p.id))?;
-    let (backend, _) = providers::restore_session(p, &session, &app.state.dir.join("paused"))?;
+    let (backend, binding) =
+        providers::restore_session(p, &session, &app.state.dir.join("paused"))?;
     let cache = State::new(app.mount_state(p).join("windows-readonly"))?;
     let _lock = cache.run_lock()?;
-    let bridge = Bridge::start(backend, &cache.dir)?;
-    let (mut component, control) =
-        start_component(&rclone_drive::binary()?, bridge.address, &bridge.token)?;
-    control.call("mount/mount", json!({"fs":"TWODRIVE:","mountPoint":p.mount_path,"mountOpt":{"VolName":"TwoDrive"},"vfsOpt":{"ReadOnly":true,"CacheMode":0,"DirCacheTime":"5s"}}))?;
+    let writable = backend.manual_upload_supported();
+    let persistent = State::new(account_cache(app, p, &binding).join("vfs"))?;
+    let recovery = account_cache(app, p, &binding).join("write-recovery");
+    if writable && dirty_cache(&persistent.dir)? == 0 && recovery.join("observed.json").exists() {
+        fs::remove_file(recovery.join("observed.json"))?;
+    }
+    let bridge = if writable {
+        Bridge::start_writable(backend, &cache.dir, &recovery)?
+    } else {
+        Bridge::start(backend, &cache.dir)?
+    };
+    let (mut component, control) = start_component(
+        &rclone_drive::binary()?,
+        bridge.address,
+        &bridge.token,
+        &persistent.dir,
+    )?;
+    control.call("mount/mount", json!({"fs":"TWODRIVE:","mountPoint":p.mount_path,"mountOpt":{"VolName":"TwoDrive"},"vfsOpt":{"ReadOnly":!writable,"CacheMode":if writable{3}else{0},"WriteBack":"0s","DirCacheTime":"5s","CacheMaxAge":"24h","CachePollInterval":"5s"}}))?;
     println!(
         "{}",
         json!({"ready":true,"profile":p.id,"revision":p.revision})
@@ -288,15 +306,34 @@ pub(super) fn worker(app: &App, p: &Profile) -> anyhow::Result<()> {
         }
         let _ = send.send(()); // Parent pipe closed: never leave a native mount.
     });
+    let mut sample = Instant::now() - Duration::from_secs(2);
     loop {
         ensure!(component.0.try_wait()?.is_none(), "挂载组件已退出");
+        if writable && sample.elapsed() >= Duration::from_secs(1) {
+            let result = control.call("vfs/stats", json!({}));
+            let (pending, error) = match result {
+                Ok(v) => (
+                    v["diskCache"]["uploadsInProgress"].as_u64().unwrap_or(0)
+                        + v["diskCache"]["uploadsQueued"].as_u64().unwrap_or(0),
+                    v["diskCache"]["erroredFiles"].as_u64().unwrap_or(0) > 0
+                        || v["diskCache"]["outOfSpace"] == true,
+                ),
+                Err(_) => (1, true),
+            };
+            persistent.save("status.json", &json!({"pending":pending,"error":error}))?;
+            sample = Instant::now();
+        }
         match receive.recv_timeout(Duration::from_millis(200)) {
             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if writable && dirty_cache(&persistent.dir)? > 0 {
+                    continue;
+                }
                 if control
                     .call("mount/unmount", json!({"mountPoint":p.mount_path}))
                     .is_ok()
                 {
                     let _ = control.call("core/quit", json!({}));
+                    persistent.save("status.json", &json!({"pending":0,"error":false}))?;
                     break;
                 }
             }
@@ -306,6 +343,72 @@ pub(super) fn worker(app: &App, p: &Profile) -> anyhow::Result<()> {
     drop(component);
     drop(bridge);
     Ok(())
+}
+
+fn account_cache(app: &App, p: &Profile, binding: &str) -> PathBuf {
+    app.mount_state(p)
+        .join("windows-accounts")
+        .join(format!("{:x}", Sha256::digest(binding.as_bytes())))
+}
+/// Inspect only our private metadata, including dirty files whose handles have
+/// not closed yet. RC upload queues alone do not include those open editors.
+fn dirty_cache(root: &Path) -> anyhow::Result<u64> {
+    let meta = root.join("vfsMeta");
+    if !meta.exists() {
+        return Ok(0);
+    }
+    let mut stack = vec![meta];
+    let mut pending = 0;
+    let mut visited = 0;
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            visited += 1;
+            ensure!(visited <= 100000, "本机写入缓存项目过多，请先处理缓存");
+            let kind = entry.file_type()?;
+            if kind.is_symlink() {
+                pending += 1;
+            } else if kind.is_dir() {
+                stack.push(entry.path());
+            } else if kind.is_file() {
+                if entry.metadata()?.len() > 65536 {
+                    pending += 1;
+                    continue;
+                }
+                let value: Option<Value> = fs::read(entry.path())
+                    .ok()
+                    .and_then(|b| serde_json::from_slice(&b).ok());
+                if value.as_ref().is_none_or(|v| v["Dirty"] == true) {
+                    pending += 1;
+                }
+            }
+        }
+    }
+    Ok(pending)
+}
+pub(super) fn cache_status(app: &App, p: &Profile) -> anyhow::Result<Value> {
+    let binding = app
+        .saved_session(p)
+        .and_then(|v| v["binding"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let root = account_cache(app, p, &binding);
+    let vfs = root.join("vfs");
+    let pending = dirty_cache(&vfs)?;
+    let report: Value = fs::read(vfs.join("status.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(json!({}));
+    let recovery = twodrive_dev::mount_write::recovery_status(&root.join("write-recovery"))?;
+    let mut directories = vec![app.mount_state(p).join("windows-accounts")];
+    if let Ok(d) = providers::descriptor(&p.kind)
+        && let Some(key) = d["write_recovery_field"].as_str()
+    {
+        directories.push(PathBuf::from(p.option(key)).join("recovery"));
+    }
+    Ok(
+        json!({"bytes":recovery["bytes"],"pending":pending,"write_error":report["error"]==true,
+        "recovery_files":recovery["files"],"recovery_directories":directories,"released":0}),
+    )
 }
 
 #[cfg(test)]
@@ -370,6 +473,7 @@ mod tests {
             &exe,
             "127.0.0.1:1".parse().unwrap(),
             "synthetic-bridge-token",
+            tempfile::tempdir().unwrap().path(),
         )
         .unwrap();
         assert_eq!(

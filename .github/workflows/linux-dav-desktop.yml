@@ -28,6 +28,7 @@ on:
       - 'scripts/test-desktop-multi.py'
       - 'scripts/test-desktop-startup.py'
       - 'scripts/test-windows-readonly-mount.py'
+      - 'scripts/test-windows-editable-mount.py'
       - 'scripts/test-desktop-sharing.py'
       - 'scripts/test_engine_fixture.py'
       - 'scripts/test-msix-runtime.ps1'
@@ -182,6 +183,8 @@ jobs:
           $env:TWODRIVE_RCLONE_BIN = $env:TWODRIVE_TEST_RCLONE
           python scripts/test-windows-readonly-mount.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Per-account write password and editable Windows mounts
+        run: python scripts/test-windows-editable-mount.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe --report desktop-editable-mount.json --allow-missing-driver
       - name: Flutter checks and native Windows build
         working-directory: apps/dav
         run: |
@@ -199,7 +202,7 @@ jobs:
           Copy-Item dist/rclone/* apps/dav/build/windows/x64/runner/Release/
           Copy-Item scripts/install-desktop-windows.ps1 apps/dav/build/windows/x64/runner/Release/
           New-Item -ItemType Directory -Force apps/dav/build/windows/x64/runner/Release/docs | Out-Null
-          Copy-Item doc/provider-integration-spec.md,doc/storage-connections-dev.md,doc/desktop-sharing-validation.md,doc/google-drive-dev.md,doc/icloud-drive.md,doc/tray-positioning-2026-10-14.md apps/dav/build/windows/x64/runner/Release/docs/
+          Copy-Item doc/provider-integration-spec.md,doc/storage-connections-dev.md,doc/desktop-sharing-validation.md,doc/google-drive-dev.md,doc/icloud-drive.md,doc/windows-write-lock.md,doc/tray-positioning-2026-10-14.md apps/dav/build/windows/x64/runner/Release/docs/
           Copy-Item packaging/development/INSTALL-WINDOWS.md apps/dav/build/windows/x64/runner/Release/INSTALL.md
       - name: Windows native tray smoke
         run: python scripts/test-desktop-windows-ui.py apps/dav/build/windows/x64/runner/Release/twodrive_dav.exe
