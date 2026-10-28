@@ -52,6 +52,7 @@ Existing investigation paths are retained so earlier release links continue to w
 
 - [Third-party provider/auth/upload design specification / 第三方网盘与配套组件设计规范](provider-integration-spec.md)
 - [iCloud Drive 本机预览接入与验证边界](icloud-drive.md)
+- [百度网盘官方授权、只读浏览与挂载预览](baidu-netdisk.md)
 - [Tray positioning / 托盘居中与 X11、Wayland 验证](tray-positioning-2026-10-14.md)
 - [Storage connections / 存储连接与设备发现](storage-connections-dev.md)
 - [Desktop sharing GUI / 服务端 GUI、连接文件与验证](desktop-sharing-validation.md)

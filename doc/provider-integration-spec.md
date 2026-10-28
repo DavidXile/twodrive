@@ -104,7 +104,7 @@ flowchart LR
 
 **规划边界**：当前 IPC 没有统一 `auth_state` 枚举、独立 `login` 请求或在线授权升级流程。未来若新增，须定义 attempt ID、阶段、取消与超时、权限/账号变化后的 revision/binding 规则，再同步前后端与测试；不能只在 UI 增加按钮或把当前 `connect` 接口描述成已有这些字段。
 
-图形认证可在现有 `provider_action` 返回一次性 `auth` 问题：`title/label/help/secret/required` 定义一个输入项，`attempt` 绑定当前步骤，`reply_action/cancel_action/context` 定义后续动作。`alternatives` 可提供短信等选项。前端只呈现 schema，不解释网盘协议；答案只随本次私有 IPC 传递，不写入 profile、公开 status、operation 通知或日志。步骤切换销毁输入控制器，取消传回当前 attempt；过期或重放不得影响新尝试。适配器隐藏原始状态、密码默认值、令牌和协议错误正文，并在可取消进程边界内调用认证组件。成功返回 `authenticated=true` 及非秘密配置后，仍需保存并通过正常 connect 验证盘可用；登录成功不能伪装成已经连接。iCloud 的暂存配置与原账号配置分离，取消保留原登录。
+图形认证可在现有 `provider_action` 返回一次性 `auth` 问题：`title/label/help/secret/required` 定义一个输入项，`attempt` 绑定当前步骤，`reply_action/cancel_action/context` 定义后续动作。`alternatives` 可提供短信等选项。`confirmation=true` 可隐藏输入框，显示可选的 `display_code/verification_url` 和 `submit_label`，供官方网页授权后确认；内部 device_code、令牌不能出现在显示字段。打开网页由适配器验证受信任地址后执行，前端仍不解释 OAuth 或网盘协议。答案只随本次私有 IPC 传递，不写入 profile、公开 status、operation 通知或日志。步骤切换销毁输入控制器，取消传回当前 attempt；过期或重放不得影响新尝试。适配器隐藏原始状态、密码默认值、令牌和协议错误正文，并在可取消进程边界内调用认证组件。成功返回 `authenticated=true` 及非秘密配置后，仍需保存并通过正常 connect 验证盘可用；登录成功不能伪装成已经连接。iCloud 的暂存配置与原账号配置分离，取消保留原登录；百度官方设备码授权与只读能力见 [百度预览说明](baidu-netdisk.md)。
 
 ## 4. 上传入口与数据合同
 

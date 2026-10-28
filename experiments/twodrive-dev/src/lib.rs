@@ -1,3 +1,4 @@
+pub mod baidu;
 pub mod capfs;
 pub mod discovery;
 pub mod google;

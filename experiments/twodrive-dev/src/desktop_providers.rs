@@ -9,6 +9,8 @@ use std::{
 };
 use twodrive_dev::{profile::Profile, provider::Backend};
 
+#[path = "providers/baidu.rs"]
+mod baidu;
 #[path = "providers/dav.rs"]
 mod dav;
 #[path = "providers/google.rs"]
@@ -34,6 +36,7 @@ pub fn catalog() -> Value {
         paired::descriptor(),
         google::descriptor(),
         onedrive::descriptor(),
+        baidu::descriptor(),
         icloud::descriptor()
     ])
 }
@@ -44,6 +47,7 @@ fn descriptor(kind: &str) -> anyhow::Result<Value> {
         "google" => Ok(google::descriptor()),
         "onedrive" => Ok(onedrive::descriptor()),
         "icloud" => Ok(icloud::descriptor()),
+        "baidu" => Ok(baidu::descriptor()),
         _ => anyhow::bail!("unsupported provider: {kind}"),
     }
 }
@@ -54,6 +58,7 @@ pub fn prepare(p: &mut Profile, state: &twodrive_dev::state::State) -> anyhow::R
         "peer" => paired::prepare(p, state),
         "google" => google::prepare(p, state),
         "icloud" => icloud::prepare(p, state),
+        "baidu" => baidu::prepare(p, state),
         _ => Ok(()),
     }
 }
@@ -70,6 +75,9 @@ pub fn action(
         "icloud" if matches!(action, "configure" | "auth_reply" | "auth_cancel") => {
             icloud::action(state, action, args, cancel)
         }
+        "baidu" if matches!(action, "configure" | "auth_reply" | "auth_cancel") => {
+            baidu::action(state, action, args, cancel)
+        }
         _ => anyhow::bail!("此提供者不支持该操作"),
     }
 }
@@ -81,6 +89,7 @@ pub fn validate(p: &Profile) -> anyhow::Result<()> {
         "google" => google::validate(p),
         "onedrive" => onedrive::validate(p),
         "icloud" => icloud::validate(p),
+        "baidu" => baidu::validate(p),
         _ => unreachable!(),
     }
 }
@@ -128,6 +137,9 @@ pub fn public_profile(p: &Profile) -> Value {
         if p.kind == "icloud" {
             value["login_required"] = json!(icloud::login_required(p));
         }
+        if p.kind == "baidu" {
+            value["login_required"] = json!(baidu::login_required(p));
+        }
         value["provider_label"] = d["label"].clone();
         value["account_label"] = d["account_label"].clone();
         value["icon"] = d["icon"].clone();
@@ -174,6 +186,7 @@ pub fn connect(
         "google" => google::connect(p, cancel, network),
         "onedrive" => onedrive::connect(p, cancel, network),
         "icloud" => icloud::connect(p, cancel, network),
+        "baidu" => baidu::connect(p, cancel, network),
         _ => unreachable!(),
     }
 }
@@ -189,6 +202,7 @@ pub fn restore(p: &Profile, recipe: &Value, paused: &Path) -> anyhow::Result<Bac
         "google" => google::restore(p, recipe)?,
         "onedrive" => onedrive::restore(p, recipe)?,
         "icloud" => icloud::restore(p, recipe)?,
+        "baidu" => baidu::restore(p, recipe)?,
         _ => anyhow::bail!("unsupported provider"),
     };
     Ok(backend.with_pause_file(paused.to_path_buf()))
@@ -243,6 +257,7 @@ pub fn sign_out(p: &Profile) -> anyhow::Result<()> {
         "google" => google::sign_out(p)?,
         "onedrive" => onedrive::sign_out(p)?,
         "icloud" => icloud::sign_out(p)?,
+        "baidu" => baidu::sign_out(p)?,
         _ => {}
     }
     Ok(())
@@ -251,6 +266,36 @@ pub fn sign_out(p: &Profile) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn baidu_schema_uses_private_per_account_credentials_and_readonly_workers() {
+        let d = descriptor("baidu").unwrap();
+        assert_eq!(d["login_action"], "configure");
+        assert_eq!(d["capabilities"]["upload"], false);
+        assert_eq!(d["capabilities"]["backup"], false);
+        let dir = tempfile::tempdir().unwrap();
+        let state = twodrive_dev::state::State::new(dir.path().join("state")).unwrap();
+        let mut p: Profile = serde_json::from_value(json!({"id":"baidu-one","kind":"baidu","network_route":"system","app_key":"synthetic-key","secret_key":"synthetic-secret"})).unwrap();
+        prepare(&mut p, &state).unwrap();
+        validate(&p).unwrap();
+        assert!(p.option("app_key").is_empty() && p.option("secret_key").is_empty());
+        let mut other = p.clone();
+        other.id = "baidu-two".into();
+        other.options.remove("baidu_state");
+        prepare(&mut other, &state).unwrap();
+        assert_ne!(p.option("baidu_state"), other.option("baidu_state"));
+        assert_eq!(public_profile(&p)["login_required"], true);
+        assert!(!public_profile(&p).to_string().contains("synthetic-"));
+        assert!(
+            restore(
+                &p,
+                &json!({"kind":"baidu","revision":"stale"}),
+                Path::new("unused")
+            )
+            .is_err()
+        );
+        p.writable = true;
+        assert!(validate(&p).is_err());
+    }
     #[test]
     fn icloud_schema_is_registered_read_only_and_owns_its_private_state() {
         let entries = catalog();
