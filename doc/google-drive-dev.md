@@ -70,3 +70,15 @@ python3 scripts/verify-google-drive.py \
 Final local checks: 58 Rust tests in the standalone experiment, 13 Flutter tests, one Python verifier regression, Rust formatting and strict Clippy, Flutter analysis and Linux release build passed. These checks include local substitutes; the two linked reports identify the separately executed live Google checks. The stable workspace's full suite and native Windows Google execution were not rerun. Source remains on the local `dev` branch; no GitHub release was created for this work.
 
 发布：[Development 0.1.2 Release](https://github.com/LumiaBlack51/twodrive/releases/tag/dev-v0.1.2)（Linux/Windows、源码、规范、校验和与验证报告）；[最终构建与范围](development-0.1.2.md)。
+
+## 2026-10-28 Windows 本机预览补充
+
+用户已完成本机网页授权，当前原 state 中的四个账号均有匹配的桌面 session；Google 的离线令牌已保存，路径为 `D:\TwoDrive\GoogleDrive`。本次没有复制其他电脑的登录令牌。桌面应用 OAuth 凭据标识应用，不等于某台电脑已经登录；Windows 私密令牌由当前用户 DPAPI 保护。
+
+Google Provider 现补齐 `storage_usage`，仅查询既有 Drive v2 `about` 的 `quotaType,quotaBytesTotal,quotaBytesUsedAggregate`。展示的是可能与 Gmail、Photos 共用的**账号空间**，不会把 Drive 单项用量当成账号总用量；不遍历私人文件估算，不为查询容量要求额外授权。不限量账号不捏造总容量，零值、超额使用及缺失字段保留真实含义；无效响应或请求失败返回错误，不冒充“不支持”。依据 [Google about 配额字段](https://developers.google.com/workspace/drive/api/reference/rest/v2/about)。
+
+另显式开启 reqwest `system-proxy`：未设置 HTTP(S) 代理环境变量时，Windows 的静态用户系统代理也可用于 Google 令牌/API 请求。`direct` 仍明确禁用代理。不修改系统代理，未新增 PAC/WPAD 支持。无凭据探针在旧功能图下系统路由 15 秒超时、显式本机代理可达；修复后系统路由可达而 direct 仍超时。探针只有向公开 token 端点的 GET，不包含 OAuth 码、令牌或 Drive 文件请求；404 在这里表示网络可达，不等于登录成功。
+
+四账号同时保持连接的既有实现不变：在线切换先返回 `retained=true`，不进入 Provider 登录；UI 对此显示“正在切换网盘”。启动通过已保存 session 恢复所有账号，遇到过期授权会单独报错，不静默混用其他账号。127.0.0.1 回调接收成功只表示收到授权码，后续令牌交换、身份探测成功后才是客户端登录成功。
+
+验证：新增容量回归在旧代码因返回 None 失败；修复后覆盖账号总用量区别于 Drive 用量、只读查询、不扫描目录、不限量/零值/超额/缺失、无效数值/HTTP 错误和前后取消。126 次默认 Rust 执行、78 项 Flutter、严格检查及 Windows release 构建通过，5 项组件默认忽略不计入。实际包的独立 WinFsp 只读 5 组、密码保护编辑 7 组及新进程启动恢复 6 组回归通过，均未使用用户云盘。候选包待部署；真实 Google 容量数值、Windows Google 挂载读取及重新启动后的四账号真实恢复尚待更新后验收，不把本机模拟当成这些结论。故障记录见 TD-20261028-22 至 25。

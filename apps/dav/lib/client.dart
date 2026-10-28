@@ -612,29 +612,32 @@ class StorageClient extends ChangeNotifier {
     }
   }
 
-  Future<void> connect([String? profileId]) => action('正在登录并连接', () async {
-    final id = profileId ?? selected;
-    if (id == null) throw StateError('请先添加连接');
-    if (connected && status['profile'] == id) return;
-    _browseGeneration++;
-    activeId = ++_id;
-    try {
-      final result = await request('connect', {'id': id}, activeId);
-      await refreshStatus();
-      selected = id;
-      if (result['entries'] is List) {
-        path = '/';
-        entries = (result['entries'] as List)
-            .map((e) => {...e as Json, ...target})
-            .toList();
+  Future<void> connect([String? profileId]) => action(
+    isProfileConnected(profileId ?? selected ?? '') ? '正在切换网盘' : '正在登录并连接',
+    () async {
+      final id = profileId ?? selected;
+      if (id == null) throw StateError('请先添加连接');
+      if (connected && status['profile'] == id) return;
+      _browseGeneration++;
+      activeId = ++_id;
+      try {
+        final result = await request('connect', {'id': id}, activeId);
+        await refreshStatus();
+        selected = id;
+        if (result['entries'] is List) {
+          path = '/';
+          entries = (result['entries'] as List)
+              .map((e) => {...e as Json, ...target})
+              .toList();
+        }
+        _directoryStale = true;
+      } finally {
+        await refreshStatus();
+        if (connected) selected = status['profile'] as String;
+        notifyListeners();
       }
-      _directoryStale = true;
-    } finally {
-      await refreshStatus();
-      if (connected) selected = status['profile'] as String;
-      notifyListeners();
-    }
-  });
+    },
+  );
 
   /// Restore every previously authenticated account once per app process.
   /// The engine refuses browser login here and validates revision and binding.
