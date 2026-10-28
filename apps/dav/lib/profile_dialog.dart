@@ -555,7 +555,7 @@ class _ProfileDialogState extends State<ProfileDialog> {
                     (f) => f['advanced'] == true,
                   ))
                     providerField(f),
-                  if (Platform.isLinux)
+                  if (Platform.isLinux || Platform.isWindows)
                     field('mount_path', '挂载目录 · 留空自动创建独立目录'),
                 ],
               ),

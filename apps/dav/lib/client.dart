@@ -99,6 +99,10 @@ class StorageClient extends ChangeNotifier {
     await refreshStatus();
   });
   bool get canMount => status['capabilities']?['mount'] == true;
+  bool get mountSupported => status['mount_support']?['supported'] == true;
+  bool get readOnlyMount => status['mount_support']?['readonly'] == true;
+  bool get mountDriverMissing =>
+      status['mount_support']?['driver_installed'] == false;
   Json get nativeItemCapabilities => Map<String, dynamic>.from(
     status['local_files']?['item_status'] as Map? ?? {},
   );
@@ -669,11 +673,16 @@ class StorageClient extends ChangeNotifier {
     }
   }
 
-  Future<void> mountToggle() => action(mounted ? '正在卸载' : '正在挂载', () async {
-    activeId = ++_id;
-    await request(mounted ? 'unmount' : 'mount', {}, activeId);
-    await refreshStatus();
-  });
+  Future<void> mountToggle() {
+    final op = mounted ? 'unmount' : 'mount';
+    final owner = target;
+    return action(op == 'unmount' ? '正在卸载' : '正在挂载', () async {
+      activeId = ++_id;
+      await request(op, owner, activeId);
+      await refreshStatus();
+    });
+  }
+
   Future<String?> save(Json profile) async {
     String? id;
     await action('保存连接', () async {

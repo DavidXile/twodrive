@@ -24,6 +24,7 @@ on:
       - 'scripts/test-storage-connections.py'
       - 'scripts/test-desktop-queue.py'
       - 'scripts/test-desktop-multi.py'
+      - 'scripts/test-windows-readonly-mount.py'
       - 'scripts/test-desktop-sharing.py'
       - 'scripts/test_engine_fixture.py'
       - 'scripts/test-msix-runtime.ps1'
@@ -74,6 +75,7 @@ jobs:
           python3 -m unittest discover -s scripts -p test_icloud_validation_guard.py
           python3 scripts/install-rclone-component.py --platform linux-amd64 --destination dist/rclone
           TWODRIVE_TEST_RCLONE="$PWD/dist/rclone/rclone" cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features mount rclone_drive:: -- --ignored
+          TWODRIVE_TEST_RCLONE="$PWD/dist/rclone/rclone" cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features mount readonly_mount::tests::official_rclone_reads_the_private_provider_bridge -- --ignored
       - name: Desktop IPC and WebDAV operations
         run: |
           python3 -m unittest discover -s scripts -p 'test_*.py'
@@ -166,6 +168,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:TWODRIVE_TEST_RCLONE = (Resolve-Path dist/rclone/rclone.exe).Path
           cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features native-local-fixture rclone_drive:: -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features native-local-fixture readonly_mount::tests::official_rclone_reads_the_private_provider_bridge -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features native-local-fixture official_local_control_authentication_and_readonly_options -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:TWODRIVE_RCLONE_BIN = $env:TWODRIVE_TEST_RCLONE
+          python scripts/test-windows-readonly-mount.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Flutter checks and native Windows build
         working-directory: apps/dav

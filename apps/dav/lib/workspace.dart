@@ -15,6 +15,7 @@ import 'native_local_files.dart';
 import 'file_manager.dart';
 import 'connection_card.dart';
 import 'connection_access.dart';
+import 'mount_card.dart';
 
 String bytes(num value) {
   if (value < 1024) {
@@ -470,6 +471,23 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                         ),
                       ),
                       const Spacer(),
+                      if ((c.connected || c.mounted) && c.mountSupported) ...[
+                        TextButton.icon(
+                          onPressed: c.busy
+                              ? null
+                              : () => c.mounted || c.canMount
+                                    ? c.mountToggle()
+                                    : showMountHelp(context),
+                          icon: Icon(
+                            c.mounted
+                                ? Icons.eject_outlined
+                                : Icons.folder_open_outlined,
+                            size: 18,
+                          ),
+                          label: Text(c.mounted ? '卸载' : '挂载'),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
                       if (c.connected) ConnectionAccess(client: c),
                       const SizedBox(width: 12),
                       FilledButton.tonalIcon(
@@ -1030,46 +1048,9 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
               child: Text('本机文件所有者不可用。原生操作已关闭，请保留目录与恢复日志。'),
             ),
           ),
-        if (c.canMount)
-          Card(
-            color: Colors.white,
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    '文件管理器挂载',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 10),
-                  SelectableText(
-                    c.profile?['mount_path'] as String? ?? '请先配置连接的挂载目录',
-                  ),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 12,
-                    children: [
-                      FilledButton.tonalIcon(
-                        onPressed: c.busy || !c.connected
-                            ? null
-                            : c.mountToggle,
-                        icon: Icon(c.mounted ? Icons.eject : Icons.folder_open),
-                        label: Text(c.mounted ? '卸载' : '挂载'),
-                      ),
-                      OutlinedButton(
-                        onPressed: c.mounted ? openMount : null,
-                        child: const Text('在文件管理器中打开'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  const Text('挂载按需下载。写入先保存到本地缓存，待上传完成后才代表服务器已收到。'),
-                ],
-              ),
-            ),
-          ),
-        if (c.canMount)
+        if (c.canMount || c.mountSupported)
+          MountCard(client: c, onOpen: openMount),
+        if (c.canMount && !c.readOnlyMount)
           Card(
             color: Colors.white,
             child: ListTile(

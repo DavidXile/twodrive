@@ -38,6 +38,9 @@ mod local_files;
 mod mount;
 #[path = "desktop_sharing.rs"]
 mod sharing;
+#[cfg(windows)]
+#[path = "desktop_windows_mount.rs"]
+mod windows_mount;
 
 #[derive(Parser)]
 struct Args {
@@ -86,6 +89,7 @@ fn string<'a>(args: &'a Value, key: &str) -> anyhow::Result<&'a str> {
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
 }
+#[cfg(not(windows))]
 fn is_mount(path: &Path) -> anyhow::Result<bool> {
     Ok(Command::new("mountpoint")
         .args(["-q", "--"])
@@ -109,9 +113,12 @@ impl Drop for Process {
         let _ = self.0.wait();
     }
 }
-fn spawn(mut command: Command) -> anyhow::Result<Process> {
+fn spawn(command: Command) -> anyhow::Result<Process> {
+    spawn_with_input(command, false)
+}
+fn spawn_with_input(mut command: Command, input: bool) -> anyhow::Result<Process> {
     command
-        .stdin(Stdio::null())
+        .stdin(if input { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // No gateway or mount worker should outlive a crashed desktop engine.
@@ -278,27 +285,37 @@ impl App {
         if self.mounted.is_none() {
             return Ok(());
         }
-        let p = self.connected.as_ref().context("missing mount profile")?;
-        if !is_mount(&p.mount_path)? {
+        #[cfg(windows)]
+        {
+            let _ = check_pending;
+            windows_mount::stop(self.mounted.as_mut().unwrap())?;
             self.mounted.take();
-            return Ok(());
+            Ok(())
         }
-        if check_pending {
+        #[cfg(not(windows))]
+        {
+            let p = self.connected.as_ref().context("missing mount profile")?;
+            if !is_mount(&p.mount_path)? {
+                self.mounted.take();
+                return Ok(());
+            }
+            if check_pending {
+                ensure!(
+                    self.cache(p, false)?["pending"] == 0,
+                    "挂载仍有未上传或冲突的数据，请先完成同步；缓存已保留"
+                );
+            }
+            let result = Command::new("fusermount3")
+                .arg("-u")
+                .arg(&p.mount_path)
+                .output()?;
             ensure!(
-                self.cache(p, false)?["pending"] == 0,
-                "挂载仍有未上传或冲突的数据，请先完成同步；缓存已保留"
+                result.status.success(),
+                "挂载仍被占用，请关闭使用该目录的程序后重试"
             );
+            self.mounted.take();
+            Ok(())
         }
-        let result = Command::new("fusermount3")
-            .arg("-u")
-            .arg(&p.mount_path)
-            .output()?;
-        ensure!(
-            result.status.success(),
-            "挂载仍被占用，请关闭使用该目录的程序后重试"
-        );
-        self.mounted.take();
-        Ok(())
     }
     fn disconnect(&mut self) -> anyhow::Result<()> {
         self.unmount(true)?;
@@ -400,12 +417,13 @@ impl App {
             .unwrap_or_default();
         let mut value = serde_json::to_value(c).unwrap();
         value["backup"] = json!(c.backup());
-        value["mount"] = json!(
-            self.backend.is_some()
-                && cfg!(all(target_os = "linux", feature = "mount"))
-                && (self.connected.as_ref().is_none_or(|p| !p.writable)
-                    || (c.backup() && c.rename && c.delete))
-        );
+        #[cfg(windows)]
+        let supported_mount = windows_mount::installed();
+        #[cfg(not(windows))]
+        let supported_mount = cfg!(all(target_os = "linux", feature = "mount"))
+            && (self.connected.as_ref().is_none_or(|p| !p.writable)
+                || (c.backup() && c.rename && c.delete));
+        value["mount"] = json!(self.backend.is_some() && supported_mount);
         value
     }
     fn status(&mut self) -> anyhow::Result<Value> {
@@ -443,12 +461,22 @@ impl App {
             .is_some_and(|p| p.0.try_wait().ok().flatten().is_some());
         let network = self.network.snapshot();
         let sharing = self.hosting.status(&self.state).unwrap_or_else(|_| json!({"supported":true,"running":false,"error":"共享配置无法读取，请检查私有状态目录"}));
+        let mount_support = {
+            #[cfg(windows)]
+            {
+                windows_mount::support()
+            }
+            #[cfg(not(windows))]
+            {
+                json!({"supported":cfg!(all(target_os = "linux", feature = "mount"))})
+            }
+        };
         Ok(
             json!({"providers":providers::catalog(),"capabilities":self.capabilities(),"route_fallback":self.network.fallback(),"paused":self.state.dir.join("paused").exists(),"backup":backup,"backup_failed":backup_failed,"mount_activity":mount_activity,
               "version":env!("CARGO_PKG_VERSION"),"sharing":sharing,"local_files":self.native_fixture.capabilities(),
             "connected":self.backend.is_some(),"profile":self.connected.as_ref().map(|p|&p.id),
             "multi_connection":true,"storage_usage":true,"connections":self.config.profiles.iter().filter(|p|self.online(&p.id)).map(|p|json!({"id":p.id,"revision":p.revision,"account_name":self.account_name(p)})).collect::<Vec<_>>(),
-            "mounted":self.mounted.is_some(),"mount_failed":mount_dead,"gateway_failed":gateway_dead,
+            "mounted":self.mounted.is_some(),"mount_failed":mount_dead,"gateway_failed":gateway_dead,"mount_support":mount_support,
             "cache":cache,"network":network,
             "account_name": self.connected.as_ref().and_then(|p| self.account_name(p)),
             "autostart":self.autostart_path()?.exists()}),
@@ -692,60 +720,84 @@ impl App {
                 self.cache(&p, req.op == "clear_cache")
             }
             "mount" => {
-                ensure!(
-                    cfg!(all(target_os = "linux", feature = "mount")),
-                    "此平台暂不支持文件管理器挂载，请使用文件浏览与文件夹备份"
-                );
-                ensure!(self.mounted.is_none(), "已经挂载");
-                let p = self.connected.as_ref().context("请先连接")?;
-                ensure!(
-                    !is_mount(&p.mount_path)?,
-                    "目录已被其他进程挂载，请使用另一个空目录"
-                );
-                ensure!(self.capabilities()["mount"] == true, "此连接不支持安全挂载");
-                let mut cmd = Command::new(std::env::current_exe()?);
-                cmd.arg("--state")
-                    .arg(&self.state.dir)
-                    .arg("--peer-bin")
-                    .arg(&self.args.peer_bin)
-                    .arg("--launcher")
-                    .arg(&self.args.launcher)
-                    .arg("--mount-worker")
-                    .arg(&p.id);
-                let mut child = spawn(cmd)?;
-                drain_errors(&mut child, self.network.clone());
-                if let Some(mut stdout) = child.0.stdout.take() {
-                    thread::spawn(move || {
-                        let _ = std::io::copy(&mut stdout, &mut std::io::sink());
-                    });
+                #[cfg(windows)]
+                {
+                    let context = self.file_context(a)?;
+                    ensure!(
+                        self.connected
+                            .as_ref()
+                            .is_some_and(|p| p.id == context.profile.id),
+                        "当前浏览连接已改变，请重试挂载"
+                    );
+                    ensure!(self.mounted.is_none(), "已经挂载");
+                    let process = windows_mount::start(self, &context.profile, &cancel)?;
+                    self.mounted = Some(process);
+                    self.status()
                 }
-                let start = Instant::now();
-                let ready = (|| -> anyhow::Result<()> {
-                    loop {
-                        ensure!(!cancel.load(Ordering::Relaxed), "挂载已取消");
-                        ensure!(
-                            child.0.try_wait()?.is_none(),
-                            "挂载失败，请检查目录为空、FUSE 可用、缓存绑定匹配"
-                        );
-                        if is_mount(&p.mount_path)? {
-                            break Ok(());
-                        }
-                        ensure!(
-                            start.elapsed() < providers::mount_startup_timeout(p),
-                            "挂载超时"
-                        );
-                        thread::sleep(Duration::from_millis(100));
+                #[cfg(not(windows))]
+                {
+                    ensure!(
+                        cfg!(all(target_os = "linux", feature = "mount")),
+                        "此平台暂不支持文件管理器挂载，请使用文件浏览与文件夹备份"
+                    );
+                    ensure!(self.mounted.is_none(), "已经挂载");
+                    let p = self.connected.as_ref().context("请先连接")?;
+                    ensure!(
+                        !is_mount(&p.mount_path)?,
+                        "目录已被其他进程挂载，请使用另一个空目录"
+                    );
+                    ensure!(self.capabilities()["mount"] == true, "此连接不支持安全挂载");
+                    let mut cmd = Command::new(std::env::current_exe()?);
+                    cmd.arg("--state")
+                        .arg(&self.state.dir)
+                        .arg("--peer-bin")
+                        .arg(&self.args.peer_bin)
+                        .arg("--launcher")
+                        .arg(&self.args.launcher)
+                        .arg("--mount-worker")
+                        .arg(&p.id);
+                    let mut child = spawn(cmd)?;
+                    drain_errors(&mut child, self.network.clone());
+                    if let Some(mut stdout) = child.0.stdout.take() {
+                        thread::spawn(move || {
+                            let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+                        });
                     }
-                })();
-                self.mounted = Some(child);
-                if let Err(error) = ready {
-                    self.unmount(false)
-                        .context("挂载启动未完成且目录被占用，请先关闭占用程序再卸载")?;
-                    return Err(error);
+                    let start = Instant::now();
+                    let ready = (|| -> anyhow::Result<()> {
+                        loop {
+                            ensure!(!cancel.load(Ordering::Relaxed), "挂载已取消");
+                            ensure!(
+                                child.0.try_wait()?.is_none(),
+                                "挂载失败，请检查目录为空、FUSE 可用、缓存绑定匹配"
+                            );
+                            if is_mount(&p.mount_path)? {
+                                break Ok(());
+                            }
+                            ensure!(
+                                start.elapsed() < providers::mount_startup_timeout(p),
+                                "挂载超时"
+                            );
+                            thread::sleep(Duration::from_millis(100));
+                        }
+                    })();
+                    self.mounted = Some(child);
+                    if let Err(error) = ready {
+                        self.unmount(false)
+                            .context("挂载启动未完成且目录被占用，请先关闭占用程序再卸载")?;
+                        return Err(error);
+                    }
+                    self.status()
                 }
-                self.status()
             }
             "unmount" => {
+                #[cfg(windows)]
+                {
+                    windows_mount::require_owner(
+                        self.connected.as_ref().context("请先选择挂载所属连接")?,
+                        a,
+                    )?;
+                }
                 self.unmount(true)?;
                 self.status()
             }
@@ -818,6 +870,10 @@ pub fn run() -> anyhow::Result<()> {
             binding,
             p.writable,
         );
+    }
+    #[cfg(windows)]
+    if let Some(id) = &app.args.mount_worker {
+        return windows_mount::worker(&app, &app.profile(id)?);
     }
     let _lock = app.state.run_lock()?;
     if let Some(root) = &app.args.native_local_fixture_root {
