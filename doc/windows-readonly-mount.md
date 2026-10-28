@@ -1,6 +1,6 @@
 # Windows 只读文件夹挂载
 
-2026-10-28 本地预览实现；尚未部署到用户正在运行的客户端。本机 WinFsp 未安装，真实 Windows 文件系统及 iCloud 挂载尚待验证。
+2026-10-28 本地预览已部署，使用原 Development state。WinFsp 已由用户完成安装，真实 Windows 文件系统上的合成本地数据挂载检查通过；真实 iCloud 挂载仍待用户在 GUI 操作验收。
 
 ## 使用
 
@@ -26,9 +26,10 @@ Rclone 的 [Windows 挂载说明](https://rclone.org/commands/rclone_mount/#inst
 
 - 97 次默认 Rust 测试执行通过（含三个桥接 HTTP 回归、三个 Windows 目标/所属进程/归属回归）；新增两个官方组件检查显式运行通过：实际 Rclone 列表/分段下载/额度，以及 RC 认证/PID/只读选项。默认忽略五项环境相关组件测试，不把忽略算通过。
 - 65 项 Flutter 测试通过，包含缺驱动说明、绑定连接和 revision 的挂载/卸载、失联后卸载、840×580 / 1.4 倍字体和只读说明；静态检查、严格 Rust Clippy 及实际 Windows release 构建通过。失联卸载回归在未修正的本轮草稿上失败，修复经过见 TD-20261028-13。
-- 新包 `TwoDrive-0.1.7-windows-mount-20261028` 已完成九项原认证 IPC 检查，以及七组双合成网盘/独立传输/退出检查。`scripts/test-windows-readonly-mount.py` 在实际新引擎中通过 revision 拒绝和缺驱动提示，`native_mount_verified=false`。驱动存在时该脚本会继续验证真实文件字节、写入拒绝、切换保留、卸载/重挂和退出清理；这些原生检查本机尚未执行。
-- 新增源码和测试不访问用户云盘，不与运行中的 GUI 竞争真实账号。尚未完成：驱动安装后的原生文件系统测试、真实 iCloud 大文件/过期认证及原生应用兼容性；Linux 挂载不在本轮本机验收范围。
+- 新包 `TwoDrive-0.1.7-windows-mount-20261028` 已完成九项原认证 IPC 检查，以及七组双合成网盘/独立传输/退出检查。安装驱动前，`scripts/test-windows-readonly-mount.py` 在实际新引擎中通过 revision 拒绝和缺驱动提示，当时报告 `native_mount_verified=false`。
+- 安装 WinFsp 后，同一新包实际执行 Windows 文件系统挂载，验证文件字节一致、写入拒绝、切换账号保留挂载、卸载/重挂及退出清理，全部通过，最新报告为 `windows-readonly-mount-installed-validation.json`、`native_mount_verified=true`。数据来自隔离的本机 WebDAV Provider，云端请求为零；不把它称为真实 iCloud 挂载验收，也没有注入真实断网故障。
+- 新增源码和独立测试不访问用户云盘，不与运行中的 GUI 竞争真实账号。尚未完成：用户在新 GUI 中的真实 iCloud 挂载、真实大文件/过期认证及原生应用兼容性；Linux 挂载不在本轮本机验收范围。
 
-本机准备的官方 WinFsp 2.1 安装器：`winfsp-2.1.25156.msi`，SHA-256 `073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a`；Authenticode 检查为 Valid，签名者 NAVIMATICS LLC。只下载和检查，没有执行安装。
+本机使用的官方 WinFsp 2.1 安装器：`winfsp-2.1.25156.msi`，SHA-256 `073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a`；Authenticode 检查为 Valid，签名者 NAVIMATICS LLC。安装器已实际启动，交互由用户亲自完成；安装后核对 DLL 版本 `2.1.25156.ddca7bd`，并完成上述原生检查。
 
-当前继续运行原 multi-cloud 包，一个有线程的 GUI 和一个所属引擎；没有替换正在使用的文件、改变原连接或创建真实云盘挂载。挂载版入口仍映射原 Development state，待用户完成驱动安装、亲自退出旧客户端后再进行升级和原生验收。
+用户亲自退出旧 multi-cloud 包后，使用新引擎只读核对原配置：两条连接、revision 和 OneDrive 私有目录保留，profile 文件字节一致，并创建私有备份。默认启动入口已切换为挂载版，仍映射原 Development state；实际窗口和进程路径核对为一个新 GUI 及一个所属引擎，iCloud 自动恢复连接，界面显示挂载入口。没有控制鼠标，没有通过独立后台进程探测真实云盘。挂载实现提交为 `e40219c`，随 [PR #47](https://github.com/LumiaBlack51/twodrive/pull/47) 审查，未发布稳定 Release。

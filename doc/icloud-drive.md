@@ -1,6 +1,6 @@
 # iCloud Drive 本机预览接入
 
-本版本在现有 Development GUI 的“添加连接”中注册 iCloud Drive。协议和认证由独立 Rclone 组件完成，Flutter 消费同一 Provider schema/能力和 IPC，不访问 Apple API。未采用 iCloud for Windows 的本地同步目录。新增的 [Windows 只读文件夹挂载](windows-readonly-mount.md) 通过现有 Provider 合同、本机受保护的只读桥和 WinFsp 实现；原有多网盘包没有该挂载。本机尚缺驱动，不能把实现和组件检查说成实际挂载验收。
+本版本在现有 Development GUI 的“添加连接”中注册 iCloud Drive。协议和认证由独立 Rclone 组件完成，Flutter 消费同一 Provider schema/能力和 IPC，不访问 Apple API。未采用 iCloud for Windows 的本地同步目录。新增的 [Windows 只读文件夹挂载](windows-readonly-mount.md) 通过现有 Provider 合同、本机受保护的只读桥和 WinFsp 实现；原有多网盘包没有该挂载。本机已安装 WinFsp 并部署挂载版，合成本地数据的真实 Windows 文件系统检查通过；原 iCloud 登录自动恢复，真实云盘挂载仍待用户操作验收。
 
 当前实现浏览目录和手动下载。上传、覆盖、新建、移动、删除、同步和备份保持关闭。文件 ID 被封装为绑定登录代次、路径、对象 ID、大小和元数据版本的快照；下载前后再次检查快照和大小。这个元数据指纹不能替代服务端强版本或原子条件写入，同 ID/大小/时间戳的内容变化仍有边界，不能用于生产同步完成证明。
 
