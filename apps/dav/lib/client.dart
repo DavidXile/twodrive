@@ -54,6 +54,8 @@ class StorageClient extends ChangeNotifier {
   Future<void>? _statusRefresh;
   Future<void>? _polling;
   Future<bool>? _shutdown;
+  Future<void>? _startupRestore;
+  bool _restoringStartup = false;
   bool _disposed = false;
   DateTime? _directoryChecked;
   bool _directoryStale = true;
@@ -632,6 +634,70 @@ class StorageClient extends ChangeNotifier {
       notifyListeners();
     }
   });
+
+  /// Restore every previously authenticated account once per app process.
+  /// The engine refuses browser login here and validates revision and binding.
+  Future<void> restoreOnStartup() => _startupRestore ??= action(
+    '正在恢复网盘连接和挂载',
+    () async {
+      _restoringStartup = true;
+      try {
+        final preferred = selected;
+        final candidates = profiles
+            .where((p) => p['startup_ready'] == true)
+            .map((p) => Map<String, dynamic>.from(p))
+            .toList();
+        // Restore the previous browsing account last, retaining all others.
+        final ordered = [
+          ...candidates.where((p) => p['id'] != preferred),
+          ...candidates.where((p) => p['id'] == preferred),
+        ];
+        final failures = <String>[];
+        for (final p in ordered) {
+          if (quitting || _disposed || !available) break;
+          final id = p['id'] as String;
+          final owner = {'profile': id, 'revision': p['revision']};
+          try {
+            activeId = reserveRequestId();
+            await request('resume', {
+              'id': id,
+              'revision': p['revision'],
+            }, activeId);
+            if (quitting || _disposed) break;
+            await refreshStatus();
+          } catch (e) {
+            if (!quitting) {
+              failures.add(
+                '${p['name']}：连接恢复失败，${'$e'.replaceFirst('Bad state: ', '')}',
+              );
+            }
+            continue;
+          }
+          if (quitting || _disposed) break;
+          if (mountSupported && !isProfileMounted(id)) {
+            try {
+              activeId = reserveRequestId();
+              await request('mount', {...owner, 'startup': true}, activeId);
+              if (!quitting && !_disposed) await refreshStatus();
+            } catch (e) {
+              if (!quitting) {
+                failures.add(
+                  '${p['name']}：自动挂载失败，${'$e'.replaceFirst('Bad state: ', '')}',
+                );
+              }
+            }
+          }
+        }
+        if (!quitting && !_disposed) {
+          await loadProfiles();
+          await refreshStatus();
+          if (failures.isNotEmpty) error = failures.join('\n');
+        }
+      } finally {
+        _restoringStartup = false;
+      }
+    },
+  );
   Future<void> disconnect([String? profileId]) => action('正在断开', () async {
     final id = profileId ?? selected;
     await request('disconnect', {'id': ?id});
@@ -796,7 +862,7 @@ class StorageClient extends ChangeNotifier {
   }
 
   Future<bool> _shutdownOnce() async {
-    if (busy || runningTransfers.isNotEmpty) {
+    if ((busy && !_restoringStartup) || runningTransfers.isNotEmpty) {
       error = '请先完成或取消当前操作，再退出。';
       notifyListeners();
       return false;
@@ -807,6 +873,9 @@ class StorageClient extends ChangeNotifier {
     notifyListeners();
     try {
       if (available) {
+        if (_restoringStartup && activeId != null) {
+          await request('cancel', {'id': activeId});
+        }
         await request('quit');
       }
       updates.dispose();

@@ -207,6 +207,45 @@ pub fn restore(p: &Profile, recipe: &Value, paused: &Path) -> anyhow::Result<Bac
     };
     Ok(backend.with_pause_file(paused.to_path_buf()))
 }
+/// Recreate an owned connection using existing credentials only. Unlike worker
+/// restoration, paired connections must start a new owned gateway process.
+pub fn resume(
+    p: &Profile,
+    args: &Args,
+    session: &Value,
+    cancel: &AtomicBool,
+    network: Arc<twodrive_dev::network::Diagnostics>,
+) -> anyhow::Result<Connection> {
+    ensure!(
+        session["kind"].as_str() == Some(&p.kind)
+            && session["revision"].as_str() == Some(&p.revision),
+        "已保存登录与当前配置不匹配，请手动连接"
+    );
+    let expected = session["binding"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .context("缺少已保存的账号身份，请手动连接")?;
+    validate(p)?;
+    let connection = match p.kind.as_str() {
+        "onedrive" => onedrive::resume(p, cancel, network)?,
+        "google" => google::resume(p, cancel, network)?,
+        "peer" => {
+            ensure!(
+                !Path::new(p.option("peer_state"))
+                    .join("pair-invitation.json")
+                    .exists(),
+                "设备配对有新邀请，请手动连接确认"
+            );
+            paired::connect(p, args, cancel, network)?
+        }
+        _ => connect(p, args, cancel, network)?,
+    };
+    ensure!(
+        connection.binding == expected,
+        "登录账号已改变，旧缓存保留，请手动连接确认"
+    );
+    Ok(connection)
+}
 pub fn session(connection: &Connection, p: &Profile) -> Value {
     json!({"kind":p.kind,"revision":p.revision,"binding":connection.binding,"account_name":connection.account_name,"recipe":connection.worker})
 }

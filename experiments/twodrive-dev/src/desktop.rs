@@ -180,6 +180,13 @@ struct App {
     hosting: sharing::Hosting,
 }
 impl App {
+    fn saved_session(&self, p: &Profile) -> Option<Value> {
+        let session: Value = self.state.read(&format!("session-{}.json", p.id)).ok()?;
+        (session["kind"].as_str() == Some(&p.kind)
+            && session["revision"].as_str() == Some(&p.revision)
+            && session["binding"].as_str().is_some_and(|s| !s.is_empty()))
+        .then_some(session)
+    }
     fn profile(&self, id: &str) -> anyhow::Result<Profile> {
         self.config
             .profiles
@@ -209,6 +216,7 @@ impl App {
                 let mut public = providers::public_profile(p);
                 public["account_name"] = json!(self.account_name(p));
                 public["connected"] = json!(self.online(&p.id));
+                public["startup_ready"] = json!(self.saved_session(p).is_some());
                 public
             })
             .collect();
@@ -395,6 +403,14 @@ impl App {
         Ok(())
     }
     fn connect(&mut self, id: &str, cancel: &AtomicBool) -> anyhow::Result<Value> {
+        self.open_connection(id, cancel, false)
+    }
+    fn open_connection(
+        &mut self,
+        id: &str,
+        cancel: &AtomicBool,
+        resume: bool,
+    ) -> anyhow::Result<Value> {
         self.refresh_inactive();
         if let Some(result) = self.select_online(id)? {
             return Ok(result);
@@ -404,8 +420,23 @@ impl App {
         }
         let p = self.profile(id)?;
         let network: Arc<Diagnostics> = Arc::default();
-        let connection = providers::connect(&p, &self.args, cancel, network.clone())?;
-        let entries = connection.backend.list_directory("/")?;
+        let connection = if resume {
+            providers::resume(
+                &p,
+                &self.args,
+                &self
+                    .saved_session(&p)
+                    .context("没有可恢复的登录，请手动连接")?,
+                cancel,
+                network.clone(),
+            )?
+        } else {
+            providers::connect(&p, &self.args, cancel, network.clone())?
+        };
+        let entries = connection.backend.list_directory_checked("/", &mut || {
+            ensure!(!cancel.load(Ordering::Relaxed), "连接已取消");
+            Ok(())
+        })?;
         ensure!(!cancel.load(Ordering::Relaxed), "连接已取消");
         self.state.save(
             &format!("session-{}.json", p.id),
@@ -670,6 +701,14 @@ impl App {
                 Ok(json!({}))
             }
             "connect" => self.connect(string(a, "id")?, &cancel),
+            "resume" => {
+                let p = self.profile(string(a, "id")?)?;
+                ensure!(
+                    a["revision"].as_str() == Some(&p.revision),
+                    "连接配置已改变，请刷新后重试"
+                );
+                self.open_connection(&p.id, &cancel, true)
+            }
             "disconnect" => {
                 let id = a["id"]
                     .as_str()
@@ -982,14 +1021,16 @@ pub fn run() -> anyhow::Result<()> {
             }
             read_requests.retain(|id| flags.contains_key(id));
             if req.op == "quit" {
-                // Only abandon display reads. Transfers/mutations remain subject
-                // to their existing completion and pending-data protections.
+                // Abandon display reads and startup restoration/mounts only.
+                // User transfers/mutations keep their completion protections.
                 for id in &read_requests {
                     if let Some(flag) = flags.get(id) {
                         flag.store(true, Ordering::Relaxed);
                     }
                 }
-            } else if matches!(req.op.as_str(), "list" | "quota") {
+            } else if matches!(req.op.as_str(), "list" | "quota" | "resume")
+                || req.op == "mount" && req.args["startup"] == true
+            {
                 read_requests.insert(id);
             }
             flags.insert(id, Arc::new(AtomicBool::new(false)));
@@ -1148,14 +1189,17 @@ mod tests {
         );
         assert!(!public.to_string().contains("private-secret"));
         assert!(!public.to_string().contains("private-binding"));
+        assert_eq!(public["profiles"][0]["startup_ready"], true);
         let mut stale = session.clone();
         stale["revision"] = json!("old-revision");
         app.state.save("session-active.json", &stale).unwrap();
         assert!(app.status().unwrap()["account_name"].is_null());
+        assert_eq!(app.public_profiles()["profiles"][0]["startup_ready"], false);
         stale = session;
         stale["kind"] = json!("another-provider");
         app.state.save("session-active.json", &stale).unwrap();
         assert!(app.public_profiles()["profiles"][0]["account_name"].is_null());
+        assert_eq!(app.public_profiles()["profiles"][0]["startup_ready"], false);
         let out = Arc::new(Mutex::new(std::io::stdout()));
         let mut other = json!({"id":"other","name":"Other","kind":"dav","url":"https://example.invalid/dav/","mount_path":temp.path().join("mount"),"network_route":"system"});
         let call = |app: &mut App, op: &str, args: Value| {

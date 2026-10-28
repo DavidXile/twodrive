@@ -26,6 +26,7 @@ on:
       - 'scripts/test-storage-connections.py'
       - 'scripts/test-desktop-queue.py'
       - 'scripts/test-desktop-multi.py'
+      - 'scripts/test-desktop-startup.py'
       - 'scripts/test-windows-readonly-mount.py'
       - 'scripts/test-desktop-sharing.py'
       - 'scripts/test_engine_fixture.py'
@@ -84,6 +85,7 @@ jobs:
           python3 scripts/test-dav-desktop.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
           python3 scripts/test-desktop-queue.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
           python3 scripts/test-desktop-multi.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
+          python3 scripts/test-desktop-startup.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
           python3 scripts/test-storage-connections.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
           python3 scripts/test-desktop-sharing.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
       - name: Tray positioning regression
@@ -154,6 +156,8 @@ jobs:
           python scripts/test-desktop-queue.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/test-desktop-multi.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/test-desktop-startup.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/test-desktop-sharing.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -41,8 +41,8 @@ Future<void> main(List<String> args) async {
     ),
     nativeFixtureRoot: fixtureRoot.isEmpty ? null : fixtureRoot,
   );
-  if (client.selected != null && fixtureRoot.isEmpty) {
-    unawaited(client.connect());
+  if (fixtureRoot.isEmpty) {
+    unawaited(client.restoreOnStartup());
   }
   if (args.contains('--background') && trayReady) {
     await windowManager.hide();
