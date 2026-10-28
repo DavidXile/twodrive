@@ -12,7 +12,6 @@ import 'client.dart';
 import 'profile_dialog.dart';
 import 'local_file_preflight.dart';
 import 'native_local_files.dart';
-import 'file_manager.dart';
 import 'connection_card.dart';
 import 'connection_access.dart';
 import 'mount_card.dart';
@@ -163,13 +162,9 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
   }
 
   Future<void> show() => showManagement(page);
-  Future<void> openMount() async {
-    if (c.mounted) {
-      await c.action(
-        '打开本地目录',
-        () => openLocalDirectory(c.profile!['mount_path'] as String),
-      );
-    }
+  Future<void> openMount([String? profileId]) async {
+    final id = profileId ?? c.selected;
+    if (id != null) await c.openMountFolder(id);
   }
 
   Future<void> signOut() async {
@@ -471,23 +466,6 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                         ),
                       ),
                       const Spacer(),
-                      if ((c.connected || c.mounted) && c.mountSupported) ...[
-                        TextButton.icon(
-                          onPressed: c.busy
-                              ? null
-                              : () => c.mounted || c.canMount
-                                    ? c.mountToggle()
-                                    : showMountHelp(context),
-                          icon: Icon(
-                            c.mounted
-                                ? Icons.eject_outlined
-                                : Icons.folder_open_outlined,
-                            size: 18,
-                          ),
-                          label: Text(c.mounted ? '卸载' : '挂载'),
-                        ),
-                        const SizedBox(width: 8),
-                      ],
                       if (c.connected) ConnectionAccess(client: c),
                       const SizedBox(width: 12),
                       FilledButton.tonalIcon(
@@ -609,15 +587,31 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                       ),
                     ),
                   const SizedBox(height: 10),
-                  Text(
-                    c.mounted
-                        ? '已挂载 · ${c.profile?['mount_path']}'
-                        : '文件浏览 · 关闭窗口后可从云朵托盘打开',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: Colors.blueGrey,
+                  if (c.mounts.isNotEmpty)
+                    ConstrainedBox(
+                      key: const ValueKey('mounted-folders'),
+                      constraints: const BoxConstraints(maxHeight: 100),
+                      child: SingleChildScrollView(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            for (final mount in c.mounts)
+                              Text(
+                                '${mount['name']} · ${mount['path']}${mount['failed'] == true ? ' · 需要处理' : ''}',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.blueGrey,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    )
+                  else
+                    const Text(
+                      '文件浏览 · 关闭窗口后可从云朵托盘打开',
+                      style: TextStyle(fontSize: 12, color: Colors.blueGrey),
                     ),
-                  ),
                 ],
               ),
             ),
@@ -917,6 +911,27 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
         ),
       for (final p in c.profiles)
         ConnectionCard(
+          key: ValueKey('connection-${p['id']}'),
+          mountSupported: c.mountSupported,
+          mounted: c.isProfileMounted(p['id'] as String),
+          onMount:
+              c.busy ||
+                  !c.available ||
+                  (!c.isProfileMounted(p['id'] as String) &&
+                      !c.isProfileConnected(p['id'] as String))
+              ? null
+              : () =>
+                    c.mountDriverMissing &&
+                        !c.isProfileMounted(p['id'] as String)
+                    ? showMountHelp(context)
+                    : c.mountToggle(p['id'] as String),
+          onOpenMount:
+              c.busy ||
+                  !c.available ||
+                  c.mountForProfile(p['id'] as String) == null ||
+                  c.mountForProfile(p['id'] as String)?['failed'] == true
+              ? null
+              : () => openMount(p['id'] as String),
           profile: {
             ...p,
             if (c.connected && c.status['profile'] == p['id'])
@@ -1048,8 +1063,26 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
               child: Text('本机文件所有者不可用。原生操作已关闭，请保留目录与恢复日志。'),
             ),
           ),
-        if (c.canMount || c.mountSupported)
-          MountCard(client: c, onOpen: openMount),
+        if (c.mountSupported) ...[
+          const Padding(padding: EdgeInsets.all(12), child: Text('文件管理器挂载')),
+          if (c.mounts.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text('尚未挂载网盘，请在“连接”页点击对应网盘的“挂载”。'),
+            ),
+          for (final mount in c.mounts)
+            MountCard(
+              key: ValueKey('mount-${mount['profile']}'),
+              client: c,
+              profileId: mount['profile'] as String,
+              onOpen: () => openMount(mount['profile'] as String),
+            ),
+          if (c.mountDriverMissing)
+            TextButton(
+              onPressed: () => showMountHelp(context),
+              child: const Text('查看挂载组件安装说明'),
+            ),
+        ],
         if (c.canMount && !c.readOnlyMount)
           Card(
             color: Colors.white,

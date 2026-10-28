@@ -15,12 +15,18 @@ class ConnectionCard extends StatelessWidget {
     this.onEdit,
     this.onDelete,
     this.onRefresh,
+    this.mountSupported = false,
+    this.mounted = false,
+    this.onMount,
+    this.onOpenMount,
   });
   final Json profile;
   final bool online, selected;
+  final bool mountSupported, mounted;
   final String connectLabel;
   final Json? usage;
   final VoidCallback? onSelect, onDisconnect, onEdit, onDelete, onRefresh;
+  final VoidCallback? onMount, onOpenMount;
   @override
   Widget build(BuildContext context) {
     final provider =
@@ -44,19 +50,38 @@ class ConnectionCard extends StatelessWidget {
       spacing: 2,
       runSpacing: 4,
       children: [
-        if (selected)
-          const Chip(
-            avatar: Icon(Icons.check_circle, size: 18, color: Colors.blue),
-            label: Text('当前使用'),
-          )
-        else
-          OutlinedButton.icon(
-            onPressed: onSelect,
-            icon: Icon(
-              online ? Icons.folder_open_outlined : Icons.login,
-              size: 18,
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            OutlinedButton.icon(
+              onPressed: onSelect,
+              icon: Icon(
+                online ? Icons.folder_open_outlined : Icons.login,
+                size: 18,
+              ),
+              label: Text(connectLabel),
             ),
-            label: Text(connectLabel),
+            if (mountSupported) ...[
+              const SizedBox(height: 4),
+              OutlinedButton.icon(
+                onPressed: onOpenMount,
+                icon: const Icon(Icons.folder_open, size: 18),
+                label: const Text('打开挂载'),
+              ),
+            ],
+          ],
+        ),
+        if (mountSupported)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: OutlinedButton.icon(
+              onPressed: onMount,
+              icon: Icon(
+                mounted ? Icons.eject_outlined : Icons.add_to_drive_outlined,
+                size: 18,
+              ),
+              label: Text(mounted ? '卸载' : '挂载'),
+            ),
           ),
         if (online)
           IconButton(
@@ -80,9 +105,21 @@ class ConnectionCard extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(
-          profile['name'] as String,
-          style: Theme.of(context).textTheme.titleMedium,
+        Wrap(
+          spacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text(
+              profile['name'] as String,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            if (selected)
+              const Chip(
+                visualDensity: VisualDensity.compact,
+                avatar: Icon(Icons.check_circle, size: 18, color: Colors.blue),
+                label: Text('当前使用'),
+              ),
+          ],
         ),
         const SizedBox(height: 3),
         Text(

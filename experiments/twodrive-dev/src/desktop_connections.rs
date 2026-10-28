@@ -23,7 +23,176 @@ pub(super) struct Job {
 }
 pub(super) type Jobs = HashMap<u64, Job>;
 
+pub(super) fn aggregate_accounts(accounts: &[Value]) -> Value {
+    let mut active = Vec::new();
+    let mut waiting = Vec::new();
+    let mut recent = Vec::new();
+    let mut issues = Vec::new();
+    let mut pending = 0_u64;
+    let mut syncing = false;
+    let mut fallback = false;
+    for account in accounts {
+        let owner = |mut item: Value| {
+            item["profile"] = account["profile"].clone();
+            item["revision"] = account["revision"].clone();
+            item["account"] = account["name"].clone();
+            item
+        };
+        for (source, kind) in [
+            (&account["backup"]["active"], 0),
+            (&account["mount_activity"]["active"], 0),
+            (&account["cache"]["waiting"], 1),
+            (&account["backup"]["recent"], 2),
+        ] {
+            if let Some(items) = source.as_array() {
+                let destination = match kind {
+                    0 => &mut active,
+                    1 => &mut waiting,
+                    _ => &mut recent,
+                };
+                destination.extend(items.iter().filter(|v| v.is_object()).cloned().map(owner));
+            }
+        }
+        let count = account["cache"]["pending"].as_u64().unwrap_or(0);
+        pending = pending.saturating_add(count);
+        syncing |= count > 0
+            || matches!(
+                account["backup"]["state"].as_str(),
+                Some("starting" | "scanning")
+            );
+        fallback |= account["route_fallback"] == true;
+        for (failed, message) in [
+            (
+                account["mount_failed"] == true,
+                "挂载进程已退出，请卸载后重试",
+            ),
+            (account["gateway_failed"] == true, "连接进程已退出，请重连"),
+            (
+                account["backup_failed"] == true || account["backup"]["state"] == "error",
+                "备份需要处理，请查看该网盘的备份状态",
+            ),
+            (
+                account["cache"]["deletes_rejected"].as_u64().unwrap_or(0) > 0,
+                "云端删除被拒绝，任务已保留",
+            ),
+        ] {
+            if failed {
+                issues.push(owner(json!({"message":message})));
+            }
+        }
+    }
+    json!({"syncing":syncing || !active.is_empty(),"error":!issues.is_empty(),
+        "pending":pending,"active":active,"waiting":waiting,"recent":recent,"issues":issues,"route_fallback":fallback})
+}
+
 impl App {
+    pub(super) fn mount_profile(
+        &mut self,
+        args: &Value,
+        mount: bool,
+        cancel: &AtomicBool,
+    ) -> anyhow::Result<Value> {
+        let id = string(args, "profile")?;
+        let profile = if self.connected.as_ref().is_some_and(|p| p.id == id) {
+            self.connected.as_ref().unwrap()
+        } else {
+            &self.inactive.get(id).context("挂载所属连接已关闭")?.profile
+        };
+        ensure!(
+            args["revision"].as_str() == Some(&profile.revision),
+            "挂载所属连接或配置已改变，请刷新后重试"
+        );
+        #[cfg(windows)]
+        windows_mount::require_owner(profile, args)?;
+        if mount {
+            self.file_context(args)?;
+        }
+        let previous = self.connected.as_ref().map(|p| p.id.clone());
+        let change = previous.as_deref() != Some(id);
+        if change {
+            self.park_active();
+            ensure!(self.restore_active(id), "挂载所属连接已关闭");
+        }
+        let result = if mount {
+            self.mount_current(cancel)
+        } else {
+            self.unmount(true)
+        };
+        if change {
+            self.park_active();
+            if let Some(previous) = previous {
+                self.restore_active(&previous);
+            }
+        }
+        result?;
+        self.status()
+    }
+
+    pub(super) fn account_states(&mut self) -> anyhow::Result<Vec<Value>> {
+        let mut states = Vec::new();
+        for p in self.config.profiles.clone() {
+            let (connected, mounted, mount_failed, backup_failed, gateway_failed, fallback) =
+                if self
+                    .connected
+                    .as_ref()
+                    .is_some_and(|active| active.id == p.id)
+                {
+                    let gateway_failed = self
+                        .gateway
+                        .as_mut()
+                        .is_some_and(|c| c.0.try_wait().ok().flatten().is_some());
+                    if gateway_failed {
+                        self.backend = None;
+                    }
+                    (
+                        self.backend.is_some(),
+                        self.mounted.is_some(),
+                        self.mounted
+                            .as_mut()
+                            .is_some_and(|c| c.0.try_wait().ok().flatten().is_some()),
+                        self.backup
+                            .as_mut()
+                            .is_some_and(|c| c.0.try_wait().ok().flatten().is_some()),
+                        gateway_failed,
+                        self.network.fallback(),
+                    )
+                } else if let Some(saved) = self.inactive.get_mut(&p.id) {
+                    let gateway_failed = saved
+                        .gateway
+                        .as_mut()
+                        .is_some_and(|c| c.0.try_wait().ok().flatten().is_some());
+                    if gateway_failed {
+                        saved.backend = None;
+                    }
+                    (
+                        saved.backend.is_some(),
+                        saved.mounted.is_some(),
+                        saved
+                            .mounted
+                            .as_mut()
+                            .is_some_and(|c| c.0.try_wait().ok().flatten().is_some()),
+                        saved
+                            .backup
+                            .as_mut()
+                            .is_some_and(|c| c.0.try_wait().ok().flatten().is_some()),
+                        gateway_failed,
+                        saved.network.fallback(),
+                    )
+                } else {
+                    continue;
+                };
+            let activity: Value = fs::read(self.mount_state(&p).join("activity.json"))
+                .ok()
+                .and_then(|s| serde_json::from_slice(&s).ok())
+                .unwrap_or(json!({"active":[]}));
+            states.push(json!({"profile":p.id,"revision":p.revision,"name":p.name,
+                "account_name":self.account_name(&p),"connected":connected,"mounted":mounted,
+                "mount_path":p.mount_path,"mount_failed":mount_failed,"backup_failed":backup_failed,
+                "gateway_failed":gateway_failed,"route_fallback":fallback,
+                "cache":self.cache(&p,false)?,"backup":backup::report(&self.state,&p)?,"mount_activity":activity}));
+        }
+        Ok(states)
+    }
     pub(super) fn refresh_inactive(&mut self) {
         for saved in self.inactive.values_mut() {
             if saved
@@ -420,6 +589,43 @@ mod tests {
     }
     fn args(id: &str, revision: &str) -> Value {
         json!({"profile":id,"revision":revision,"path":"/same.txt"})
+    }
+    #[test]
+    fn parked_account_failure_and_activity_are_visible_without_selecting_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = fixture(root.path());
+        let p = app.profile("a").unwrap();
+        backup::report(&app.state, &p).unwrap();
+        State::new(app.state.dir.join("backup-a")).unwrap().save("report.json", &json!({
+            "state":"error","active":[{"path":"/same.txt","kind":"upload","profile":"wrong-owner"}],
+            "recent":[],"completed_scan":false
+        })).unwrap();
+        let status = app.status().unwrap();
+        assert_eq!(status["profile"], "b");
+        assert_eq!(app.config.selected.as_deref(), Some("b"));
+        assert_eq!(status["overall"]["error"], true);
+        assert_eq!(status["overall"]["syncing"], true);
+        assert_eq!(status["overall"]["issues"][0]["profile"], "a");
+        assert_eq!(status["overall"]["active"][0]["profile"], "a");
+        assert_eq!(status["overall"]["active"][0]["revision"], "rev-a");
+        assert_eq!(status["overall"]["active"][0]["account"], "First");
+        assert_eq!(status["accounts"].as_array().unwrap().len(), 2);
+        assert!(app.online("a") && app.online("b"));
+    }
+
+    #[test]
+    fn aggregate_pending_and_errors_keep_equal_paths_separate_between_accounts() {
+        let summary = aggregate_accounts(&[
+            json!({"profile":"a","revision":"ra","name":"First","cache":{"pending":2,"waiting":[{"path":"/same"}]},"backup":{"state":"scanning"}}),
+            json!({"profile":"b","revision":"rb","name":"Second","cache":{"pending":3,"waiting":[{"path":"/same"}],"deletes_rejected":1},"mount_failed":true,"route_fallback":true}),
+        ]);
+        assert_eq!(summary["pending"], 5);
+        assert_eq!(summary["syncing"], true);
+        assert_eq!(summary["error"], true);
+        assert_eq!(summary["route_fallback"], true);
+        assert_eq!(summary["waiting"][0]["profile"], "a");
+        assert_eq!(summary["waiting"][1]["profile"], "b");
+        assert_eq!(summary["issues"].as_array().unwrap().len(), 2);
     }
     #[test]
     fn selecting_retained_connections_keeps_identity_data_and_other_connection_online() {

@@ -8,26 +8,9 @@
 
 #include "flutter_window.h"
 #include "utils.h"
+#include "instance_identity.h"
 
 namespace {
-std::wstring InstanceName(const std::vector<std::string>& arguments) {
-  const std::wstring base = L"Local\\TwoDriveDevelopmentDesktop";
-  auto state = std::find(arguments.begin(), arguments.end(), "--state");
-  if (state == arguments.end() || ++state == arguments.end()) return base;
-  std::error_code error;
-  auto path = std::filesystem::weakly_canonical(std::filesystem::u8path(*state), error);
-  if (error) return L"";
-  std::wstring normalized = path.native();
-  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                 [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-  uint64_t hash = 14695981039346656037ULL;
-  for (wchar_t c : normalized) {
-    hash ^= static_cast<uint16_t>(c);
-    hash *= 1099511628211ULL;
-  }
-  return base + L"-" + std::to_wstring(hash);
-}
-
 struct InstanceWindow {
   const wchar_t* property;
   HWND window = nullptr;

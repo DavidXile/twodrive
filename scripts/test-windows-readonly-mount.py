@@ -71,6 +71,22 @@ def run(args):
                 assert (mount/'generated.txt').read_bytes() == payload
                 report['checks']['mount_survives_account_selection'] = True
                 engine.call('connect',{'id':profile['id']})
+                other_public = next(p for p in engine.call('profiles')['profiles'] if p['id']=='other')
+                other_owner = {'profile':'other','revision':other_public['revision']}
+                other_mount = Path(other_public['mount_path'])
+                engine.call('mount',other_owner,timeout=90)
+                both = engine.call('status')
+                assert both['profile']==profile['id'], 'Mounting another account changed the selected view'
+                assert {m['profile'] for m in both['mounts']} == {profile['id'],'other'}
+                assert (mount/'generated.txt').read_bytes() == payload
+                assert (other_mount/'generated.txt').read_bytes() == payload
+                engine.call('unmount',dict(other_owner,revision='stale'),failure=True)
+                engine.call('unmount',other_owner)
+                assert engine.call('status')['profile']==profile['id']
+                assert (mount/'generated.txt').read_bytes() == payload
+                assert not other_mount.exists()
+                engine.call('mount',other_owner,timeout=90)
+                report['checks']['two_mounts_targeted_without_switch_and_independent_unmount'] = True
                 engine.call('unmount',target)
                 assert not engine.call('status')['mounted']
                 engine.call('mount',target,timeout=90)
@@ -81,6 +97,7 @@ def run(args):
                     if not (mount/'generated.txt').exists(): break
                     time.sleep(.1)
                 assert not (mount/'generated.txt').exists(), 'owned mount survived engine quit'
+                assert not (other_mount/'generated.txt').exists(), 'parked owned mount survived engine quit'
                 report['checks']['unmount_remount_and_quit_cleanup'] = True
                 report['native_mount_verified'] = True
         finally:

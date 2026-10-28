@@ -21,6 +21,8 @@ on:
       - 'scripts/test_icloud_validation_guard.py'
       - 'scripts/test_provider_login_console.py'
       - 'scripts/test-desktop-instances.py'
+      - 'scripts/test-desktop-instance-identity.py'
+      - 'scripts/windows-instance-identity/**'
       - 'scripts/test-storage-connections.py'
       - 'scripts/test-desktop-queue.py'
       - 'scripts/test-desktop-multi.py'
@@ -199,6 +201,8 @@ jobs:
         run: python scripts/test-desktop-windows-ui.py apps/dav/build/windows/x64/runner/Release/twodrive_dav.exe
       - name: Independent desktop state instances
         run: python scripts/test-desktop-instances.py --app apps/dav/build/windows/x64/runner/Release/twodrive_dav.exe --report desktop-instances.json
+      - name: Effective default state uses one Windows instance identity
+        run: python scripts/test-desktop-instance-identity.py --report desktop-instance-identity.json
       - name: Build validated unsigned MSIX test package
         run: |
           $syntaxErrors = $null

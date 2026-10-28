@@ -22,8 +22,14 @@ class TrayPanel extends StatelessWidget {
     final provider = c.providerLabel;
     final label = c.account;
     final backup = c.status['backup'] as Map? ?? {};
+    final overall = c.status['overall'] as Map?;
+    final issues = (overall?['issues'] as List?) ?? [];
+    final fallback = c.proxyFallback || overall?['route_fallback'] == true;
     final issue =
         c.error ??
+        (issues.isNotEmpty
+            ? issues.map((v) => '${v['account']} · ${v['message']}').join('\n')
+            : null) ??
         (c.status['backup_failed'] == true
             ? '备份进程已退出，请重新连接'
             : backup['state'] == 'error'
@@ -43,12 +49,17 @@ class TrayPanel extends StatelessWidget {
               .firstOrNull?['name'],
         },
       ...c.syncActivity,
-      ...((c.status['cache']?['waiting'] as List?) ?? [])
-          .where((v) => !c.syncActivity.any((a) => a['path'] == v['path']))
+      ...((overall?['waiting'] as List?) ??
+              (c.status['cache']?['waiting'] as List?) ??
+              [])
+          .where(
+            (v) => !c.syncActivity.any(
+              (a) => a['path'] == v['path'] && a['profile'] == v['profile'],
+            ),
+          )
           .map((v) => Map<String, dynamic>.from(v as Map)),
-      ...((backup['recent'] as List?) ?? []).map(
-        (v) => Map<String, dynamic>.from(v as Map),
-      ),
+      ...((overall?['recent'] as List?) ?? (backup['recent'] as List?) ?? [])
+          .map((v) => Map<String, dynamic>.from(v as Map)),
     ];
     final status = !c.connected
         ? '未连接'
@@ -56,7 +67,7 @@ class TrayPanel extends StatelessWidget {
         ? '同步已暂停'
         : issue != null
         ? '需要处理'
-        : c.proxyFallback
+        : fallback
         ? '已连接 · 使用系统／代理兜底'
         : c.syncing
         ? '正在同步'
@@ -66,7 +77,7 @@ class TrayPanel extends StatelessWidget {
         : '文件已就绪';
     final color = issue != null
         ? Colors.deepOrange
-        : c.proxyFallback
+        : fallback
         ? const Color(0xffe0a000)
         : c.paused
         ? Colors.orange
@@ -247,7 +258,7 @@ class TrayPanel extends StatelessWidget {
                     Icon(
                       issue != null
                           ? Icons.error
-                          : c.proxyFallback
+                          : fallback
                           ? Icons.warning_amber_rounded
                           : c.paused
                           ? Icons.pause_circle_filled
@@ -273,7 +284,7 @@ class TrayPanel extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 StorageUsageView(
-                  ring:true,
+                  ring: true,
                   value: c.quotas[c.selected],
                   connected: c.connected,
                   onRefresh: c.connected
@@ -285,7 +296,7 @@ class TrayPanel extends StatelessWidget {
               ],
             ),
           ),
-          if (c.proxyFallback)
+          if (fallback)
             const Padding(
               padding: EdgeInsets.all(12),
               child: Text(

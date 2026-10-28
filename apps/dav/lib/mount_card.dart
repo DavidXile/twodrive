@@ -30,12 +30,22 @@ Future<void> showMountHelp(BuildContext context) => showDialog<void>(
 );
 
 class MountCard extends StatelessWidget {
-  const MountCard({super.key, required this.client, required this.onOpen});
+  const MountCard({
+    super.key,
+    required this.client,
+    required this.onOpen,
+    this.profileId,
+  });
   final StorageClient client;
   final VoidCallback onOpen;
+  final String? profileId;
   @override
   Widget build(BuildContext context) {
     final c = client;
+    final id = profileId ?? c.selected;
+    final p = c.profiles.where((p) => p['id'] == id).firstOrNull;
+    final mount = id == null ? null : c.mountForProfile(id);
+    final isMounted = mount != null;
     return Card(
       color: Colors.white,
       child: Padding(
@@ -43,12 +53,21 @@ class MountCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (profileId != null)
+              Text(
+                p?['name'] as String? ?? '网盘',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
             Text(
               c.readOnlyMount ? '文件管理器挂载 · 只读' : '文件管理器挂载',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 10),
-            SelectableText(c.profile?['mount_path'] as String? ?? '请先选择连接'),
+            SelectableText(
+              mount?['path'] as String? ??
+                  p?['mount_path'] as String? ??
+                  '请先选择连接',
+            ),
             const SizedBox(height: 12),
             if (c.mountDriverMissing) ...[
               const Text('尚未安装 WinFsp，安装后即可挂载。'),
@@ -64,16 +83,17 @@ class MountCard extends StatelessWidget {
                 FilledButton.tonalIcon(
                   onPressed:
                       c.busy ||
-                          (!c.connected && !c.mounted) ||
-                          (!c.canMount && !c.mounted)
+                          (id == null || (!c.canMountProfile(id) && !isMounted))
                       ? null
-                      : c.mountToggle,
-                  icon: Icon(c.mounted ? Icons.eject : Icons.folder_open),
-                  label: Text(c.mounted ? '卸载' : '挂载'),
+                      : () => c.mountToggle(id),
+                  icon: Icon(isMounted ? Icons.eject : Icons.folder_open),
+                  label: Text(isMounted ? '卸载' : '挂载'),
                 ),
                 OutlinedButton(
-                  onPressed: c.mounted ? onOpen : null,
-                  child: const Text('在文件管理器中打开'),
+                  onPressed: isMounted && mount['failed'] != true
+                      ? onOpen
+                      : null,
+                  child: const Text('打开挂载'),
                 ),
               ],
             ),

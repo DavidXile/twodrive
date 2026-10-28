@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'updates.dart';
+import 'file_manager.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -73,15 +74,21 @@ class StorageClient extends ChangeNotifier {
   Json get sharing => (status['sharing'] as Json?) ?? {};
   bool get hosting => sharing['running'] == true;
   bool get syncError =>
+      status['overall']?['error'] == true ||
       status['backup_failed'] == true ||
       status['backup']?['state'] == 'error' ||
       (status['cache']?['deletes_rejected'] as num? ?? 0) > 0;
   bool get paused => status['paused'] == true;
   List<Json> get syncActivity => [
-    ...((status['backup']?['active'] as List?) ?? []),
-    ...((status['mount_activity']?['active'] as List?) ?? []),
+    if (status['overall'] is Map)
+      ...((status['overall']?['active'] as List?) ?? [])
+    else ...[
+      ...((status['backup']?['active'] as List?) ?? []),
+      ...((status['mount_activity']?['active'] as List?) ?? []),
+    ],
   ].map((v) => Map<String, dynamic>.from(v as Map)).toList();
   bool get syncing =>
+      status['overall']?['syncing'] == true ||
       busy ||
       runningTransfers.isNotEmpty ||
       syncActivity.isNotEmpty ||
@@ -168,6 +175,38 @@ class StorageClient extends ChangeNotifier {
     return result;
   }
 
+  List<Json> get mounts {
+    final rows = status['mounts'];
+    if (rows is List) {
+      return rows
+          .whereType<Map>()
+          .map((v) => Map<String, dynamic>.from(v))
+          .where(
+            (v) => profiles.any(
+              (p) => p['id'] == v['profile'] && p['revision'] == v['revision'],
+            ),
+          )
+          .toList();
+    }
+    final p = profiles.where((p) => p['id'] == status['profile']).firstOrNull;
+    return status['mounted'] == true && p != null
+        ? [
+            {
+              'profile': p['id'],
+              'revision': p['revision'],
+              'name': p['name'],
+              'path': p['mount_path'],
+              'failed': status['mount_failed'] == true,
+            },
+          ]
+        : [];
+  }
+
+  Json? mountForProfile(String id) =>
+      mounts.where((m) => m['profile'] == id).firstOrNull;
+  bool isProfileMounted(String id) => mountForProfile(id) != null;
+  bool canMountProfile(String id) =>
+      mountSupported && !mountDriverMissing && isProfileConnected(id);
   bool get mounted => status['mounted'] == true;
   Json? get profile => profiles.where((p) => p['id'] == selected).firstOrNull;
   bool capability(String key) =>
@@ -197,7 +236,8 @@ class StorageClient extends ChangeNotifier {
 
   String get trayState => error != null || syncError
       ? 'error'
-      : connected && proxyFallback
+      : connected &&
+            (proxyFallback || status['overall']?['route_fallback'] == true)
       ? 'warning'
       : paused
       ? 'paused'
@@ -673,15 +713,29 @@ class StorageClient extends ChangeNotifier {
     }
   }
 
-  Future<void> mountToggle() {
-    final op = mounted ? 'unmount' : 'mount';
-    final owner = target;
+  Future<void> mountToggle([String? profileId]) {
+    final id = profileId ?? selected;
+    final p = profiles.where((p) => p['id'] == id).firstOrNull;
+    if (p == null) return Future.value();
+    final op = isProfileMounted(id!) ? 'unmount' : 'mount';
+    final owner = {'profile': id, 'revision': p['revision']};
     return action(op == 'unmount' ? '正在卸载' : '正在挂载', () async {
       activeId = ++_id;
       await request(op, owner, activeId);
       await refreshStatus();
     });
   }
+
+  Future<void> openMountFolder(
+    String id, {
+    Future<void> Function(String)? openDirectory,
+  }) => action('打开挂载', () async {
+    final mount = mountForProfile(id);
+    if (mount == null || mount['failed'] == true || mount['path'] is! String) {
+      throw StateError('请先挂载此网盘；挂载异常时请卸载后重试');
+    }
+    await (openDirectory ?? openLocalDirectory)(mount['path'] as String);
+  });
 
   Future<String?> save(Json profile) async {
     String? id;
