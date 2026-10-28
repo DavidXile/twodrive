@@ -1,6 +1,6 @@
 # Windows 只读文件夹挂载
 
-2026-10-28 本地预览已部署，使用原 Development state。WinFsp 已由用户完成安装，真实 Windows 文件系统上的合成本地数据挂载检查通过；真实 iCloud 挂载仍待用户在 GUI 操作验收。
+2026-10-28 本地预览已部署，使用原 Development state。WinFsp 已由用户完成安装，真实 Windows 文件系统上的合成本地数据挂载检查通过。用户已反馈 iCloud 可用；OneDrive 根目录 I/O 错误的修复和验证见 TD-20261028-14，不能把挂载进程存在视为文件可读。
 
 ## 使用
 
@@ -28,7 +28,8 @@ Rclone 的 [Windows 挂载说明](https://rclone.org/commands/rclone_mount/#inst
 - 65 项 Flutter 测试通过，包含缺驱动说明、绑定连接和 revision 的挂载/卸载、失联后卸载、840×580 / 1.4 倍字体和只读说明；静态检查、严格 Rust Clippy 及实际 Windows release 构建通过。失联卸载回归在未修正的本轮草稿上失败，修复经过见 TD-20261028-13。
 - 新包 `TwoDrive-0.1.7-windows-mount-20261028` 已完成九项原认证 IPC 检查，以及七组双合成网盘/独立传输/退出检查。安装驱动前，`scripts/test-windows-readonly-mount.py` 在实际新引擎中通过 revision 拒绝和缺驱动提示，当时报告 `native_mount_verified=false`。
 - 安装 WinFsp 后，同一新包实际执行 Windows 文件系统挂载，验证文件字节一致、写入拒绝、切换账号保留挂载、卸载/重挂及退出清理，全部通过，最新报告为 `windows-readonly-mount-installed-validation.json`、`native_mount_verified=true`。数据来自隔离的本机 WebDAV Provider，云端请求为零；不把它称为真实 iCloud 挂载验收，也没有注入真实断网故障。
-- 新增源码和独立测试不访问用户云盘，不与运行中的 GUI 竞争真实账号。尚未完成：用户在新 GUI 中的真实 iCloud 挂载、真实大文件/过期认证及原生应用兼容性；Linux 挂载不在本轮本机验收范围。
+- 新增源码和独立测试不访问用户云盘，不与运行中的 GUI 竞争真实账号。用户亲自挂载后反馈 iCloud 可用、OneDrive 打不开根目录；iCloud 反馈未细分打开/复制操作，不扩大为独立字节校验。OneDrive 修复后的真实验收、真实大文件/过期认证及原生应用兼容性尚未完成；Linux 挂载不在本轮本机验收范围。
+- OneDrive 根目录元数据曾错误使用文件路径 URL，现复用 root 资源地址；新增本机 HTTP 边界回归证明旧代码失败、修正后通过，保留子路径编码与 404 语义。后端 56 项检查和 97 次桌面 Rust 执行通过，odfix 独立新包再次通过认证、多账号及真实 WinFsp 合成数据检查；尚待用户切换及真实 OneDrive 验收。详见 [故障 TD-20261028-14](incidents.md#td-20261028-14onedrive-windows-挂载根目录返回-io-错误)。
 
 本机使用的官方 WinFsp 2.1 安装器：`winfsp-2.1.25156.msi`，SHA-256 `073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a`；Authenticode 检查为 Valid，签名者 NAVIMATICS LLC。安装器已实际启动，交互由用户亲自完成；安装后核对 DLL 版本 `2.1.25156.ddca7bd`，并完成上述原生检查。
 
