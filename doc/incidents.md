@@ -53,7 +53,7 @@
 - 根因：把“无法确认身份”和“确认身份改变”合并处理。新回归使用本地合成服务，在成功刷新后仅令第一次身份查询失败；此前草稿编译成功，并在“临时核验失败不能使连接失效”的 generation 断言失败。
 - 修正：先持久化轮转后的令牌并标记 identity_pending；核验成功前拒绝文件请求，后续操作重试核验。临时网络/API 错误保留原绑定；只有成功响应确认 uk 改变才使旧绑定失效。token.lock 跨进程串行刷新，保留取消检查。
 - 验证：`rotated_token_survives_transient_identity_failure_and_retries_without_reauthorizing` 验证旧逻辑失败、新逻辑不重新刷新也可恢复；`changed_refresh_identity_is_rejected_before_file_access` 验证身份改变后不发送文件请求；并发刷新回归验证多个请求只刷新一次。完整本地 112 次 Rust 执行通过，5 项组件测试仍忽略；70 项 Flutter 通过。真实百度续期、授权和挂载尚未验收，未改动用户云端文件。
-- 交付：随百度接入改动，尚未提交或发布；详见 [百度预览说明](baidu-netdisk.md)。
+- 交付：代码 `1da82fe342c15eff61244c4a6675f6dcfb2a930b` 已推送 PR #47，保持 Ready for review；本机包已通过隔离 IPC、双账号及真实 WinFsp 回归，待用户退出后切换。不是上游 Release；详见 [百度预览说明](baidu-netdisk.md)。
 
 ## TD-20261028-18：后台保留账号的同步和错误未进入托盘汇总
 

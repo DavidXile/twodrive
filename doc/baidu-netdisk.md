@@ -33,3 +33,11 @@
 - [容量](https://pan.baidu.com/union/doc/Cksg0s9ic)
 
 本次核对官方 SDK 及其引用的文档；不复制 SDK 代码，不内置开发者凭据。
+
+## 2026-10-28 本机交付记录
+
+代码提交 `1da82fe342c15eff61244c4a6675f6dcfb2a930b`，本机包 `TwoDrive-0.1.7-baidu-20261028`，提交到 [PR #47](https://github.com/LumiaBlack51/twodrive/pull/47)，保持 Ready for review。112 次 Rust 执行、70 项 Flutter、格式/分析/严格 Clippy 及 Windows release 构建通过；5 项环境相关组件测试仍默认忽略。此前未发布的刷新草稿成功编译，并在新增身份保持断言失败；修正后通过。
+
+新包通过 6 组百度注册/配置/脱敏 IPC、9 组既有 iCloud 授权 IPC、7 组本地双账号检查，以及 5 组真实 WinFsp 检查（合成 WebDAV 数据、双挂载独立卸载、读字节与拒绝写入、退出清理）。百度 Provider 到挂载桥的目录、配额和范围读取另由本地合成 API 验证。所有自动检查未使用真实百度凭据或访问用户云盘。
+
+包已准备，等待用户正常退出旧客户端后切换；原 OneDrive/iCloud 配置及百度目标 `D:\TwoDrive\Baidu` 将在升级时核对。真实百度授权、文件下载及挂载尚未验收，不能把以上结果表述为真实百度账号通过。Hosted CI 结果需要独立核查，本地通过不能替代上游检查。
