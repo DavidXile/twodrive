@@ -5,6 +5,7 @@ import 'package:window_manager/window_manager.dart';
 import 'client.dart';
 import 'workspace.dart';
 import 'platform_paths.dart';
+import 'app_theme.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -56,15 +57,7 @@ class DavApp extends StatelessWidget {
   Widget build(BuildContext context) => MaterialApp(
     title: 'TwoDrive Development',
     debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff326bd6)),
-      scaffoldBackgroundColor: const Color(0xfff5f7fb),
-      inputDecorationTheme: const InputDecorationTheme(
-        border: OutlineInputBorder(),
-        isDense: true,
-      ),
-    ),
+    theme: appTheme(),
     home: Workspace(client: client, desktop: desktop),
   );
 }

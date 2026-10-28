@@ -14,6 +14,7 @@ import 'local_file_preflight.dart';
 import 'native_local_files.dart';
 import 'file_manager.dart';
 import 'connection_card.dart';
+import 'connection_access.dart';
 
 String bytes(num value) {
   if (value < 1024) {
@@ -469,16 +470,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                         ),
                       ),
                       const Spacer(),
-                      if (c.connected)
-                        Chip(
-                          label: Text(c.writable ? '读写' : '只读'),
-                          avatar: Icon(
-                            c.writable
-                                ? Icons.edit_outlined
-                                : Icons.lock_outline,
-                            size: 16,
-                          ),
-                        ),
+                      if (c.connected) ConnectionAccess(client: c),
                       const SizedBox(width: 12),
                       FilledButton.tonalIcon(
                         onPressed: c.busy || c.selected == null || !c.available
