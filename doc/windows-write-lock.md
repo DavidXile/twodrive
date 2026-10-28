@@ -38,4 +38,6 @@
 
 主要协议来源：[Rclone iCloud 实现](https://github.com/rclone/rclone/blob/v1.75.2/backend/iclouddrive/iclouddrive.go)、[百度创建文件官方文档](https://pan.baidu.com/union/doc/%E5%9F%BA%E7%A1%80%E7%BD%91%E7%9B%98%E6%9C%8D%E5%8A%A1/%E4%B8%8A%E4%BC%A0/%E5%88%9B%E5%BB%BA%E6%96%87%E4%BB%B6/)、[百度官方 SDK](https://github.com/baidu-netdisk/baidu-drive-sdk-go)。创建文件策略以当前官方文档为准：SDK 注释与文档对 `rtype` 的说明不一致，未将 SDK 注释当覆盖语义依据。
 
-本机交付记录：代码 `0d9c09a2bfa3621e56d238dd61f3bd648cc83279` 已推送 PR #47。`TwoDrive-0.1.7-write-lock-20261028` 包含 42 个经过 SHA-256 核对的运行及说明文件；实际包再次通过上述 7 组 WinFsp 检查。原版仍在运行，待用户正常退出后切换；尚未修改真实账号配置或部署写入包。
+本机交付记录：代码 `0d9c09a2bfa3621e56d238dd61f3bd648cc83279` 已推送 PR #47。`TwoDrive-0.1.7-write-lock-20261028` 包含 42 个经过 SHA-256 核对的运行及说明文件；实际包再次通过上述 7 组 WinFsp 检查。用户确认正常退出后已部署，并将原启动器默认版本切换到此包。切换前备份了原配置和三个 session；升级只读检查中 `profiles.json` 字节一致。启动后核对一个新包 GUI、所属主引擎、原 state，以及三个独立挂载 worker 和各自原生组件；原三条完整 profile、revision、账号 binding、首选连接及三个 D 盘路径保持一致。本机写入密码尚未设置，三者均未解锁。
+
+交付核对只读取本机配置和进程信息，没有控制鼠标或在运行的 GUI 之外启动真实云盘探测。进程恢复不等于真实文件读写验收；已提示用户在客户端设置本机密码，并分别用专门的小文件检查客户端上传及 D 盘修改保存。该验收仍待用户反馈。没有发布正式 Release。
