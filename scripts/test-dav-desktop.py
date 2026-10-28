@@ -14,7 +14,7 @@ import uuid
 
 
 class Engine:
-    def __init__(self, engine, peer, root):
+    def __init__(self, engine, peer, root, *, state_path=None):
         self.counter = 0
         self.events = queue.Queue()
         self.progress = 0
@@ -24,7 +24,7 @@ class Engine:
         env = dict(os.environ, XDG_CONFIG_HOME=str(root / 'config'), APPDATA=str(root / 'config'))
         self.log = (root / 'engine.stderr').open('w')
         try:
-            self.process = subprocess.Popen([engine, '--state', str(root / 'client'),
+            self.process = subprocess.Popen([engine, '--state', str(state_path or root / 'client'),
                 '--peer-bin', peer, '--launcher', peer], stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=self.log, text=True, encoding="utf-8", env=env)
         except BaseException:

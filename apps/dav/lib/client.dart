@@ -47,6 +47,7 @@ class StorageClient extends ChangeNotifier {
   set busy(bool value) => _busy = value;
   Future<void>? _statusRefresh;
   Future<void>? _polling;
+  Future<bool>? _shutdown;
   bool _disposed = false;
   DateTime? _directoryChecked;
   bool _directoryStale = true;
@@ -363,6 +364,8 @@ class StorageClient extends ChangeNotifier {
     return completer.future;
   }
 
+  int reserveRequestId() => ++_id;
+
   void _applyProfiles(Json result) {
     profiles = (result['profiles'] as List).cast<Json>();
     providers = ((result['providers'] as List?) ?? []).cast<Json>();
@@ -596,22 +599,50 @@ class StorageClient extends ChangeNotifier {
     await request('clear_cache', {'id': selected});
     await refreshStatus();
   });
-  Future<bool> shutdown() async {
+  @protected
+  Future<void> closeTransport() async => _process?.stdin.close();
+
+  Future<bool> shutdown() {
+    final existing = _shutdown;
+    if (existing != null) return existing;
+    final attempt = _shutdownOnce();
+    _shutdown = attempt;
+    unawaited(
+      attempt.then((done) {
+        if (!done) _shutdown = null;
+      }),
+    );
+    return attempt;
+  }
+
+  Future<bool> _shutdownOnce() async {
     if (busy) {
       error = '请先完成或取消当前操作，再退出。';
       notifyListeners();
       return false;
     }
+    quitting = true;
+    _poll?.cancel();
     try {
       if (available) {
         await request('quit');
       }
-      quitting = true;
       updates.dispose();
-      _poll?.cancel();
-      await _process?.stdin.close();
+      available = false;
+      // The engine may close its pipe immediately after acknowledging quit.
+      // That transport cleanup failure does not revoke the confirmed shutdown.
+      try {
+        await closeTransport();
+      } catch (_) {}
       return true;
     } catch (e) {
+      quitting = false;
+      if (available && !_disposed) {
+        _poll = Timer.periodic(
+          const Duration(seconds: 3),
+          (_) => unawaited(pollNow()),
+        );
+      }
       error = '$e';
       notifyListeners();
       return false;

@@ -13,13 +13,16 @@ Future<void> main(List<String> args) async {
   // must not call setSkipTaskbar before that interface exists.
   await windowManager.waitUntilReadyToShow();
   await windowManager.setMinimumSize(const Size(840, 580));
-  await windowManager.setTitle('TwoDrive Development');
   final home = userHome;
   final data = userData;
   String option(String name, String fallback) {
     final index = args.indexOf(name);
     return index >= 0 && index + 1 < args.length ? args[index + 1] : fallback;
   }
+
+  await windowManager.setTitle(
+    option('--window-title', 'TwoDrive Development'),
+  );
 
   final root = File(Platform.resolvedExecutable).parent.path;
   final client = StorageClient();

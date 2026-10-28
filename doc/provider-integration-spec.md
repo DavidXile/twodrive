@@ -44,6 +44,9 @@ flowchart LR
 | `protected_paths` | 凭据/身份/状态路径；备份不得把这些路径当上传源 |
 | `network_modes` | 仅展示并允许已实现的 `auto` / `direct` / `system`；省略时现有表单展示三者，不表示适配器已经实现全部策略 |
 | `actions` | 非文件操作的适配器动作，例如发现设备；由 `provider_action` 执行，不得暗中授权或改变其他账号 |
+| `actions[].input_fields` | 动作需要的已声明非秘密配置字段；前端仅发送这些字段及公共 `network_route`，不自动提交其他表单或秘密字段 |
+| `actions[].credential_fields` | 显式认证输入，必须同时声明 `transient=true` 与 `omit_from_profile=true`；普通存储表单不保存这些字段，适配器 prepare 仍须独立移除它们 |
+| `login_action` | 适配器提供的图形登录动作 ID；公共 profile 的 `login_required=true` 时，“登录并使用”先调用该动作 |
 | `capabilities` | UI 提示；实际连接的后端能力是执行依据，schema 的声明不代替服务端授权 |
 | `mount_startup_timeout_seconds` | 独立冷启动预算，通用层当前限制 1～600 秒，默认 60；必须保持取消与进程回收 |
 
@@ -92,6 +95,8 @@ flowchart LR
 刷新令牌需限制并发/重复重试，保存后只属于原账号目录；错误必须脱敏。路由策略、代理支持、权限申请、组织账号限制必须在适配器指南说明，并实际验证所声明范围。
 
 **规划边界**：当前 IPC 没有统一 `auth_state` 枚举、独立 `login` 请求或在线授权升级流程。未来若新增，须定义 attempt ID、阶段、取消与超时、权限/账号变化后的 revision/binding 规则，再同步前后端与测试；不能只在 UI 增加按钮或把当前 `connect` 接口描述成已有这些字段。
+
+图形认证可在现有 `provider_action` 返回一次性 `auth` 问题：`title/label/help/secret/required` 定义一个输入项，`attempt` 绑定当前步骤，`reply_action/cancel_action/context` 定义后续动作。`alternatives` 可提供短信等选项。前端只呈现 schema，不解释网盘协议；答案只随本次私有 IPC 传递，不写入 profile、公开 status、operation 通知或日志。步骤切换销毁输入控制器，取消传回当前 attempt；过期或重放不得影响新尝试。适配器隐藏原始状态、密码默认值、令牌和协议错误正文，并在可取消进程边界内调用认证组件。成功返回 `authenticated=true` 及非秘密配置后，仍需保存并通过正常 connect 验证盘可用；登录成功不能伪装成已经连接。iCloud 的暂存配置与原账号配置分离，取消保留原登录。
 
 ## 4. 上传入口与数据合同
 

@@ -484,9 +484,13 @@ impl App {
                 a["replace"] == true,
             ),
             "share_revoke" => self.hosting.revoke(&self.state, string(a, "device")?),
-            "provider_action" => {
-                providers::action(string(a, "kind")?, string(a, "action")?, a, &cancel)
-            }
+            "provider_action" => providers::action(
+                string(a, "kind")?,
+                string(a, "action")?,
+                a,
+                &self.state,
+                &cancel,
+            ),
             "profiles" => Ok(self.public_profiles()),
             "save_profile" => {
                 let mut p: Profile = serde_json::from_value(a.clone())?;

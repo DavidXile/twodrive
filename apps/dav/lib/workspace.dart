@@ -102,6 +102,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
 
   @override
   void onWindowClose() {
+    if (c.quitting) return;
     unawaited(windowManager.hide());
   }
 
@@ -178,9 +179,16 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
   Future<void> quit() async {
     if (await c.shutdown()) {
       if (trayReady) {
+        await _trayWork;
         await tray.destroy();
+        trayReady = false;
       }
-      await SystemNavigator.pop();
+      if (widget.desktop) {
+        await windowManager.setPreventClose(false);
+        await windowManager.destroy();
+      } else {
+        await SystemNavigator.pop();
+      }
     } else {
       await show();
     }
@@ -897,7 +905,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
             selected: c.connected && c.status['profile'] == p['id'],
             onTap: c.busy || !c.available
                 ? null
-                : () => unawaited(c.connect(p['id'] as String)),
+                : () => unawaited(connectProfile(p)),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -914,7 +922,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                   OutlinedButton.icon(
                     onPressed: c.busy || !c.available
                         ? null
-                        : () => c.connect(p['id'] as String),
+                        : () => connectProfile(p),
                     icon: Icon(
                       c.connected ? Icons.swap_horiz : Icons.login,
                       size: 18,
@@ -1152,11 +1160,32 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
     );
   }
 
-  Future<void> editProfile([Json? original]) async {
+  Future<void> connectProfile(Json profile) async {
+    final provider = c.providers
+        .where((p) => p['id'] == profile['kind'])
+        .firstOrNull;
+    final action = provider?['login_action'];
+    if (profile['login_required'] == true && action is String) {
+      await editProfile(profile, action, true);
+    } else {
+      await c.connect(profile['id'] as String);
+    }
+  }
+
+  Future<void> editProfile([
+    Json? original,
+    String? initialAction,
+    bool connectOnLogin = false,
+  ]) async {
     final profile = await showDialog<Json>(
       context: context,
-      builder: (_) =>
-          ProfileDialog(original: original, providers: c.providers, client: c),
+      builder: (_) => ProfileDialog(
+        original: original,
+        providers: c.providers,
+        client: c,
+        initialAction: initialAction,
+        connectOnLogin: connectOnLogin,
+      ),
     );
     if (profile != null) {
       final connect = profile.remove('_connect') == true;

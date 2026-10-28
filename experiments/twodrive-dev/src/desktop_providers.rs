@@ -13,6 +13,8 @@ use twodrive_dev::{profile::Profile, provider::Backend};
 mod dav;
 #[path = "providers/google.rs"]
 mod google;
+#[path = "providers/icloud.rs"]
+mod icloud;
 #[path = "providers/onedrive.rs"]
 mod onedrive;
 #[path = "providers/paired.rs"]
@@ -31,7 +33,8 @@ pub fn catalog() -> Value {
         dav::descriptor(),
         paired::descriptor(),
         google::descriptor(),
-        onedrive::descriptor()
+        onedrive::descriptor(),
+        icloud::descriptor()
     ])
 }
 fn descriptor(kind: &str) -> anyhow::Result<Value> {
@@ -40,6 +43,7 @@ fn descriptor(kind: &str) -> anyhow::Result<Value> {
         "peer" => Ok(paired::descriptor()),
         "google" => Ok(google::descriptor()),
         "onedrive" => Ok(onedrive::descriptor()),
+        "icloud" => Ok(icloud::descriptor()),
         _ => anyhow::bail!("unsupported provider: {kind}"),
     }
 }
@@ -49,6 +53,7 @@ pub fn prepare(p: &mut Profile, state: &twodrive_dev::state::State) -> anyhow::R
         "onedrive" => onedrive::prepare(p, state),
         "peer" => paired::prepare(p, state),
         "google" => google::prepare(p, state),
+        "icloud" => icloud::prepare(p, state),
         _ => Ok(()),
     }
 }
@@ -56,11 +61,15 @@ pub fn action(
     kind: &str,
     action: &str,
     args: &Value,
+    state: &twodrive_dev::state::State,
     cancel: &AtomicBool,
 ) -> anyhow::Result<Value> {
     descriptor(kind)?;
     match kind {
         "peer" => paired::action(action, args, cancel),
+        "icloud" if matches!(action, "configure" | "auth_reply" | "auth_cancel") => {
+            icloud::action(state, action, args, cancel)
+        }
         _ => anyhow::bail!("此提供者不支持该操作"),
     }
 }
@@ -71,6 +80,7 @@ pub fn validate(p: &Profile) -> anyhow::Result<()> {
         "peer" => paired::validate(p),
         "google" => google::validate(p),
         "onedrive" => onedrive::validate(p),
+        "icloud" => icloud::validate(p),
         _ => unreachable!(),
     }
 }
@@ -115,6 +125,9 @@ pub fn public_profile(p: &Profile) -> Value {
     let mut value = json!({"id":p.id,"revision":p.revision,"name":p.name,"kind":p.kind,
         "writable":p.writable,"mount_path":p.mount_path,"network_route":p.network_route});
     if let Ok(d) = descriptor(&p.kind) {
+        if p.kind == "icloud" {
+            value["login_required"] = json!(icloud::login_required(p));
+        }
         value["provider_label"] = d["label"].clone();
         value["account_label"] = d["account_label"].clone();
         value["icon"] = d["icon"].clone();
@@ -160,6 +173,7 @@ pub fn connect(
         "peer" => paired::connect(p, args, cancel, network),
         "google" => google::connect(p, cancel, network),
         "onedrive" => onedrive::connect(p, cancel, network),
+        "icloud" => icloud::connect(p, cancel, network),
         _ => unreachable!(),
     }
 }
@@ -174,6 +188,7 @@ pub fn restore(p: &Profile, recipe: &Value, paused: &Path) -> anyhow::Result<Bac
         "peer" => paired::restore(p, recipe)?,
         "google" => google::restore(p, recipe)?,
         "onedrive" => onedrive::restore(p, recipe)?,
+        "icloud" => icloud::restore(p, recipe)?,
         _ => anyhow::bail!("unsupported provider"),
     };
     Ok(backend.with_pause_file(paused.to_path_buf()))
@@ -227,6 +242,7 @@ pub fn sign_out(p: &Profile) -> anyhow::Result<()> {
     match p.kind.as_str() {
         "google" => google::sign_out(p)?,
         "onedrive" => onedrive::sign_out(p)?,
+        "icloud" => icloud::sign_out(p)?,
         _ => {}
     }
     Ok(())
@@ -235,6 +251,38 @@ pub fn sign_out(p: &Profile) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn icloud_schema_is_registered_read_only_and_owns_its_private_state() {
+        let entries = catalog();
+        let d = entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == "icloud")
+            .expect("iCloud must be available through normal provider discovery");
+        assert_eq!(d["capabilities"]["upload"], false);
+        assert_eq!(d["capabilities"]["backup"], false);
+        let dir = tempfile::tempdir().unwrap();
+        let state = twodrive_dev::state::State::new(dir.path().join("state")).unwrap();
+        let mut p = Profile {
+            id: "icloud-one".into(),
+            kind: "icloud".into(),
+            network_route: "system".into(),
+            ..Default::default()
+        };
+        prepare(&mut p, &state).unwrap();
+        validate(&p).unwrap();
+        let mut other = Profile {
+            id: "icloud-two".into(),
+            kind: "icloud".into(),
+            network_route: "system".into(),
+            ..Default::default()
+        };
+        prepare(&mut other, &state).unwrap();
+        assert_ne!(p.option("icloud_state"), other.option("icloud_state"));
+        p.writable = true;
+        assert!(validate(&p).is_err());
+    }
     #[test]
     fn legacy_profiles_roundtrip_and_redact_secrets() {
         let legacy = json!({"id":"p","kind":"dav","url":"https://example.invalid/dav/","username":"account","password":"disposable-secret","name":"Example","writable":true,"mount_path":"/tmp/mount","network_route":"auto"});

@@ -15,6 +15,12 @@ on:
       - 'doc/provider-integration-spec.md'
       - 'scripts/install-dav-desktop.py'
       - 'scripts/test_dav_installer.py'
+      - 'scripts/install-rclone-component.py'
+      - 'scripts/test_rclone_component.py'
+      - 'scripts/verify-icloud-desktop.py'
+      - 'scripts/test_icloud_validation_guard.py'
+      - 'scripts/test_provider_login_console.py'
+      - 'scripts/test-desktop-instances.py'
       - 'scripts/test-storage-connections.py'
       - 'scripts/test-desktop-queue.py'
       - 'scripts/test-desktop-sharing.py'
@@ -62,6 +68,11 @@ jobs:
           python3 scripts/test-provider-old-paths.py
           cargo test --locked --features mount
           cargo build --locked --release --features mount --bins
+      - name: Pinned iCloud supporting component
+        run: |
+          python3 -m unittest discover -s scripts -p test_icloud_validation_guard.py
+          python3 scripts/install-rclone-component.py --platform linux-amd64 --destination dist/rclone
+          TWODRIVE_TEST_RCLONE="$PWD/dist/rclone/rclone" cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features mount rclone_drive:: -- --ignored
       - name: Desktop IPC and WebDAV operations
         run: |
           python3 -m unittest discover -s scripts -p 'test_*.py'
@@ -84,11 +95,12 @@ jobs:
           flutter build linux --release
       - name: Assemble portable directory
         run: |
-          cp experiments/twodrive-dev/target/release/twodrive-dev experiments/twodrive-dev/target/release/twodrive-dav-engine apps/dav/build/linux/x64/release/bundle/
+          cp experiments/twodrive-dev/target/release/twodrive-dev experiments/twodrive-dev/target/release/twodrive-dav-engine experiments/twodrive-dev/target/release/twodrive-provider-login apps/dav/build/linux/x64/release/bundle/
+          cp dist/rclone/* apps/dav/build/linux/x64/release/bundle/
           cp -r packaging/gnome-tray-anchor apps/dav/build/linux/x64/release/bundle/
           cp scripts/install-dav-desktop.py apps/dav/build/linux/x64/release/bundle/
           mkdir -p apps/dav/build/linux/x64/release/bundle/docs
-          cp doc/provider-integration-spec.md doc/storage-connections-dev.md doc/desktop-sharing-validation.md doc/google-drive-dev.md doc/tray-positioning-2026-10-14.md apps/dav/build/linux/x64/release/bundle/docs/
+          cp doc/provider-integration-spec.md doc/storage-connections-dev.md doc/desktop-sharing-validation.md doc/google-drive-dev.md doc/icloud-drive.md doc/tray-positioning-2026-10-14.md apps/dav/build/linux/x64/release/bundle/docs/
           cp packaging/development/INSTALL-LINUX.md apps/dav/build/linux/x64/release/bundle/INSTALL.md
           tar -C apps/dav/build/linux/x64/release -cJf twodrive-development-linux-x64.tar.xz bundle
       - uses: actions/upload-artifact@v4
@@ -137,6 +149,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/test-desktop-sharing.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Pinned iCloud supporting component
+        run: |
+          python scripts/install-rclone-component.py --platform windows-amd64 --destination dist/rclone
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s scripts -p test_rclone_component.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s scripts -p test_icloud_validation_guard.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:TWODRIVE_TEST_PROVIDER_LOGIN = (Resolve-Path experiments/twodrive-dev/target/release/twodrive-provider-login.exe).Path
+          python -m unittest discover -s scripts -p test_provider_login_console.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:TWODRIVE_TEST_RCLONE = (Resolve-Path dist/rclone/rclone.exe).Path
+          cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features native-local-fixture rclone_drive:: -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Flutter checks and native Windows build
         working-directory: apps/dav
         run: |
@@ -150,13 +176,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Assemble portable Windows directory
         run: |
-          Copy-Item experiments/twodrive-dev/target/release/twodrive-dev.exe,experiments/twodrive-dev/target/release/twodrive-dav-engine.exe apps/dav/build/windows/x64/runner/Release/
+          Copy-Item experiments/twodrive-dev/target/release/twodrive-dev.exe,experiments/twodrive-dev/target/release/twodrive-dav-engine.exe,experiments/twodrive-dev/target/release/twodrive-provider-login.exe apps/dav/build/windows/x64/runner/Release/
+          Copy-Item dist/rclone/* apps/dav/build/windows/x64/runner/Release/
           Copy-Item scripts/install-desktop-windows.ps1 apps/dav/build/windows/x64/runner/Release/
           New-Item -ItemType Directory -Force apps/dav/build/windows/x64/runner/Release/docs | Out-Null
-          Copy-Item doc/provider-integration-spec.md,doc/storage-connections-dev.md,doc/desktop-sharing-validation.md,doc/google-drive-dev.md,doc/tray-positioning-2026-10-14.md apps/dav/build/windows/x64/runner/Release/docs/
+          Copy-Item doc/provider-integration-spec.md,doc/storage-connections-dev.md,doc/desktop-sharing-validation.md,doc/google-drive-dev.md,doc/icloud-drive.md,doc/tray-positioning-2026-10-14.md apps/dav/build/windows/x64/runner/Release/docs/
           Copy-Item packaging/development/INSTALL-WINDOWS.md apps/dav/build/windows/x64/runner/Release/INSTALL.md
       - name: Windows native tray smoke
         run: python scripts/test-desktop-windows-ui.py apps/dav/build/windows/x64/runner/Release/twodrive_dav.exe
+      - name: Independent desktop state instances
+        run: python scripts/test-desktop-instances.py --app apps/dav/build/windows/x64/runner/Release/twodrive_dav.exe --report desktop-instances.json
       - name: Build validated unsigned MSIX test package
         run: |
           $syntaxErrors = $null
