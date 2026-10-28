@@ -13,6 +13,7 @@ import 'profile_dialog.dart';
 import 'local_file_preflight.dart';
 import 'native_local_files.dart';
 import 'file_manager.dart';
+import 'connection_card.dart';
 
 String bytes(num value) {
   if (value < 1024) {
@@ -816,12 +817,19 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                         const SizedBox(width: 12),
                         Expanded(child: Text(task.name)),
                         Text(task.state),
+                        if (task.state == '传输中')
+                          IconButton(
+                            tooltip: '取消传输',
+                            onPressed: () => c.cancelTransfer(task.id),
+                            icon: const Icon(Icons.close),
+                          ),
                         if (task.state == '未完成')
                           TextButton(
                             onPressed:
                                 c.busy ||
-                                    !c.connected ||
-                                    task.args['profile'] != c.selected
+                                    !c.isProfileConnected(
+                                      task.args['profile'] as String,
+                                    )
                                 ? null
                                 : () => c.transfer(task.operation, task.args),
                             child: const Text('重试'),
@@ -837,6 +845,17 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                           : task.done / task.total,
                     ),
                     const SizedBox(height: 8),
+                    Text(
+                      c.profiles
+                                  .where((p) => p['id'] == task.args['profile'])
+                                  .firstOrNull?['name']
+                              as String? ??
+                          '原连接',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.blueGrey,
+                      ),
+                    ),
                     Text('${bytes(task.done)} / ${bytes(task.total)}'),
                     if (task.error != null)
                       SelectableText(
@@ -881,81 +900,47 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
         ),
       ),
       const SizedBox(height: 16),
+      if (c.connectedProfiles.length > 1)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Text('已连接 ${c.connectedProfiles.length} 个网盘 · 点击卡片切换浏览'),
+        ),
       for (final p in c.profiles)
-        Card(
-          color: Colors.white,
-          child: ListTile(
-            leading: Icon(
-              p['icon'] == 'devices' ? Icons.devices : Icons.cloud_outlined,
-            ),
-            title: Text(p['name'] as String),
-            subtitle: Text(
-              [
-                p['provider_label'] as String? ?? p['kind'] as String,
-                if (c.connected && c.status['profile'] == p['id'])
-                  '${c.accountLabel}：${c.account}'
-                else if (p['account_name'] != null)
-                  '上次登录：${p['account_name']}',
-                if (p['summary'] != p['provider_label'] &&
-                    p['summary'] != p['name'] &&
-                    p['summary'] != null)
-                  p['summary'] as String,
-              ].join(' · '),
-            ),
-            selected: c.connected && c.status['profile'] == p['id'],
-            onTap: c.busy || !c.available
-                ? null
-                : () => unawaited(connectProfile(p)),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (c.connected && c.status['profile'] == p['id'])
-                  const Chip(
-                    avatar: Icon(
-                      Icons.check_circle,
-                      size: 18,
-                      color: Colors.blue,
-                    ),
-                    label: Text('当前使用'),
-                  )
-                else
-                  OutlinedButton.icon(
-                    onPressed: c.busy || !c.available
-                        ? null
-                        : () => connectProfile(p),
-                    icon: Icon(
-                      c.connected ? Icons.swap_horiz : Icons.login,
-                      size: 18,
-                    ),
-                    label: Text(c.connected ? '切换使用' : '登录并使用'),
-                  ),
-                IconButton(
-                  tooltip: '编辑',
-                  onPressed:
-                      c.busy ||
-                          !c.available ||
-                          (c.connected && c.status['profile'] == p['id'])
-                      ? null
-                      : () => editProfile(p),
-                  icon: const Icon(Icons.edit_outlined),
-                ),
-                IconButton(
-                  tooltip: '删除配置',
-                  onPressed:
-                      c.busy ||
-                          !c.available ||
-                          (c.connected && c.status['profile'] == p['id'])
-                      ? null
-                      : () async {
-                          if (await confirm('删除连接配置？', '服务器文件和已有配对状态会保留。')) {
-                            await c.remove(p['id'] as String);
-                          }
-                        },
-                  icon: const Icon(Icons.delete_outline),
-                ),
-              ],
-            ),
-          ),
+        ConnectionCard(
+          profile: {
+            ...p,
+            if (c.connected && c.status['profile'] == p['id'])
+              'account_name': c.account,
+          },
+          online: c.isProfileConnected(p['id'] as String),
+          selected: c.connected && c.status['profile'] == p['id'],
+          connectLabel: c.isProfileConnected(p['id'] as String)
+              ? '查看文件'
+              : c.connected
+              ? '切换使用'
+              : '登录并使用',
+          usage: c.quotas[p['id']],
+          onSelect: c.busy || !c.available
+              ? null
+              : () => unawaited(connectProfile(p)),
+          onRefresh: c.isProfileConnected(p['id'] as String)
+              ? () => unawaited(c.refreshQuota(p['id'] as String, force: true))
+              : null,
+          onDisconnect: c.busy || !c.available
+              ? null
+              : () => unawaited(c.disconnect(p['id'] as String)),
+          onEdit:
+              c.busy || !c.available || c.isProfileConnected(p['id'] as String)
+              ? null
+              : () => editProfile(p),
+          onDelete:
+              c.busy || !c.available || c.isProfileConnected(p['id'] as String)
+              ? null
+              : () async {
+                  if (await confirm('删除连接配置？', '服务器文件和已有配对状态会保留。')) {
+                    await c.remove(p['id'] as String);
+                  }
+                },
         ),
       if (c.profiles.isEmpty)
         const Padding(
@@ -1169,6 +1154,9 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
       await editProfile(profile, action, true);
     } else {
       await c.connect(profile['id'] as String);
+    }
+    if (mounted && c.connected && c.status['profile'] == profile['id']) {
+      setState(() => page = 0);
     }
   }
 

@@ -33,6 +33,7 @@ const HEADER: &[u8] = b"# Encrypted rclone configuration File";
 const JSON_LIMIT: usize = 16 * 1024 * 1024;
 
 mod gui;
+mod quota;
 pub use gui::action as gui_auth;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -478,6 +479,12 @@ impl RcloneDrive {
 }
 
 impl Provider for RcloneDrive {
+    fn storage_usage(
+        &self,
+        check: &mut dyn FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Option<crate::provider::StorageUsage>> {
+        quota::read(self, check)
+    }
     fn capabilities(&self) -> Capabilities {
         Capabilities::default()
     }

@@ -29,6 +29,8 @@ use twodrive_dev::{
 
 #[path = "desktop_backup.rs"]
 mod backup;
+#[path = "desktop_connections.rs"]
+mod connections;
 #[path = "desktop_local_files.rs"]
 mod local_files;
 #[cfg(all(target_os = "linux", feature = "mount"))]
@@ -156,6 +158,8 @@ fn drain_errors(process: &mut Process, network: Arc<Diagnostics>) {
 }
 
 struct App {
+    inactive: HashMap<String, connections::Parked>,
+    jobs: connections::Jobs,
     native_fixture: local_files::NativeFixture,
     args: Args,
     state: State,
@@ -197,6 +201,7 @@ impl App {
             .map(|p| {
                 let mut public = providers::public_profile(p);
                 public["account_name"] = json!(self.account_name(p));
+                public["connected"] = json!(self.online(&p.id));
                 public
             })
             .collect();
@@ -308,10 +313,16 @@ impl App {
         Ok(())
     }
     fn connect(&mut self, id: &str, cancel: &AtomicBool) -> anyhow::Result<Value> {
+        self.refresh_inactive();
+        if let Some(result) = self.select_online(id)? {
+            return Ok(result);
+        }
+        if self.inactive.contains_key(id) || self.connected.as_ref().is_some_and(|p| p.id == id) {
+            self.disconnect_profile(id)?;
+        }
         let p = self.profile(id)?;
-        self.disconnect()?;
-        self.network = Arc::default();
-        let connection = providers::connect(&p, &self.args, cancel, self.network.clone())?;
+        let network: Arc<Diagnostics> = Arc::default();
+        let connection = providers::connect(&p, &self.args, cancel, network.clone())?;
         let entries = connection.backend.list_directory("/")?;
         ensure!(!cancel.load(Ordering::Relaxed), "连接已取消");
         self.state.save(
@@ -319,6 +330,8 @@ impl App {
             &providers::session(&connection, &p),
         )?;
         let revision = p.revision.clone();
+        self.park_active();
+        self.network = network;
         self.backend = Some(connection.backend);
         self.gateway = connection.gateway;
         self.connected = Some(p);
@@ -396,6 +409,7 @@ impl App {
         value
     }
     fn status(&mut self) -> anyhow::Result<Value> {
+        self.refresh_inactive();
         let gateway_dead = self
             .gateway
             .as_mut()
@@ -433,6 +447,7 @@ impl App {
             json!({"providers":providers::catalog(),"capabilities":self.capabilities(),"route_fallback":self.network.fallback(),"paused":self.state.dir.join("paused").exists(),"backup":backup,"backup_failed":backup_failed,"mount_activity":mount_activity,
               "version":env!("CARGO_PKG_VERSION"),"sharing":sharing,"local_files":self.native_fixture.capabilities(),
             "connected":self.backend.is_some(),"profile":self.connected.as_ref().map(|p|&p.id),
+            "multi_connection":true,"storage_usage":true,"connections":self.config.profiles.iter().filter(|p|self.online(&p.id)).map(|p|json!({"id":p.id,"revision":p.revision,"account_name":self.account_name(p)})).collect::<Vec<_>>(),
             "mounted":self.mounted.is_some(),"mount_failed":mount_dead,"gateway_failed":gateway_dead,
             "cache":cache,"network":network,
             "account_name": self.connected.as_ref().and_then(|p| self.account_name(p)),
@@ -508,10 +523,7 @@ impl App {
                     matches!(p.network_route.as_str(), "auto" | "direct" | "system"),
                     "invalid network route"
                 );
-                ensure!(
-                    self.connected.as_ref().is_none_or(|c| c.id != p.id),
-                    "请先断开连接再编辑配置"
-                );
+                ensure!(!self.online(&p.id), "请先断开连接再编辑配置");
                 ensure!(
                     !p.name.trim().is_empty() && p.name.len() <= 120,
                     "连接名称不能为空"
@@ -538,10 +550,7 @@ impl App {
             }
             "remove_profile" => {
                 let id = string(a, "id")?;
-                ensure!(
-                    self.connected.as_ref().is_none_or(|p| p.id != id),
-                    "请先断开连接"
-                );
+                ensure!(!self.online(id), "请先断开连接");
                 let p = self.profile(id)?;
                 ensure!(
                     self.cache(&p, false)?["pending"] == 0,
@@ -557,11 +566,19 @@ impl App {
                 Ok(json!({}))
             }
             "connect" => self.connect(string(a, "id")?, &cancel),
-            "disconnect" | "quit" => {
-                self.disconnect()?;
-                if req.op == "quit" {
-                    self.hosting.stop();
+            "disconnect" => {
+                let id = a["id"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| self.connected.as_ref().map(|p| p.id.clone()));
+                if let Some(id) = id {
+                    self.disconnect_profile(&id)?;
                 }
+                Ok(json!({}))
+            }
+            "quit" => {
+                self.disconnect_all()?;
+                self.hosting.stop();
                 Ok(json!({}))
             }
             "status" => self.status(),
@@ -577,6 +594,14 @@ impl App {
             "backups" | "save_backups" => {
                 let p = self.profile(string(a, "id")?)?;
                 if req.op == "save_backups" {
+                    ensure!(
+                        !self.online(&p.id)
+                            || self
+                                .connected
+                                .as_ref()
+                                .is_some_and(|current| current.id == p.id),
+                        "请先切换到此网盘再修改备份设置"
+                    );
                     providers::validate(&p)?;
                     let public = providers::public_profile(&p);
                     ensure!(
@@ -599,12 +624,14 @@ impl App {
             }
             "sign_out" => {
                 let id = string(a, "id")?.to_owned();
-                self.disconnect()?;
                 let p = self.profile(&id)?;
                 ensure!(self.cache(&p, false)?["pending"] == 0, "请先处理待上传缓存");
+                self.disconnect_profile(&id)?;
                 providers::sign_out(&p)?;
                 self.config.profiles.retain(|p| p.id != id);
-                self.config.selected = None;
+                if self.config.selected.as_deref() == Some(&id) {
+                    self.config.selected = None;
+                }
                 self.state.save("profiles.json", &self.config)?;
                 Ok(json!({}))
             }
@@ -722,94 +749,16 @@ impl App {
                 self.unmount(true)?;
                 self.status()
             }
-            op => {
-                ensure!(
-                    self.connected
-                        .as_ref()
-                        .is_some_and(|p| a["profile"].as_str() == Some(p.id.as_str())),
-                    "文件操作所属连接已改变，请刷新后重试"
-                );
-                ensure!(
-                    self.connected
-                        .as_ref()
-                        .is_some_and(|p| a["revision"].as_str() == Some(p.revision.as_str())),
-                    "连接配置已更新，请刷新后重新选择文件"
-                );
-                let backend = self.backend.as_ref().context("请先连接服务器")?;
-                ensure!(!cancel.load(Ordering::Relaxed), "操作已取消");
-                if req.op != "list" {
-                    ensure!(
-                        !self.state.dir.join("paused").exists(),
-                        "同步已暂停，请先恢复"
-                    );
-                }
-                let path = string(a, "path")?;
-                match op {
-                    "list" => Ok(
-                        json!({"path":path,"entries":backend.list_directory(path)?.into_iter().map(metadata).collect::<Vec<_>>()}),
-                    ),
-                    "mkdir" => Ok(metadata(backend.create_folder(path)?)),
-                    "rename" => Ok(metadata(backend.rename_path(path, string(a, "to")?)?)),
-                    "delete" => {
-                        ensure!(path != "/", "不能删除共享根目录");
-                        backend.delete_path(path)?;
-                        Ok(json!({}))
-                    }
-                    "upload" => {
-                        let out = out.clone();
-                        let id = req.id;
-                        let last = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(1)));
-                        let progress = Arc::new(move |done, total| {
-                            ensure!(
-                                !cancel.load(Ordering::Relaxed),
-                                "上传已取消；若服务器已接收，请刷新确认结果"
-                            );
-                            let mut last = last.lock().unwrap();
-                            if done == total || last.elapsed() >= Duration::from_millis(150) {
-                                emit(
-                                    &out,
-                                    json!({"id":id,"event":"progress","done":done,"total":total}),
-                                );
-                                *last = Instant::now();
-                            }
-                            Ok(())
-                        });
-                        Ok(metadata(backend.upload_path(
-                            path,
-                            Path::new(string(a, "source")?),
-                            a["etag"].as_str(),
-                            progress,
-                        )?))
-                    }
-                    "download" => {
-                        let output = PathBuf::from(string(a, "output")?);
-                        ensure!(output.is_absolute(), "下载目标必须是绝对路径");
-                        ensure!(!output.exists(), "目标文件已存在，请选择另一个名称");
-                        let parent = output.parent().context("invalid output")?;
-                        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-                        let mut last = Instant::now() - Duration::from_secs(1);
-                        let total = a["size"].as_u64().unwrap_or(0);
-                        let done = backend.download_path_to(path, &mut temp, &mut |done| {
-                            ensure!(!cancel.load(Ordering::Relaxed), "下载已取消");
-                            if last.elapsed() >= Duration::from_millis(150) {
-                                emit(out,json!({"id":req.id,"event":"progress","done":done,"total":total})); last = Instant::now();
-                            } Ok(())
-                        })?;
-                        ensure!(!cancel.load(Ordering::Relaxed), "下载已取消");
-                        temp.flush()?;
-                        temp.as_file().sync_all()?;
-                        temp.persist_noclobber(output)?;
-                        Ok(json!({"bytes":done}))
-                    }
-                    _ => anyhow::bail!("unknown operation"),
-                }
+            "list" | "mkdir" | "rename" | "delete" | "upload" | "download" | "quota" => {
+                self.file_context(a)?.execute(req, &cancel, out)
             }
+            _ => anyhow::bail!("unknown operation"),
         }
     }
 }
 impl Drop for App {
     fn drop(&mut self) {
-        let _ = self.unmount(false);
+        self.cleanup_inactive();
     }
 }
 
@@ -838,6 +787,8 @@ pub fn run() -> anyhow::Result<()> {
         backup: None,
         network: Arc::default(),
         hosting: sharing::Hosting::default(),
+        inactive: HashMap::new(),
+        jobs: HashMap::new(),
         native_fixture: local_files::NativeFixture::default(),
     };
     if let Some(id) = &app.args.backup_worker {
@@ -887,6 +838,24 @@ pub fn run() -> anyhow::Result<()> {
                 .get(&req.id)
                 .cloned()
                 .unwrap_or_default();
+            app.reap_jobs();
+            if matches!(req.op.as_str(), "upload" | "download" | "quota") {
+                let id = req.id;
+                if let Err(error) = app.start_file_job(
+                    req,
+                    cancel,
+                    worker_out.clone(),
+                    worker_cancel.clone(),
+                    worker_notifications.load(Ordering::Relaxed),
+                ) {
+                    emit(
+                        &worker_out,
+                        json!({"id":id,"ok":false,"error":error.to_string()}),
+                    );
+                    worker_cancel.lock().unwrap().remove(&id);
+                }
+                continue;
+            }
             let observable = worker_notifications.load(Ordering::Relaxed)
                 && !matches!(
                     req.op.as_str(),
@@ -921,6 +890,7 @@ pub fn run() -> anyhow::Result<()> {
                 break;
             }
         }
+        app.stop_jobs(&worker_cancel);
     });
     let mut input = std::io::stdin().lock();
     loop {
@@ -1020,6 +990,8 @@ mod tests {
             backup: None,
             network: Arc::default(),
             hosting: sharing::Hosting::default(),
+            inactive: HashMap::new(),
+            jobs: HashMap::new(),
             native_fixture: local_files::NativeFixture::default(),
         };
         let directory = app.mount_state(&active);
@@ -1093,6 +1065,8 @@ mod tests {
             backup: None,
             network: Arc::default(),
             hosting: sharing::Hosting::default(),
+            inactive: HashMap::new(),
+            jobs: HashMap::new(),
             native_fixture: local_files::NativeFixture::default(),
         };
         let session = json!({"kind":app.connected.as_ref().unwrap().kind,
@@ -1203,6 +1177,8 @@ mod tests {
             backup: None,
             network: Arc::default(),
             hosting: sharing::Hosting::default(),
+            inactive: HashMap::new(),
+            jobs: HashMap::new(),
             native_fixture: local_files::NativeFixture::default(),
         };
         let source = temp.path().join("source");

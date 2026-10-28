@@ -72,7 +72,15 @@ flowchart LR
 }
 ```
 
-保存时默认目录应为独立的 `state/accounts/<profile-id>/<provider>`；Linux 挂载目录同样独立。不能将不同账号指向同一个令牌目录。在线新增/管理非活动配置必须保持当前 `selected`、账号 binding 与 revision；活动配置需断开后编辑/删除，切换连接须先处理待上传缓存保护。
+保存时默认目录应为独立的 `state/accounts/<profile-id>/<provider>`；Linux 挂载目录同样独立。不能将不同账号指向同一个令牌目录。在线新增/管理离线配置必须保持当前 `selected`、账号 binding 与 revision；所有已连接配置需断开后编辑/删除。切换浏览保留其他连接、挂载、备份及传输；断开或退出前仍须检查该账号的待上传缓存和运行任务。
+
+### 多连接、传输归属与账号容量
+
+引擎 `status.multi_connection=true` 时，`connections` 列出全部在线 profile 与 revision，顶层 `profile` 仅表示当前浏览对象。再次 `connect` 已在线 profile 只选择该会话，不重新认证或枚举根目录；连接新账号失败保留原连接。每次文件操作必须显式带原 `profile/revision`；传输期间切换浏览不能改变任务归属。同名路径也不得跨账号解析。上传、下载、容量查询最多同时执行八项，使用独立任务；控制队列及取消仍有预算。断开指定账号不影响其他账号；该账号仍有传输时拒绝断开，退出也拒绝未完成传输。容量任务可取消后收尾。前端保留各账号上次浏览目录并提供逐任务取消。
+
+可选 Provider `storage_usage` 只返回数字 `total/used/free` 和 `scope=account`；全部未知返回不支持。IPC `quota` 同样绑定 profile/revision，错误只影响容量卡片。前端每账号缓存五分钟、合并重复请求，支持手动刷新；失败保留上次成功值并明确标记，revision 变更清空旧值。未知值不能显示为零，不能枚举整盘文件推算总额度。连接页用横条，托盘用小环形图，接近满额使用橙色；账号总空间可能与照片、邮件等共用。OneDrive 使用现有 Graph 权限读取 `/me/drive?$select=quota`，iCloud 复用既有加密 web session，详情见 [iCloud 指南](icloud-drive.md)。其他适配器未实现时明确显示不支持，不伪造容量。
+
+客户端重启后保留已保存登录并按原启动流程恢复选中连接；其余连接可直接点击连接。当前没有承诺重启时自动并行恢复全部账号。实际 Windows 本地验证及真实云端边界见 [多网盘验证记录](multi-cloud-2026-10-28.md)。
 
 ## 3. 登录入口与凭据生命周期
 

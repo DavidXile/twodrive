@@ -12,6 +12,28 @@ use std::{
 
 pub type Progress = Arc<dyn Fn(u64, u64) -> anyhow::Result<()> + Send + Sync>;
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageUsage {
+    pub total: Option<u64>,
+    pub used: Option<u64>,
+    pub free: Option<u64>,
+    /// Account quota can include other services; it is not a folder-size sum.
+    pub scope: String,
+}
+impl StorageUsage {
+    pub fn account(total: Option<u64>, used: Option<u64>, free: Option<u64>) -> Option<Self> {
+        if total.is_none() && used.is_none() && free.is_none() {
+            return None;
+        }
+        Some(Self {
+            total,
+            used,
+            free: free.or_else(|| total.zip(used).map(|(t, u)| t.saturating_sub(u))),
+            scope: "account".into(),
+        })
+    }
+}
+
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Capabilities {
     pub upload: bool,
@@ -28,6 +50,13 @@ impl Capabilities {
 
 pub trait Provider: CloudBackend {
     fn capabilities(&self) -> Capabilities;
+    fn storage_usage(
+        &self,
+        check: &mut dyn FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Option<StorageUsage>> {
+        check()?;
+        Ok(None)
+    }
     fn list_directory(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>>;
     /// No version means atomic create-only; a version requires atomic comparison.
     /// remote_id is an opaque provider ID, never a UI path. Implementations must
@@ -67,6 +96,12 @@ impl Backend {
     }
     pub fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
+    }
+    pub fn storage_usage(
+        &self,
+        check: &mut dyn FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Option<StorageUsage>> {
+        self.inner.storage_usage(check)
     }
     pub fn list_directory(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
         self.check_pause()?;

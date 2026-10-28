@@ -193,7 +193,7 @@ void main() {
     await show();
     await tester.pump();
     expect(find.text('25%'), findsOneWidget);
-    await tester.tap(find.byType(PopupMenuButton<String>));
+    await tester.tap(find.byTooltip('设置'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('暂停同步'));
     await tester.pumpAndSettle();

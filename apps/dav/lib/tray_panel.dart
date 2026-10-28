@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'client.dart';
+import 'storage_usage.dart';
 
 class TrayPanel extends StatelessWidget {
   const TrayPanel({
@@ -37,6 +38,9 @@ class TrayPanel extends StatelessWidget {
           'bytes_total': t.total,
           'state': t.state,
           'error': t.error,
+          'account': c.profiles
+              .where((p) => p['id'] == t.args['profile'])
+              .firstOrNull?['name'],
         },
       ...c.syncActivity,
       ...((c.status['cache']?['waiting'] as List?) ?? [])
@@ -96,11 +100,83 @@ class TrayPanel extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            provider,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w700,
-                              fontSize: 16,
+                          PopupMenuButton<String>(
+                            key: const ValueKey('cloud-switcher'),
+                            constraints: const BoxConstraints(
+                              minWidth: 260,
+                              maxWidth: 360,
+                            ),
+                            tooltip: '切换网盘',
+                            enabled: !c.busy && c.available,
+                            onSelected: (id) async {
+                              final profile = c.profiles
+                                  .where((p) => p['id'] == id)
+                                  .firstOrNull;
+                              if (profile?['login_required'] == true) {
+                                await onManage(2);
+                              } else {
+                                await c.connect(id);
+                              }
+                            },
+                            itemBuilder: (_) => [
+                              for (final p in c.profiles)
+                                PopupMenuItem(
+                                  value: p['id'] as String,
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        c.isProfileConnected(p['id'] as String)
+                                            ? Icons.cloud_done_outlined
+                                            : Icons.cloud_off_outlined,
+                                        size: 18,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          p['name'] as String,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Text(
+                                        p['id'] == c.selected
+                                            ? '当前浏览'
+                                            : c.isProfileConnected(
+                                                p['id'] as String,
+                                              )
+                                            ? '已连接'
+                                            : '未连接',
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.blueGrey,
+                                        ),
+                                      ),
+                                      if (p['id'] == c.selected)
+                                        const Padding(
+                                          padding: EdgeInsets.only(left: 8),
+                                          child: Icon(Icons.check, size: 18),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                            ],
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    provider,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                ),
+                                const Icon(Icons.expand_more, size: 19),
+                              ],
                             ),
                           ),
                           Text(
@@ -195,6 +271,17 @@ class TrayPanel extends StatelessWidget {
                     ),
                   ],
                 ),
+                const SizedBox(height: 8),
+                StorageUsageView(
+                  ring:true,
+                  value: c.quotas[c.selected],
+                  connected: c.connected,
+                  onRefresh: c.connected
+                      ? () {
+                          c.refreshQuota(c.selected!, force: true);
+                        }
+                      : null,
+                ),
               ],
             ),
           ),
@@ -274,6 +361,16 @@ class TrayPanel extends StatelessWidget {
                                       fontWeight: FontWeight.w500,
                                     ),
                                   ),
+                                  if (item['account'] != null)
+                                    Text(
+                                      item['account'] as String,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Colors.blueGrey,
+                                      ),
+                                    ),
                                   const SizedBox(height: 5),
                                   Text(
                                     item['error'] != null

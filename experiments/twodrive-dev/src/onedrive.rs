@@ -55,6 +55,17 @@ impl OneDrive {
     }
 }
 impl Provider for OneDrive {
+    fn storage_usage(
+        &self,
+        check: &mut dyn FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Option<crate::provider::StorageUsage>> {
+        let quota = self.graph.readonly_quota(check)?;
+        Ok(crate::provider::StorageUsage::account(
+            quota["total"].as_u64(),
+            quota["used"].as_u64(),
+            quota["remaining"].as_u64(),
+        ))
+    }
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             upload: self.writable,
