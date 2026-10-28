@@ -39,7 +39,7 @@
 
 托盘标题旁下拉箭头可选择已保存网盘；已连接的其他账号保留会话，文件传输始终绑定原账号及配置代次。连接页显示横条，托盘用小环形图列出总量、已用、剩余；数值是整个 Apple 账号额度，可能包含照片和邮件，不等于 iCloud Drive 文件总大小。
 
-Rclone 1.75.2 的 iCloud 后端未提供 `about`。容量查询只在现有登录有效时，从加密配置读取现有 Cookie，在固定 `setup.icloud.com` 的 `storageUsageInfo` 接口发出只读 GET；不解码密码、不重新登录、不扩大文件写入能力、不接受自定义端点或重定向。Cookie 和账号内部标识不返回 UI、日志或公开 IPC。配置读取使用同账号操作锁，网络请求连接超时五秒、总超时十五秒，响应有大小限制；失败不改变文件连接。当前仅完成解析/脱敏及本地多连接回归，真实 Apple 容量查询尚未验证；此接口不是 Apple 对第三方承诺稳定的公开 API，失败时界面明确标为暂不可用。参考 [PyiCloud 账号接口实现](https://github.com/picklepete/pyicloud/blob/master/pyicloud/services/account.py)。
+Rclone 1.75.2 的 iCloud 后端未提供 `about`。容量查询只在现有登录有效时，从加密配置读取现有 Cookie，在固定 `setup.icloud.com` 的 `storageUsageInfo` 接口发出只读 GET；不解码密码、不重新登录、不扩大文件写入能力、不接受自定义端点或重定向。Cookie 和账号内部标识不返回 UI、日志或公开 IPC。配置读取使用同账号操作锁，网络请求连接超时五秒、总超时十五秒，响应有大小限制；失败不改变文件连接。解析/脱敏及本地多连接回归通过，用户在更新后的 GUI 明确反馈容量显示与切换正常；没有记录各账号具体数值或独立比对精度。此接口不是 Apple 对第三方承诺稳定的公开 API，失败时界面明确标为暂不可用。参考 [PyiCloud 账号接口实现](https://github.com/picklepete/pyicloud/blob/master/pyicloud/services/account.py)。
 
 本轮更新详情及新旧验证边界见 [多网盘验证记录](multi-cloud-2026-10-28.md)。以下保留此前登录和读取的实际记录，不将它们作为新增容量和多网盘的真实验收。
 
