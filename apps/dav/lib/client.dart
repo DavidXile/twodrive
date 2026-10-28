@@ -535,7 +535,7 @@ class StorageClient extends ChangeNotifier {
         await readDirectory(path);
       }
     } catch (e) {
-      if (!_disposed) {
+      if (!_disposed && !quitting) {
         _pollError = '$e'.replaceFirst('Bad state: ', '');
         notifyListeners();
       }
@@ -604,7 +604,10 @@ class StorageClient extends ChangeNotifier {
     final generation = ++_browseGeneration;
     final identity = this.target;
     final result = await request('list', {'path': target, ...identity});
-    if (generation != _browseGeneration || !available || _disposed) {
+    if (generation != _browseGeneration ||
+        !available ||
+        _disposed ||
+        quitting) {
       return;
     }
     _directoryChecked = DateTime.now();
@@ -737,6 +740,8 @@ class StorageClient extends ChangeNotifier {
     }
     quitting = true;
     _poll?.cancel();
+    activity = '正在退出，正在收尾连接…';
+    notifyListeners();
     try {
       if (available) {
         await request('quit');
@@ -746,11 +751,12 @@ class StorageClient extends ChangeNotifier {
       // The engine may close its pipe immediately after acknowledging quit.
       // That transport cleanup failure does not revoke the confirmed shutdown.
       try {
-        await closeTransport();
+        await closeTransport().timeout(const Duration(seconds: 2));
       } catch (_) {}
       return true;
     } catch (e) {
       quitting = false;
+      activity = '';
       if (available && !_disposed) {
         _poll = Timer.periodic(
           const Duration(seconds: 3),

@@ -445,9 +445,9 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                 ),
                 if (widget.desktop)
                   TextButton.icon(
-                    onPressed: quit,
+                    onPressed: c.quitting ? null : quit,
                     icon: const Icon(Icons.power_settings_new, size: 18),
-                    label: const Text('退出客户端'),
+                    label: Text(c.quitting ? '正在退出…' : '退出客户端'),
                   ),
                 const SizedBox(height: 18),
               ],
@@ -553,7 +553,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                         ],
                       ),
                     ),
-                  if (c.busy)
+                  if (c.busy || c.quitting)
                     Column(
                       children: [
                         const LinearProgressIndicator(),
@@ -567,7 +567,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                                 child: Text(c.activity),
                               ),
                             ),
-                            if (c.activeId != null)
+                            if (!c.quitting && c.activeId != null)
                               TextButton(
                                 onPressed: c.cancel,
                                 child: const Text('取消'),

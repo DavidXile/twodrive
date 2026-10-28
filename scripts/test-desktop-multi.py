@@ -20,6 +20,7 @@ spec.loader.exec_module(desktop)
 
 def run(args):
     started, release = threading.Event(), threading.Event()
+    list_hold, list_started, list_release = threading.Event(), threading.Event(), threading.Event()
     servers = []
     payloads = {'a': b'account-a-content', 'b': b'account-b-content'}
 
@@ -31,6 +32,10 @@ def run(args):
                 pass
 
             def do_PROPFIND(self):
+                if account == 'b' and list_hold.is_set():
+                    list_started.set()
+                    if not list_release.wait(20):
+                        return
                 root = self.path.rstrip('/') == ''
                 collection = '<d:response><d:href>/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>' if root else ''
                 body = (f'<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">{collection}'
@@ -130,13 +135,30 @@ def run(args):
                 assert replies[510]['result']['profile'] == 'b'
                 assert [p['id'] for p in replies[510]['result']['connections']] == ['b']
                 report['checks']['disconnect_one_keeps_other_online'] = True
+                list_hold.set()
+                send(511, 'list', file_args('b', path='/'))
+                assert list_started.wait(8), 'directory read did not reach gate'
+                send(512, 'quit')
+                # This immediate reader reply proves quit has reached the input
+                # loop, while the independent control worker is still gated.
+                send(513, 'cancel', {'id': 999999})
+                receive({513})
+                list_release.set()
+                receive({511, 512})
+                engine.process.stdin.close()
+                engine.process.wait(timeout=10)
+                assert not replies[511]['ok'], 'quit must cancel the queued display read'
+                assert replies[512]['ok'], 'clean idle quit must remain accepted'
+                report['checks']['quit_cancels_display_read_before_ack_and_process_exits'] = True
                 engine.counter = 600
             finally:
                 release.set()
+                list_release.set()
                 engine.counter = max(engine.counter, 600)
                 engine.close()
     finally:
         release.set()
+        list_release.set()
         for server in servers:
             server.shutdown()
             server.server_close()

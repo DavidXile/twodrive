@@ -391,6 +391,7 @@ impl RcloneDrive {
         Ok(backend)
     }
 
+    #[cfg(test)]
     fn operation_lock(&self) -> anyhow::Result<File> {
         wait_for_operation(&self.state, Duration::from_secs(45), || {
             ensure!(!self.cancel.load(Ordering::Relaxed), "连接已取消");
@@ -399,20 +400,34 @@ impl RcloneDrive {
     }
 
     fn query(&self, args: &[&str]) -> anyhow::Result<Value> {
-        let _lock = self.operation_lock()?;
+        self.query_checked(args, &mut || Ok(()))
+    }
+    fn query_checked(
+        &self,
+        args: &[&str],
+        check: &mut dyn FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Value> {
+        let _lock = wait_for_operation(&self.state, Duration::from_secs(45), || {
+            ensure!(!self.cancel.load(Ordering::Relaxed), "连接已取消");
+            check()
+        })?;
         let auth: Auth = self.state.read(MANIFEST)?;
         ensure!(
             auth.ready && auth.binding == self.binding,
             "登录状态已改变，拒绝旧连接"
         );
-        json_command(
-            &self.exe,
-            &self.state,
-            &self.pass,
-            &self.route,
-            args,
+        let mut cmd = command(&self.exe, &self.state, &self.pass, &self.route);
+        cmd.args(args);
+        let mut bytes = Vec::new();
+        stream(
+            cmd,
+            &mut bytes,
+            |_| check(),
+            JSON_LIMIT as u64,
             &self.cancel,
-        )
+        )?;
+        check()?;
+        serde_json::from_slice(&bytes).context("网盘组件返回的元数据格式无效")
     }
 
     fn entry(&self, path: &str, value: &Value) -> anyhow::Result<MetadataEntry> {
@@ -489,9 +504,19 @@ impl Provider for RcloneDrive {
         Capabilities::default()
     }
     fn list_directory(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
+        self.list_directory_checked(path, &mut || Ok(()))
+    }
+    fn list_directory_checked(
+        &self,
+        path: &str,
+        check: &mut dyn FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Vec<MetadataEntry>> {
         valid_path(path)?;
         let remote = format!("twodrive:{}", path.trim_start_matches('/'));
-        let values = self.query(&["lsjson", &remote, "--no-mimetype", "--max-depth=1"])?;
+        let values = self.query_checked(
+            &["lsjson", &remote, "--no-mimetype", "--max-depth=1"],
+            check,
+        )?;
         self.entries(path, &values)
     }
     fn upload_controlled(
@@ -781,6 +806,67 @@ mod tests {
     }
     fn row() -> Value {
         json!({"ID":"opaque-cloud-id","Name":"中文.bin","Path":"中文.bin","Size":12,"IsDir":false,"ModTime":"2026-10-28T00:00:00Z"})
+    }
+    #[test]
+    fn directory_wait_honors_request_cancel_without_cancelling_the_connection() {
+        let (_temp, backend) = fixture();
+        let held = private_lock(&backend.state, "operation.lock").unwrap();
+        held.try_lock_exclusive().unwrap();
+        let start = Instant::now();
+        let error = backend
+            .list_directory_checked("/", &mut || {
+                ensure!(
+                    start.elapsed() < Duration::from_millis(80),
+                    "display read cancelled"
+                );
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("display read cancelled"));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(!backend.cancel.load(Ordering::Relaxed));
+        let probe = private_lock(&backend.state, "operation.lock").unwrap();
+        assert!(
+            probe.try_lock_exclusive().is_err(),
+            "cancellation must not release another operation's lock"
+        );
+    }
+    #[test]
+    fn stalled_component_read_is_reaped_on_request_check_failure() {
+        #[cfg(windows)]
+        let cmd = {
+            let mut c = Command::new("powershell.exe");
+            c.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ]);
+            c
+        };
+        #[cfg(not(windows))]
+        let cmd = {
+            let mut c = Command::new("sh");
+            c.args(["-c", "exec sleep 30"]);
+            c
+        };
+        let start = Instant::now();
+        let error = stream(
+            cmd,
+            &mut Vec::new(),
+            |_| {
+                ensure!(
+                    start.elapsed() < Duration::from_millis(150),
+                    "display read cancelled"
+                );
+                Ok(())
+            },
+            JSON_LIMIT as u64,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("display read cancelled"));
+        assert!(start.elapsed() < Duration::from_secs(3));
     }
     #[test]
     fn operation_lock_waits_for_another_reader_then_acquires() {

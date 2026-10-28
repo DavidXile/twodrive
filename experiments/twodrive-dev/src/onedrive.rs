@@ -76,9 +76,16 @@ impl Provider for OneDrive {
         }
     }
     fn list_directory(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
+        self.list_directory_checked(path, &mut || Ok(()))
+    }
+    fn list_directory_checked(
+        &self,
+        path: &str,
+        check: &mut dyn FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Vec<MetadataEntry>> {
         Ok(self
             .graph
-            .desktop_directory(path, &mut || Ok(()))?
+            .desktop_directory(path, check)?
             .into_iter()
             .map(entry)
             .collect())

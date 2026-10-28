@@ -58,6 +58,16 @@ pub trait Provider: CloudBackend {
         Ok(None)
     }
     fn list_directory(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>>;
+    fn list_directory_checked(
+        &self,
+        path: &str,
+        check: &mut dyn FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Vec<MetadataEntry>> {
+        check()?;
+        let entries = self.list_directory(path)?;
+        check()?;
+        Ok(entries)
+    }
     /// No version means atomic create-only; a version requires atomic comparison.
     /// remote_id is an opaque provider ID, never a UI path. Implementations must
     /// stream with bounded memory and stop when the progress callback fails.
@@ -107,6 +117,15 @@ impl Backend {
         self.check_pause()?;
         valid_path(path)?;
         self.inner.list_directory(path)
+    }
+    pub fn list_directory_checked(
+        &self,
+        path: &str,
+        check: &mut dyn FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Vec<MetadataEntry>> {
+        self.check_pause()?;
+        valid_path(path)?;
+        self.inner.list_directory_checked(path, check)
     }
     pub fn entry(&self, path: &str) -> anyhow::Result<MetadataEntry> {
         valid_path(path)?;

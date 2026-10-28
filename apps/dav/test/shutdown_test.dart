@@ -23,7 +23,33 @@ class QuitClient extends StorageClient {
   }
 }
 
+class SlowTransportClient extends QuitClient {
+  @override
+  Future<void> closeTransport() {
+    closed++;
+    return Completer<void>().future;
+  }
+}
+
 void main() {
+  testWidgets(
+    'confirmed quit does not wait indefinitely on transport cleanup',
+    (tester) async {
+      final client = SlowTransportClient()..available = true;
+      bool? done;
+      client.shutdown().then((v) => done = v);
+      client.acknowledgement.complete({});
+      await tester.pump();
+      expect(client.quitting, true);
+      expect(client.activity, contains('正在退出'));
+      expect(client.closed, 1);
+      expect(done, isNull);
+      await tester.pump(const Duration(seconds: 3));
+      expect(done, true);
+      expect(client.error, isNull);
+      client.dispose();
+    },
+  );
   test(
     'acknowledged quit tolerates closed pipe and coalesces repeated clicks',
     () async {

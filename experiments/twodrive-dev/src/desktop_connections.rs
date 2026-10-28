@@ -294,7 +294,10 @@ impl FileContext {
         let path = string(a, "path")?;
         match req.op.as_str() {
             "list" => Ok(
-                json!({"path":path,"entries":self.backend.list_directory(path)?.into_iter().map(metadata).collect::<Vec<_>>()}),
+                json!({"path":path,"entries":self.backend.list_directory_checked(path, &mut || {
+                    ensure!(!cancel.load(Ordering::Relaxed), "目录刷新已取消");
+                    Ok(())
+                })?.into_iter().map(metadata).collect::<Vec<_>>()}),
             ),
             "mkdir" => Ok(metadata(self.backend.create_folder(path)?)),
             "rename" => Ok(metadata(self.backend.rename_path(path, string(a, "to")?)?)),

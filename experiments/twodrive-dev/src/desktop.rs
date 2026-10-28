@@ -893,6 +893,7 @@ pub fn run() -> anyhow::Result<()> {
         app.stop_jobs(&worker_cancel);
     });
     let mut input = std::io::stdin().lock();
+    let mut read_requests = std::collections::HashSet::new();
     loop {
         // UI requests never need large payloads: files stream from disk.
         let mut line = String::new();
@@ -927,6 +928,18 @@ pub fn run() -> anyhow::Result<()> {
                     json!({"id":id,"ok":false,"error":"duplicate request id"}),
                 );
                 continue;
+            }
+            read_requests.retain(|id| flags.contains_key(id));
+            if req.op == "quit" {
+                // Only abandon display reads. Transfers/mutations remain subject
+                // to their existing completion and pending-data protections.
+                for id in &read_requests {
+                    if let Some(flag) = flags.get(id) {
+                        flag.store(true, Ordering::Relaxed);
+                    }
+                }
+            } else if matches!(req.op.as_str(), "list" | "quota") {
+                read_requests.insert(id);
             }
             flags.insert(id, Arc::new(AtomicBool::new(false)));
             drop(flags);
