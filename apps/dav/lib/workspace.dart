@@ -55,6 +55,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
   String filter = '';
   String _traySignature = '';
   Future<void> _trayWork = Future.value();
+  Future<void>? _quitWork;
   @override
   void initState() {
     super.initState();
@@ -174,21 +175,36 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
     }
   }
 
-  Future<void> quit() async {
-    if (await c.shutdown()) {
-      if (trayReady) {
-        await _trayWork;
-        await tray.destroy();
-        trayReady = false;
-      }
+  Future<void> quit() => _quitWork ??= _quitOnce();
+
+  Future<void> _quitOnce() async {
+    try {
       if (widget.desktop) {
-        await windowManager.setPreventClose(false);
-        await windowManager.destroy();
-      } else {
-        await SystemNavigator.pop();
+        // Keep the visible window independent of mount/pipe cleanup latency.
+        // A refused shutdown must restore it instead of hiding unsaved writes.
+        try {
+          await windowManager.hide();
+        } catch (_) {}
       }
-    } else {
-      await show();
+      if (await c.shutdown()) {
+        if (trayReady) {
+          await _trayWork;
+          await tray.destroy();
+          trayReady = false;
+        }
+        if (widget.desktop) {
+          await windowManager.setPreventClose(false);
+          await windowManager.destroy();
+        } else {
+          await SystemNavigator.pop();
+        }
+      } else if (widget.desktop) {
+        // Preserve the current page, window size and panel mode on refusal.
+        await windowManager.show();
+        await windowManager.focus();
+      }
+    } finally {
+      _quitWork = null;
     }
   }
 
