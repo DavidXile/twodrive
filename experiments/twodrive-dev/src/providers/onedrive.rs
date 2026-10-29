@@ -123,14 +123,15 @@ mod tests {
     #[test]
     fn startup_with_missing_token_never_enters_browser_authorization() {
         let root = tempfile::tempdir().unwrap();
+        let private = root.path().join("private");
         let p: Profile = serde_json::from_value(
-            json!({"kind":"onedrive","onedrive_state":root.path(),"network_route":"system"}),
+            json!({"kind":"onedrive","onedrive_state":private,"network_route":"system"}),
         )
         .unwrap();
         let error = resume(&p, &AtomicBool::new(false), Arc::default())
             .err()
             .unwrap();
         assert!(error.to_string().contains("请手动重新授权"));
-        assert!(!paths(root.path()).unwrap().token_path.exists());
+        assert!(!paths(&private).unwrap().token_path.exists());
     }
 }

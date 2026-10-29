@@ -33,6 +33,7 @@ pub struct BaiduDrive {
     state: State,
     api: Api,
     root: String,
+    generation: String,
     pub binding: String,
     pub account_name: String,
     _auth_lock: File,
@@ -67,11 +68,18 @@ impl BaiduDrive {
             "请先完成或取消百度登录，再连接"
         );
         let session = auth::load(&state)?;
+        let binding = format!(
+            "baidu-root-v1:{:x}",
+            Sha256::digest(serde_json::to_vec(&(&session.generation, &root))?)
+        );
         let backend = Self {
             state,
             api,
             root,
-            binding: session.generation,
+            // Authentication generation and storage identity serve different
+            // purposes: a valid login can address multiple disjoint roots.
+            binding,
+            generation: session.generation,
             account_name: session.name,
             _auth_lock: auth_lock,
             writable: false,
@@ -113,7 +121,7 @@ impl BaiduDrive {
         params: &[(&str, &str)],
         check: &mut dyn FnMut() -> anyhow::Result<()>,
     ) -> anyhow::Result<Value> {
-        let token = auth::access(&self.state, &self.api, &self.binding, None, check)?;
+        let token = auth::access(&self.state, &self.api, &self.generation, None, check)?;
         let mut value = self.api.get(path, &token, params, check)?;
         if matches!(
             value["errno"]
@@ -121,7 +129,13 @@ impl BaiduDrive {
                 .or_else(|| value["error_code"].as_i64()),
             Some(-6 | 110 | 20016 | 20017 | 31045)
         ) {
-            let token = auth::access(&self.state, &self.api, &self.binding, Some(&token), check)?;
+            let token = auth::access(
+                &self.state,
+                &self.api,
+                &self.generation,
+                Some(&token),
+                check,
+            )?;
             value = self.api.get(path, &token, params, check)?;
         }
         errno(&value)?;
@@ -262,7 +276,7 @@ impl BaiduDrive {
             self.api.trusted_download(&url),
             "百度返回了未受信任的下载地址"
         );
-        let token = auth::access(&self.state, &self.api, &self.binding, None, &mut check)?;
+        let token = auth::access(&self.state, &self.api, &self.generation, None, &mut check)?;
         let pairs: Vec<_> = url
             .query_pairs()
             .filter(|(k, _)| k != "access_token")

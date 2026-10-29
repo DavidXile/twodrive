@@ -29,6 +29,7 @@ on:
       - 'scripts/test-desktop-startup.py'
       - 'scripts/test-windows-readonly-mount.py'
       - 'scripts/test-windows-editable-mount.py'
+      - 'scripts/test-linux-locked-mount.py'
       - 'scripts/test-desktop-sharing.py'
       - 'scripts/test_engine_fixture.py'
       - 'scripts/test-msix-runtime.ps1'
@@ -89,6 +90,8 @@ jobs:
           python3 scripts/test-desktop-startup.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
           python3 scripts/test-storage-connections.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
           python3 scripts/test-desktop-sharing.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
+      - name: Linux locked startup and pending-write recovery through FUSE
+        run: python3 scripts/test-linux-locked-mount.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev" --report linux-locked-mount.json
       - name: Tray positioning regression
         run: |
           clang++ -std=c++17 -Wall -Wextra -Werror apps/dav/linux/runner/tray_geometry_test.cc -o /tmp/tray-geometry-test

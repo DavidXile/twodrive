@@ -15,7 +15,9 @@ impl BaiduDrive {
         Ok((root, lock))
     }
     fn token(&self) -> anyhow::Result<String> {
-        auth::access(&self.state, &self.api, &self.binding, None, &mut || Ok(()))
+        auth::access(&self.state, &self.api, &self.generation, None, &mut || {
+            Ok(())
+        })
     }
     fn post(&self, query: &[(&str, &str)], form: &[(&str, &str)]) -> anyhow::Result<Value> {
         self.api.post(&self.token()?, query, form)

@@ -91,9 +91,22 @@ pub fn restore(p: &Profile, recipe: &Value) -> anyhow::Result<Backend> {
     )?;
     ensure!(
         recipe["binding"].as_str() == Some(backend.binding.as_str()),
-        "百度登录身份已改变，旧缓存保留，请重新连接"
+        "百度账号、存储根或缓存身份已改变，旧缓存保留，请重新连接"
     );
     Ok(Backend::new(backend.with_writable(p.writable)))
+}
+pub fn resume(
+    p: &Profile,
+    session: &Value,
+    cancel: &AtomicBool,
+    network: Arc<Diagnostics>,
+) -> anyhow::Result<Connection> {
+    let connection = connect(p, cancel, network)?;
+    ensure!(
+        session["binding"].as_str() == Some(connection.binding.as_str()),
+        "百度账号、存储根或缓存身份已更新，请手动重新连接；旧缓存保留，不会自动重放"
+    );
+    Ok(connection)
 }
 pub fn sign_out(p: &Profile) -> anyhow::Result<()> {
     auth::logout(&State::new(PathBuf::from(p.option("baidu_state")))?)

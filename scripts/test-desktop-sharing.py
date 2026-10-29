@@ -51,9 +51,13 @@ def run(args):
             assert download.read_bytes() == b'desktop shared bytes\n'
             source = root / 'source.txt'
             source.write_bytes(b'uploaded via exported GUI connection\n')
+            client.call('upload', dict(path='/locked.txt',source=str(source)), failure=True)
+            assert not (shared/'locked.txt').exists()
+            client.unlock_for_test('shared-pc')
             client.call('upload', dict(path='/uploaded.txt',source=str(source)))
             assert (shared/'uploaded.txt').read_bytes() == source.read_bytes()
             checks['start_export_import_pair_download_upload'] = True
+            checks['imported_write_permission_still_requires_local_password_unlock'] = True
             peers = host.call('status')['sharing']['peers']
             assert len(peers) == 1
             host.call('share_revoke', dict(device=peers[0]))

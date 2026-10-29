@@ -85,18 +85,7 @@ pub fn guard(state: &State, p: &Profile) -> anyhow::Result<(PathBuf, String)> {
     Ok((permit_path(state, p), format!("{run}:{}", p.revision)))
 }
 pub fn allowed(path: &Path, token: &str) -> bool {
-    let current = path
-        .parent()
-        .and_then(|p| std::fs::read(p.join("write-run.json")).ok())
-        .and_then(|b| serde_json::from_slice::<String>(&b).ok());
-    if !current.is_some_and(|run| token.starts_with(&format!("{run}:"))) {
-        return false;
-    }
-
-    std::fs::read(path)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<String>(&b).ok())
-        .is_some_and(|v| v == token)
+    crate::provider_guard::write_permit_allowed(path, token)
 }
 pub fn unlocked(state: &State, p: &Profile) -> bool {
     p.writable
@@ -110,7 +99,7 @@ mod tests {
     #[test]
     fn passwords_are_not_persisted_and_permits_are_account_revision_and_run_bound() {
         let root = tempfile::tempdir().unwrap();
-        let state = State::new(root.path().into()).unwrap();
+        let state = State::new(root.path().join("private")).unwrap();
         begin_run(&state).unwrap();
         set_password(&state, "synthetic-only-password").unwrap();
         assert!(verify(&state, "wrong-password").is_err());

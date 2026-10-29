@@ -264,6 +264,7 @@ pub fn resume(
     let mut connection = match p.kind.as_str() {
         "onedrive" => onedrive::resume(p, cancel, network)?,
         "google" => google::resume(p, cancel, network)?,
+        "baidu" => baidu::resume(p, session, cancel, network)?,
         "peer" => {
             ensure!(
                 !Path::new(p.option("peer_state"))

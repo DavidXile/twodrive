@@ -54,18 +54,7 @@ pub fn snapshot(
     id: Option<&str>,
     version: Option<&str>,
 ) -> anyhow::Result<Option<MetadataEntry>> {
-    let current = backend.get_metadata_by_path(path)?;
-    match &current {
-        Some(m) => ensure!(
-            !m.is_dir && Some(m.remote_id.as_str()) == id && Some(m.etag.as_str()) == version,
-            "云端文件已改变，未开始覆盖；请刷新后重试"
-        ),
-        None => ensure!(
-            id.is_none() && version.is_none(),
-            "云端文件已移除，未重新创建"
-        ),
-    }
-    Ok(current)
+    crate::provider_guard::snapshot(backend, path, id, version)
 }
 impl Recovery {
     pub fn prepare(

@@ -1,6 +1,5 @@
 //! Owned Windows read-only mount over a generic private Provider bridge.
 use super::*;
-use sha2::{Digest, Sha256};
 use std::path::{Component, Prefix};
 use twodrive_dev::{rclone_drive, readonly_mount::Bridge, state::random_secret};
 
@@ -346,9 +345,7 @@ pub(super) fn worker(app: &App, p: &Profile) -> anyhow::Result<()> {
 }
 
 fn account_cache(app: &App, p: &Profile, binding: &str) -> PathBuf {
-    app.mount_state(p)
-        .join("windows-accounts")
-        .join(format!("{:x}", Sha256::digest(binding.as_bytes())))
+    twodrive_dev::mount_write::account_cache(&app.mount_state(p), binding)
 }
 /// Inspect only our private metadata, including dirty files whose handles have
 /// not closed yet. RC upload queues alone do not include those open editors.

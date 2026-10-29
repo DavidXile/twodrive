@@ -330,7 +330,7 @@ impl App {
                 self.mounted.take();
                 return Ok(());
             }
-            if check_pending {
+            if check_pending && twodrive_dev::write_lock::unlocked(&self.state, p) {
                 ensure!(
                     self.cache(p, false)?["pending"] == 0,
                     "挂载仍有未上传或冲突的数据，请先完成同步；缓存已保留"
@@ -545,7 +545,10 @@ impl App {
         let supported_mount = windows_mount::installed();
         #[cfg(not(windows))]
         let supported_mount = cfg!(all(target_os = "linux", feature = "mount"))
-            && (self.connected.as_ref().is_none_or(|p| !p.writable)
+            && (self
+                .connected
+                .as_ref()
+                .is_none_or(|p| !twodrive_dev::write_lock::unlocked(&self.state, p))
                 || (c.backup() && c.rename && c.delete));
         value["mount"] = json!(self.backend.is_some() && supported_mount);
         value
@@ -943,12 +946,13 @@ pub fn run() -> anyhow::Result<()> {
         let session = app.state.read(&format!("session-{}.json", p.id))?;
         let (backend, binding) =
             providers::restore_session(&p, &session, &app.state.dir.join("paused"))?;
+        let writable = twodrive_dev::write_lock::unlocked(&app.state, &p);
         return mount::mount(
             State::new(app.mount_state(&p))?,
             p.mount_path,
             backend,
             binding,
-            p.writable,
+            writable,
         );
     }
     #[cfg(windows)]
@@ -1112,6 +1116,59 @@ mod test_provider;
 mod tests {
     use super::*;
     use test_provider::OpaqueProvider;
+    #[cfg(all(target_os = "linux", feature = "mount"))]
+    #[test]
+    fn saved_editable_account_remains_mountable_after_restart_relocks_it() {
+        let root = tempfile::tempdir().unwrap();
+        let state = State::new(root.path().join("private")).unwrap();
+        twodrive_dev::write_lock::begin_run(&state).unwrap();
+        twodrive_dev::write_lock::set_password(&state, "synthetic-linux-permission").unwrap();
+        let p = Profile {
+            id: "locked-account".into(),
+            revision: "saved-revision".into(),
+            writable: true,
+            ..Default::default()
+        };
+        let backend = Backend::new(OpaqueProvider::default()).with_write_access(false, None);
+        let mut app = App {
+            args: Args {
+                state: state.dir.clone(),
+                peer_bin: PathBuf::new(),
+                launcher: PathBuf::new(),
+                mount_worker: None,
+                backup_worker: None,
+                native_local_fixture_root: None,
+            },
+            state,
+            config: Config {
+                profiles: vec![p.clone()],
+                selected: Some(p.id.clone()),
+            },
+            connected: Some(p.clone()),
+            backend: Some(backend),
+            gateway: None,
+            mounted: None,
+            backup: None,
+            network: Arc::default(),
+            hosting: sharing::Hosting::default(),
+            inactive: HashMap::new(),
+            jobs: HashMap::new(),
+            native_fixture: local_files::NativeFixture::default(),
+        };
+        assert_eq!(app.capabilities()["upload"], false);
+        assert_eq!(
+            app.capabilities()["mount"],
+            true,
+            "saved writable=true must not reject a locked read-only mount"
+        );
+        twodrive_dev::write_lock::permit(&app.state, &p).unwrap();
+        app.backend = Some(Backend::new(OpaqueProvider::default()).with_write_access(
+            true,
+            Some(twodrive_dev::write_lock::guard(&app.state, &p).unwrap()),
+        ));
+        assert_eq!(app.capabilities()["mount"], true);
+        assert_eq!(app.capabilities()["upload"], true);
+    }
     #[test]
     fn retained_cloud_deletion_is_visible_and_manual_retry_keeps_the_original_task() {
         let temp = tempfile::tempdir().unwrap();

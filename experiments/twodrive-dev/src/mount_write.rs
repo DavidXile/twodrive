@@ -8,6 +8,7 @@ use crate::{
 use anyhow::{Context, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs::File,
@@ -15,6 +16,14 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
+
+/// A profile's durable native cache follows the provider's storage identity,
+/// never its permission revision. Old identities remain available for recovery.
+pub fn account_cache(mount_state: &Path, binding: &str) -> std::path::PathBuf {
+    mount_state
+        .join("windows-accounts")
+        .join(format!("{:x}", Sha256::digest(binding.as_bytes())))
+}
 
 pub(crate) struct Writer {
     backend: Backend,

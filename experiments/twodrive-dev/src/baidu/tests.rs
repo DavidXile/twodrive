@@ -125,6 +125,76 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn storage_root_change_isolates_dirty_native_cache_without_reauthorizing() {
+    let f = Fixture::new(|u, _| {
+        if u.path() == "/rest/2.0/xpan/file" {
+            let dir = u
+                .query_pairs()
+                .find(|(key, _)| key == "dir")
+                .unwrap()
+                .1
+                .into_owned();
+            Some(json_reply(
+                json!({"errno":0,"list":[row(10, &format!("{dir}/same.txt"))]}),
+            ))
+        } else {
+            None
+        }
+    });
+    let mount = f._root.path().join("same-profile-mount-state");
+    let a = f.backend("/root-A");
+    let old_object = a.list_directory("/").unwrap()[0].remote_id.clone();
+    let original_binding = a.binding.clone();
+    let cache_a = crate::mount_write::account_cache(&mount, &a.binding);
+    std::fs::create_dir_all(cache_a.join("vfs/vfsMeta/pending")).unwrap();
+    std::fs::write(
+        cache_a.join("vfs/vfsMeta/pending/new.txt"),
+        br#"{"Dirty":true}"#,
+    )
+    .unwrap();
+    std::fs::write(cache_a.join("unuploaded-new-file.content"), b"root A only").unwrap();
+    drop(a);
+    let b = f.backend("/root-B");
+    assert!(
+        b.get_metadata(&old_object).is_err(),
+        "an old-root object must not be interpreted within the new root"
+    );
+    let cache_b = crate::mount_write::account_cache(&mount, &b.binding);
+    assert_ne!(
+        cache_a, cache_b,
+        "changing only the storage root must never select root A's dirty VFS cache"
+    );
+    assert!(
+        !cache_b.exists(),
+        "a fresh root must not inherit pending new files"
+    );
+    assert_eq!(
+        std::fs::read(cache_a.join("unuploaded-new-file.content")).unwrap(),
+        b"root A only"
+    );
+    assert_eq!(auth::load(&f.state).unwrap().generation, "login-a");
+    drop(b);
+    let reopened = f.backend("/root-A");
+    assert_eq!(
+        reopened.binding, original_binding,
+        "reopening the same root must retain recovery identity"
+    );
+    assert_eq!(
+        crate::mount_write::account_cache(&mount, &reopened.binding),
+        cache_a
+    );
+    assert!(
+        BaiduDrive::connect_with(
+            f.state.clone(),
+            "/root-A/../root-B",
+            f.api.clone(),
+            &mut || Ok(())
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn browses_downloads_checks_account_quota_and_keeps_opaque_ids() {
     let f = Fixture::new(|_, _| None);
     let b = f.backend("/");

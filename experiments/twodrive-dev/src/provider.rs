@@ -123,9 +123,9 @@ impl Backend {
     fn check_write(&self) -> anyhow::Result<()> {
         ensure!(self.writable, "此网盘为只读或写入锁尚未解锁");
         ensure!(
-            self.write_guard
-                .as_ref()
-                .is_none_or(|(path, token)| crate::write_lock::allowed(path, token)),
+            self.write_guard.as_ref().is_none_or(|(path, token)| {
+                crate::provider_guard::write_permit_allowed(path, token)
+            }),
             "写入已锁定，请在客户端解锁"
         );
         self.check_pause()
@@ -139,10 +139,9 @@ impl Backend {
     }
     pub fn capabilities(&self) -> Capabilities {
         if self.writable
-            && self
-                .write_guard
-                .as_ref()
-                .is_none_or(|(path, token)| crate::write_lock::allowed(path, token))
+            && self.write_guard.as_ref().is_none_or(|(path, token)| {
+                crate::provider_guard::write_permit_allowed(path, token)
+            })
         {
             self.inner.capabilities()
         } else {
@@ -211,7 +210,7 @@ impl Backend {
         valid_path(path)?;
         ensure!(self.manual_upload_supported(), "此连接不支持手动写入");
         let current = self.get_metadata_by_path(path)?;
-        crate::write_recovery::snapshot(
+        crate::provider_guard::snapshot(
             self,
             path,
             current.as_ref().map(|m| m.remote_id.as_str()),

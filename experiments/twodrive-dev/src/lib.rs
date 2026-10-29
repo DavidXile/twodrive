@@ -12,6 +12,7 @@ pub mod onedrive;
 pub mod peer;
 pub mod profile;
 pub mod provider;
+mod provider_guard;
 pub mod rclone_drive;
 pub mod readonly_mount;
 pub mod state;
