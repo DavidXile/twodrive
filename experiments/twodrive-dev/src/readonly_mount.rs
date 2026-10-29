@@ -30,6 +30,9 @@ use std::{
 use subtle::ConstantTimeEq;
 use tokio::{net::TcpListener, sync::Semaphore};
 
+#[path = "mount_metadata.rs"]
+mod metadata;
+
 struct Cached {
     meta: MetadataEntry,
     file: tempfile::NamedTempFile,
@@ -44,6 +47,7 @@ struct QuotaSample {
 }
 struct Inner {
     backend: Backend,
+    metadata: Option<Arc<metadata::Cache>>,
     writer: Option<Arc<crate::mount_write::Writer>>,
     cache: Mutex<VecDeque<Arc<Cached>>>,
     downloads: Mutex<Vec<Download>>,
@@ -52,7 +56,7 @@ struct Inner {
     stop: Arc<AtomicBool>,
 }
 #[derive(Clone)]
-struct RemoteFs(Arc<Inner>, bool); // The HEAD view may open metadata, never content.
+struct RemoteFs(Arc<Inner>, bool, bool); // The HEAD view may open metadata, never content.
 #[derive(Clone, Debug)]
 struct Meta(MetadataEntry);
 impl DavMetaData for Meta {
@@ -63,6 +67,13 @@ impl DavMetaData for Meta {
         UNIX_EPOCH
             .checked_add(Duration::from_secs(self.0.modified_unix.max(0) as u64))
             .ok_or(FsError::GeneralFailure)
+    }
+    fn created(&self) -> FsResult<SystemTime> {
+        self.0
+            .created_unix
+            .filter(|value| *value > 0)
+            .and_then(|value| UNIX_EPOCH.checked_add(Duration::from_secs(value as u64)))
+            .ok_or(FsError::NotImplemented)
     }
     fn is_dir(&self) -> bool {
         self.0.is_dir
@@ -109,22 +120,52 @@ fn same(a: &MetadataEntry, b: &MetadataEntry) -> bool {
 impl RemoteFs {
     fn check(&self) -> anyhow::Result<()> {
         ensure!(!self.0.stop.load(Ordering::Relaxed), "mount stopped");
-        Ok(())
+        self.0.backend.check_read_access()
     }
     fn entry(&self, path: &str) -> FsResult<MetadataEntry> {
         self.check().map_err(|_| FsError::GeneralFailure)?;
-        let entry = self
-            .0
-            .backend
-            .get_metadata_by_path(path)
-            .map_err(|_| FsError::GeneralFailure)?
-            .ok_or(FsError::NotFound)?;
+        let load = || self.0.backend.get_metadata_by_path(path);
+        let entry = if self.2
+            && let Some(cache) = &self.0.metadata
+        {
+            cache.metadata(path, || self.check(), load)
+        } else {
+            load()
+        }
+        .map_err(|_| FsError::GeneralFailure)?
+        .ok_or(FsError::NotFound)?;
         if let Some(writer) = &self.0.writer {
             writer
                 .observe(&entry)
                 .map_err(|_| FsError::GeneralFailure)?;
         }
         Ok(entry)
+    }
+    fn directory(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
+        let load = || {
+            let entries = self
+                .0
+                .backend
+                .list_directory_checked(path, &mut || self.check())?;
+            ensure!(entries.len() <= 100000, "directory response exceeds budget");
+            for entry in &entries {
+                valid_path(&entry.path)?;
+                ensure!(
+                    entry.parent_path == path
+                        && entry.path != path
+                        && !entry.name.is_empty()
+                        && !entry.name.contains('/')
+                        && entry.path == format!("{}/{}", path.trim_end_matches('/'), entry.name),
+                    "invalid directory response"
+                );
+            }
+            Ok(entries)
+        };
+        if let Some(cache) = &self.0.metadata {
+            cache.list(path, || self.check(), load)
+        } else {
+            load()
+        }
     }
     fn cached(&self, entry: &MetadataEntry) -> anyhow::Result<Option<Arc<Cached>>> {
         let mut cache = self
@@ -382,11 +423,7 @@ impl DavFileSystem for RemoteFs {
     ) -> FsFuture<'a, FsStream<Box<dyn DavDirEntry>>> {
         blocking(move || {
             let path = resource(dav)?;
-            let entries = self
-                .0
-                .backend
-                .list_directory_checked(&path, &mut || self.check())
-                .map_err(|_| FsError::GeneralFailure)?;
+            let entries = self.directory(&path).map_err(|_| FsError::GeneralFailure)?;
             if entries.len() > 100000 {
                 return Err(FsError::GeneralFailure);
             }
@@ -445,9 +482,15 @@ impl Bridge {
             .prefix("readonly-mount-")
             .tempdir_in(cache_parent)?;
         let stop = Arc::new(AtomicBool::new(false));
+        let metadata = (!backend.browse_cache_ttl().is_zero()).then(|| {
+            Arc::new(metadata::Cache::new(
+                backend.browse_cache_ttl().min(Duration::from_secs(2)),
+            ))
+        });
         let fs = RemoteFs(
             Arc::new(Inner {
                 backend,
+                metadata: metadata.clone(),
                 writer: writer.clone(),
                 cache: Mutex::default(),
                 downloads: Mutex::default(),
@@ -456,6 +499,7 @@ impl Bridge {
                 stop: stop.clone(),
             }),
             false,
+            true,
         );
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         let address = listener.local_addr()?;
@@ -473,7 +517,10 @@ impl Bridge {
                     return;
                 };
                 let head_handler = DavHandler::builder()
-                    .filesystem(Box::new(RemoteFs(fs.0.clone(), true)))
+                    .filesystem(Box::new(RemoteFs(fs.0.clone(), true, true)))
+                    .build_handler();
+                let content_handler = DavHandler::builder()
+                    .filesystem(Box::new(RemoteFs(fs.0.clone(), false, false)))
                     .build_handler();
                 let handler = DavHandler::builder()
                     .filesystem(Box::new(fs))
@@ -490,18 +537,23 @@ impl Bridge {
                     };
                     let handler = handler.clone();
                     let head_handler = head_handler.clone();
+                    let content_handler = content_handler.clone();
                     let auth = auth.clone();
                     let writer = writer.clone();
+                    let metadata = metadata.clone();
                     tokio::spawn(async move {
                         let _permit = permit;
                         let service = service_fn(move |request: Request<Incoming>| {
                             let handler = if request.method() == http::Method::HEAD {
                                 head_handler.clone()
+                            } else if request.method() == http::Method::GET {
+                                content_handler.clone()
                             } else {
                                 handler.clone()
                             };
                             let auth = auth.clone();
                             let writer = writer.clone();
+                            let metadata = metadata.clone();
                             async move {
                                 let actual = request
                                     .headers()
@@ -543,12 +595,18 @@ impl Bridge {
                                         request.method().as_str(),
                                         "PUT" | "MKCOL" | "DELETE" | "MOVE"
                                     ) {
+                                        if let Some(cache) = &metadata {
+                                            cache.invalidate();
+                                        }
                                         let response = crate::mount_write::handle(
                                             writer.unwrap(),
                                             request,
                                             address,
                                         )
                                         .await;
+                                        if let Some(cache) = &metadata {
+                                            cache.invalidate();
+                                        }
                                         return Ok::<_, Infallible>(response);
                                     }
                                     match tokio::time::timeout(

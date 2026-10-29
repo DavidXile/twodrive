@@ -62,6 +62,7 @@ def run(args):
             # nested cases; a file-only MOVE regression cannot cover this.
             (mount/'empty-dir').mkdir()
             wait_for(lambda:(root/'share-a'/'empty-dir').is_dir())
+            assert (mount/'empty-dir').stat().st_mtime>1700000000, 'new directory has a placeholder date'
             (mount/'empty-dir').rename(mount/'empty-renamed')
             wait_for(lambda:(root/'share-a'/'empty-renamed').is_dir() and not (root/'share-a'/'empty-dir').exists())
             (mount/'empty-renamed').rmdir()
@@ -75,6 +76,7 @@ def run(args):
             (mount/'tree-renamed'/'child.txt').unlink();(mount/'tree-renamed').rmdir()
             wait_for(lambda:not (root/'share-a'/'tree-renamed').exists())
             report['checks']['native_empty_and_populated_directory_rename_preserves_children']=True
+            report['checks']['native_new_directory_exposes_recent_time']=True
             source=root/'gui-upload.txt';source.write_bytes(b'GUI writes work without a local permission step')
             engine.call('upload',dict(owner('a'),path='/gui.txt',source=str(source)))
             assert (root/'share-a'/'gui.txt').read_bytes()==source.read_bytes()

@@ -50,6 +50,11 @@ impl Capabilities {
 
 pub trait Provider: CloudBackend {
     fn capabilities(&self) -> Capabilities;
+    /// Optional short-lived browsing snapshots. Writes and content verification
+    /// continue to use uncached CloudBackend methods.
+    fn browse_cache_ttl(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
     fn storage_usage(
         &self,
         check: &mut dyn FnMut() -> anyhow::Result<()>,
@@ -158,6 +163,12 @@ impl Backend {
         self.check_pause()?;
         valid_path(path)?;
         self.inner.list_directory(path)
+    }
+    pub(crate) fn browse_cache_ttl(&self) -> std::time::Duration {
+        self.inner.browse_cache_ttl()
+    }
+    pub(crate) fn check_read_access(&self) -> anyhow::Result<()> {
+        self.check_pause()
     }
     pub fn list_directory_checked(
         &self,

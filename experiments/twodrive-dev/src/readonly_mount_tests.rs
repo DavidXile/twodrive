@@ -13,6 +13,9 @@ struct Fixture {
     slow_started: Arc<AtomicBool>,
     release_slow: Arc<AtomicBool>,
     block_first: bool,
+    metadata_calls: Arc<AtomicUsize>,
+    browse_ttl: Duration,
+    created_unix: Option<i64>,
 }
 impl Fixture {
     fn new(bytes: &[u8]) -> Self {
@@ -23,17 +26,22 @@ impl Fixture {
             slow_started: Arc::default(),
             release_slow: Arc::default(),
             block_first: false,
+            metadata_calls: Arc::default(),
+            browse_ttl: Duration::ZERO,
+            created_unix: None,
         }
     }
     fn meta(&self) -> MetadataEntry {
         let data = self.data.lock().unwrap();
-        MetadataEntry::new_file(
+        let mut entry = MetadataEntry::new_file(
             "opaque-id-never-a-path",
             format!("/{NAME}"),
             data.0.len() as u64,
             1,
             data.1.to_string(),
-        )
+        );
+        entry.created_unix = self.created_unix;
+        entry
     }
     fn change(&self, bytes: &[u8]) {
         let mut data = self.data.lock().unwrap();
@@ -70,6 +78,7 @@ impl CloudBackend for Fixture {
         }))
     }
     fn get_metadata_by_path(&self, path: &str) -> anyhow::Result<Option<MetadataEntry>> {
+        self.metadata_calls.fetch_add(1, Ordering::SeqCst);
         Ok(if path == "/" {
             Some(MetadataEntry::new_dir("root", "/", 1, "root"))
         } else if path == format!("/{NAME}") {
@@ -144,6 +153,9 @@ impl CloudBackend for Fixture {
     }
 }
 impl Provider for Fixture {
+    fn browse_cache_ttl(&self) -> Duration {
+        self.browse_ttl
+    }
     fn storage_usage(
         &self,
         check: &mut dyn FnMut() -> anyhow::Result<()>,
@@ -508,4 +520,54 @@ fn official_rclone_reads_the_private_provider_bridge() {
         b"3456"
     );
     assert_eq!(fixture.downloads.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn known_creation_time_is_published_in_dav_metadata() {
+    let mut entry = MetadataEntry::new_dir("known-id", "/new-dir", 1760000000, "v");
+    entry.created_unix = Some(1750000000);
+    assert_eq!(
+        Meta(entry).created().unwrap(),
+        UNIX_EPOCH + Duration::from_secs(1750000000)
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = Fixture {
+        created_unix: Some(1750000000),
+        ..Fixture::new(b"test")
+    };
+    let bridge = Bridge::start(Backend::new(fixture), temp.path()).unwrap();
+    let xml = client()
+        .request(
+            reqwest::Method::from_bytes(b"PROPFIND").unwrap(),
+            file_url(&bridge),
+        )
+        .bearer_auth(&bridge.token)
+        .header("Depth", "0")
+        .body("<d:propfind xmlns:d=\"DAV:\"><d:prop><d:creationdate/></d:prop></d:propfind>")
+        .send()
+        .unwrap()
+        .text()
+        .unwrap();
+    assert!(xml.contains("2025-06-15T15:06:40"), "{xml}");
+}
+#[test]
+fn repeated_head_metadata_queries_reuse_short_browse_snapshot_without_downloading() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(b"payload");
+    fixture.browse_ttl = Duration::from_secs(2);
+    let bridge = Bridge::start(Backend::new(fixture.clone()), temp.path()).unwrap();
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap();
+    for _ in 0..8 {
+        let response = client
+            .head(format!("http://{}/other.txt", bridge.address))
+            .bearer_auth(&bridge.token)
+            .send()
+            .unwrap();
+        assert!(response.status().is_success());
+    }
+    assert_eq!(fixture.metadata_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 0);
 }

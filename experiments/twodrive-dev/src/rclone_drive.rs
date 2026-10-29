@@ -34,6 +34,7 @@ const JSON_LIMIT: usize = 16 * 1024 * 1024;
 
 mod gui;
 mod quota;
+mod times;
 mod write;
 pub use gui::action as gui_auth;
 
@@ -326,6 +327,7 @@ pub struct RcloneDrive {
     route: String,
     pub binding: String,
     writable: bool,
+    created_times: times::CreationTimes,
     _account_lock: File,
     cancel: Arc<AtomicBool>,
 }
@@ -393,6 +395,7 @@ impl RcloneDrive {
             route: route.into(),
             binding: auth.binding,
             writable: false,
+            created_times: times::CreationTimes::default(),
             _account_lock: account_lock,
             cancel: Arc::new(AtomicBool::new(false)),
         };
@@ -516,11 +519,12 @@ impl RcloneDrive {
                 time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
             })
             .map_or(0, |t| t.unix_timestamp());
-        Ok(if directory {
+        let entry = if directory {
             MetadataEntry::new_dir(snapshot.encode()?, path, modified, version)
         } else {
             MetadataEntry::new_file(snapshot.encode()?, path, size, modified, version)
-        })
+        };
+        self.with_created_time(entry, &snapshot.id)
     }
     fn entries(&self, path: &str, values: &Value) -> anyhow::Result<Vec<MetadataEntry>> {
         valid_path(path)?;
@@ -544,6 +548,9 @@ impl RcloneDrive {
 }
 
 impl Provider for RcloneDrive {
+    fn browse_cache_ttl(&self) -> Duration {
+        Duration::from_secs(2)
+    }
     fn storage_usage(
         &self,
         check: &mut dyn FnMut() -> anyhow::Result<()>,
@@ -853,6 +860,7 @@ mod tests {
             route: "direct".into(),
             binding: "icloud:synthetic:epoch-a".into(),
             writable: false,
+            created_times: times::CreationTimes::default(),
             _account_lock: lock,
             cancel: Arc::new(AtomicBool::new(false)),
         };
@@ -1115,6 +1123,33 @@ mod tests {
         let mut snapshot = Snapshot::decode(&original.remote_id, &backend.binding).unwrap();
         snapshot.path = "/../outside".into();
         assert!(Snapshot::decode(&snapshot.encode().unwrap(), &backend.binding).is_err());
+    }
+    #[test]
+    fn known_directory_creation_time_changes_display_only_and_survives_rename() {
+        let (_temp, backend) = fixture();
+        let mut row = json!({"ID":"real-folder#v1", "IsDir":true,
+            "ModTime":"2000-01-01T00:00:00Z"});
+        let original = backend.entry("/folder", &row).unwrap();
+        assert_eq!(original.created_unix, None);
+        let created = backend
+            .remember_created(original.clone(), 1800000000)
+            .unwrap();
+        assert_eq!(created.created_unix, Some(1800000000));
+        assert_eq!(created.modified_unix, 1800000000);
+        assert_eq!(created.remote_id, original.remote_id);
+        assert_eq!(created.etag, original.etag);
+        row["ID"] = json!("real-folder#v2");
+        let renamed = backend.entry("/renamed", &row).unwrap();
+        assert_eq!(renamed.created_unix, Some(1800000000));
+        row["ModTime"] = json!("2026-10-28T00:00:01Z");
+        assert_eq!(
+            backend.entry("/renamed", &row).unwrap().modified_unix,
+            1793145601
+        );
+        row["ID"] = json!("replacement-id#v2");
+        assert_eq!(backend.entry("/renamed", &row).unwrap().created_unix, None);
+        fs::write(backend.state.dir.join("created-times.json"), b"bad").unwrap();
+        assert!(backend.entry("/renamed", &row).is_ok());
     }
     #[test]
     fn malformed_listing_cannot_become_a_partial_success() {
