@@ -253,24 +253,23 @@ fn weak_api_recovery_keeps_both_versions_if_confirmation_does_not_match() {
 }
 #[test]
 fn revoking_or_restarting_a_write_permit_blocks_every_mutation_but_allows_reads() {
-    use twodrive_dev::{profile::Profile, state::State, write_lock};
+    use twodrive_dev::state::State;
     let dir = tempfile::tempdir().unwrap();
     let state = State::new(dir.path().join("private")).unwrap();
-    write_lock::begin_run(&state).unwrap();
-    write_lock::set_password(&state, "synthetic-password").unwrap();
-    let profile: Profile =
-        serde_json::from_value(serde_json::json!({"id":"a","revision":"r","writable":true}))
-            .unwrap();
-    write_lock::permit(&state, &profile).unwrap();
+    state.save("write-run.json", &"synthetic-run").unwrap();
+    let lease = state.dir.join("remote-grant.json");
+    let token = "synthetic-run:remote-grant";
+    state.save("remote-grant.json", &token).unwrap();
     let p = OpaqueProvider::default();
-    let backend = Backend::new(p.clone())
-        .with_write_access(true, Some(write_lock::guard(&state, &profile).unwrap()));
+    let backend = Backend::new(p.clone()).with_write_access(true, Some((lease, token.into())));
     let input = dir.path().join("source");
     std::fs::write(&input, b"edit").unwrap();
     let m = backend
         .upload_path("/file", &input, None, Arc::new(|_, _| Ok(())))
         .unwrap();
-    write_lock::begin_run(&state).unwrap();
+    state
+        .save("write-run.json", &"renewed-remote-grant")
+        .unwrap();
     assert!(
         backend
             .upload_path("/file", &input, Some(&m.etag), Arc::new(|_, _| Ok(())))
@@ -280,4 +279,57 @@ fn revoking_or_restarting_a_write_permit_blocks_every_mutation_but_allows_reads(
     assert!(backend.rename(&m.remote_id, "/new").is_err());
     assert!(backend.delete(&m.remote_id).is_err());
     assert_eq!(backend.download(&m.remote_id).unwrap(), b"edit");
+}
+
+#[test]
+fn editable_display_cache_invalidates_after_mutations_and_preserves_external_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = OpaqueProvider::default();
+    let old = p.upload("/file.txt", b"original".to_vec()).unwrap();
+    let bridge = Bridge::start_writable(
+        Backend::new(p.clone()),
+        dir.path(),
+        &dir.path().join("recovery"),
+    )
+    .unwrap();
+    let c = Client::builder().no_proxy().build().unwrap();
+    let listing = || {
+        c.request(
+            Method::from_bytes(b"PROPFIND").unwrap(),
+            format!("http://{}/", bridge.address),
+        )
+        .bearer_auth(&bridge.token)
+        .header("Depth", "1")
+        .send()
+        .unwrap()
+        .text()
+        .unwrap()
+    };
+    assert!(listing().contains("file.txt"));
+    assert!(!listing().contains("new.txt"));
+    assert_eq!(
+        call(&c, &bridge, Method::PUT, "/new.txt", "new bytes").status(),
+        201
+    );
+    assert!(
+        listing().contains("new.txt"),
+        "a successful mutation must invalidate the display snapshot"
+    );
+    assert_eq!(
+        call(&c, &bridge, Method::DELETE, "/new.txt", "").status(),
+        204
+    );
+    assert!(!listing().contains("new.txt"));
+    p.upload_with_etag("/file.txt", b"external change".to_vec(), Some(&old.etag))
+        .unwrap();
+    assert_eq!(
+        call(&c, &bridge, Method::PUT, "/file.txt", "preserve my edit").status(),
+        409
+    );
+    let current = p.get_metadata_by_path("/file.txt").unwrap().unwrap();
+    assert_eq!(p.download(&current.remote_id).unwrap(), b"external change");
+    assert_eq!(
+        twodrive_dev::mount_write::recovery_status(&dir.path().join("recovery")).unwrap()["files"],
+        1
+    );
 }

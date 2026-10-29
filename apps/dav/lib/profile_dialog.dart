@@ -71,7 +71,7 @@ class _ProfileDialogState extends State<ProfileDialog> {
     kind = widget.providers.any((d) => d['id'] == originalKind)
         ? originalKind
         : widget.providers.firstOrNull?['id'] as String?;
-    writable = p['writable'] == true;
+    writable = p['writable'] != false;
     final keys = <String>{
       'name',
       'mount_path',
@@ -538,15 +538,6 @@ class _ProfileDialogState extends State<ProfileDialog> {
                     : (value) => setState(() => route = value!),
               ),
               const SizedBox(height: 14),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('允许修改远端文件'),
-                subtitle: const Text('可用操作取决于提供者和远端授权。'),
-                value: writable,
-                onChanged: runningAction
-                    ? null
-                    : (value) => setState(() => writable = value),
-              ),
               ExpansionTile(
                 title: const Text('高级设置'),
                 tilePadding: EdgeInsets.zero,

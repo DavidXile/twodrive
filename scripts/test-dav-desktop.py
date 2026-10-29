@@ -63,15 +63,12 @@ class Engine:
                 self.active_revision = message['result']['revision']
             return message['result']
 
-    def unlock_for_test(self, profile_id):
-        """Explicit permission for disposable fixtures, never a user's state."""
-        password = 'synthetic-fixture-write-password'
-        if not self.call('status').get('write_lock', {}).get('configured'):
-            self.call('set_write_password', {'password': password})
+    def assert_editable(self, profile_id):
+        """No local mode or password step for an authorized fixture account."""
         profile = next(p for p in self.call('profiles')['profiles'] if p['id'] == profile_id)
-        self.call('set_access', {'profile': profile_id, 'revision': profile['revision'], 'mode': 'editable', 'password': password})
+        assert profile['writable'] and 'write_locked' not in profile
         if self.active_profile == profile_id:
-            self.active_revision = next(p for p in self.call('profiles')['profiles'] if p['id'] == profile_id)['revision']
+            self.active_revision = profile['revision']
 
     def close(self):
         try:
@@ -121,7 +118,7 @@ def run(args):
                 assert (root / 'client/profiles.json').stat().st_mode & 0o077 == 0
             report['checks']['private_profiles'] = True
             engine.call('connect', {'id':profile['id']})
-            engine.unlock_for_test(profile['id'])
+            engine.assert_editable(profile['id'])
             report['checks']['connect'] = True
             active_revision = engine.active_revision
             other_profile = dict(profile, id='other-profile', name='Other connection')
@@ -291,8 +288,10 @@ def run(args):
                 profile['writable'] = False
                 engine.call('save_profile', profile)
                 engine.call('connect', {'id':profile['id']})
-                engine.call('mkdir', {'path':'/forbidden'}, failure=True)
-                report['checks']['readonly_enforced'] = True
+                engine.assert_editable(profile['id'])
+                engine.call('mkdir', {'path':remote})
+                engine.call('delete', {'path':remote})
+                report['checks']['legacy_readonly_preference_normalized_to_default_editing'] = True
                 engine.call('disconnect')
             engine.call('autostart', {'enabled':True})
             autostart = root/('config/Microsoft/Windows/Start Menu/Programs/Startup/TwoDrive Development.vbs' if os.name == 'nt' else 'config/autostart/twodrive-dav.desktop')

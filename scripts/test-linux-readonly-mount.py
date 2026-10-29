@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Actual Linux FUSE with two disposable loopback Providers; no cloud/user state."""
+"""Actual Linux FUSE with two owner-granted read-only peers; no cloud/user state."""
 import argparse,concurrent.futures,hashlib,importlib.util,json,os,re,shutil,signal,subprocess,sys,tempfile,time
 from pathlib import Path
 spec=importlib.util.spec_from_file_location('desktop',Path(__file__).with_name('test-dav-desktop.py'))
@@ -44,16 +44,23 @@ def run(args):
             owners={}
             for account,payload in payloads.items():
                 share=root/('share-'+account);share.mkdir();(share/name).write_bytes(payload)
-                server=subprocess.Popen([args.peer,'--state',str(root/('server-'+account)),'dav-serve',
-                    '--root',str(share),'--listen','127.0.0.1:0','--write'],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
-                servers.append(server);ready=server.stdout.readline().strip();assert ready.startswith('WebDAV: ')
-                credentials=json.loads((root/('server-'+account)/'credentials.json').read_text())
+                invitation=root/('invite-'+account+'.json')
+                server=subprocess.Popen([args.peer,'--state',str(root/('server-'+account)),'serve',
+                    '--root',str(share),'--no-relay','--invite-file',str(invitation)],
+                    stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                servers.append(server)
+                deadline=time.monotonic()+30
+                while not invitation.exists():
+                    assert server.poll() is None, 'disposable read-only peer exited'
+                    assert time.monotonic()<deadline, 'invitation not created'
+                    time.sleep(.1)
+                ticket=json.loads(invitation.read_text())
                 target=root/'views'/account
-                if account=='a':target.mkdir(parents=True) # Preserve an existing empty Linux target.
+                if account=='a':target.mkdir(parents=True)
                 mounts.append(target)
-                engine.call('save_profile',{'id':account,'name':'Disposable '+account,'kind':'dav',
-                    'url':ready.removeprefix('WebDAV: '),**credentials,'network_route':'system',
-                    'writable':False,'mount_path':str(target)})
+                engine.call('save_profile',{'id':account,'name':'Disposable '+account,'kind':'peer',
+                    'invitation_file':str(invitation),'expected_device':ticket['address']['id'],
+                    'network_route':'system','writable':False,'mount_path':str(target)})
                 public=next(p for p in engine.call('profiles')['profiles'] if p['id']==account)
                 owners[account]={'profile':account,'revision':public['revision']}
             engine.call('connect',{'id':'a'})
@@ -152,7 +159,7 @@ def run(args):
                 if mounted(mount):subprocess.run(['fusermount3','-u',str(mount)],check=True)
             for server in servers:
                 if server.poll() is None:server.terminate();server.wait(timeout=10)
-    report={'scope':'actual Linux FUSE over two synthetic loopback Providers; zero cloud requests',
+    report={'scope':'actual Linux FUSE over two owner-granted read-only peers; zero cloud requests',
         'native_mount_verified':True,'checks':checks,'sha256':{key:hashlib.sha256(value).hexdigest() for key,value in payloads.items()},'passed':True}
     if args.report:args.report.write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2),flush=True)

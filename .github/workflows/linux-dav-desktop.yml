@@ -192,7 +192,7 @@ jobs:
           $env:TWODRIVE_RCLONE_BIN = $env:TWODRIVE_TEST_RCLONE
           python scripts/test-windows-readonly-mount.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Per-account write password and editable Windows mounts
+      - name: Default editable Windows mounts and restart recovery
         run: python scripts/test-windows-editable-mount.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe --report desktop-editable-mount.json --allow-missing-driver
       - name: Flutter checks and native Windows build
         working-directory: apps/dav

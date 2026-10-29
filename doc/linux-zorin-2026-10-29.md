@@ -1,16 +1,16 @@
 # Linux / Zorin adaptation for PR47
 
-This branch starts at PR47 head `f4e07fe75bfb004e8d4591d1f9f6eff11391c4eb` (production code matches `0346913`). It incorporates the subsequent PR47 Baidu Content-MD5 fix through `960cf77e7511f70831aaded97be72c35e18f8d8e`. It adds Linux FUSE integration while retaining the shared UI, provider authentication, per-account write locks and storage identity checks. It does not replace the stable daemon.
+This branch starts at PR47 head `f4e07fe75bfb004e8d4591d1f9f6eff11391c4eb` (production code matches `0346913`). It incorporates the subsequent PR47 Baidu Content-MD5 and default-editable changes through `730a824967378e0f386708e7d522e6c5c2dff421`. It adds Linux FUSE integration while retaining the shared UI, provider authentication, default editable cloud accounts and storage identity checks. It does not replace the stable daemon.
 
 ## Behavior
 
 - Retain simultaneous accounts and their mounts. Selecting an online account uses revision-bound `select`, preserves its last directory, and never implicitly authenticates.
-- Keep native FUSE and its durable conditional-upload cache. The private Provider bridge uses Linux mount ownership/cleanup and platform-specific persistent caches for manual-edit adapters. Restart relocks writes; explicit local-password unlock remounts the affected account.
+- Keep native FUSE and its durable conditional-upload cache. The private Provider bridge uses Linux mount ownership/cleanup and platform-specific persistent caches for manual-edit adapters. Cloud/WebDAV connections are editable by default, including legacy profiles with `writable:false`; no local mode or password is required. Old identity, revision, credentials and paths remain unchanged. Paired devices still respect owner-granted rights.
 - Coalesce same-version file downloads without holding the shared cache lock over remote I/O. Reuse one live path lookup within each GET, and validate again on the next request. Complete contents remain verified before response headers, so cold reads can still show a preparation pause in the file manager.
 - Keep active parent directories hot during child probes with a bounded 64-directory LRU (100,000 entries total). Linux read-only bridge navigation retains native directory listings for 30 seconds; editable and Windows mounts retain the 5-second policy. Display snapshot age remains capped at five minutes and real GET validation is unchanged.
-- Linux read-only iCloud metadata uses short-lived private encrypted config views so a directory lookup does not queue behind a whole-file content operation. Auth binding, account identity, nonblocking compare-and-save and cleanup guards preserve the canonical session; editable and Windows query locking stays unchanged.
+- Linux iCloud metadata uses short-lived private encrypted config views so a directory lookup does not queue behind a whole-file content operation. Auth binding, account identity, nonblocking compare-and-save and cleanup guards preserve the canonical session; metadata isolation also applies to editable Linux connections; actual mutation locking and Windows query behavior remain unchanged.
 - Answer filesystem capacity from a bounded display snapshot, with one separate background worker per bridge. Cold or expired quota never blocks Statfs/GIO classification; successful values refresh after five minutes and expire after thirty minutes, with a thirty-second failure backoff. Native capacity may remain unknown until its next query after the initial background result; account capacity cards are separate and unchanged.
-- Bound read-only directory snapshots, coalesce refreshes, reject failed listings before successful DAV headers, and keep HEAD metadata-only. File downloads still validate live object/version/size. Editable views do not anchor writes to display snapshots.
+- Bound directory display snapshots, coalesce refreshes, reject failed listings before successful DAV headers, and keep HEAD metadata-only. File downloads still validate live object/version/size. Editable listings retain the first observed version; every mutation compares it with live metadata. Any mutation response invalidates display snapshots, and an in-flight older listing cannot refill them.
 - Validate Baidu content digests in both strict hexadecimal and standard Base64 formats; invalid or mismatched digests still fail.
 - Transparent semantic cloud icons, bundled licensed Chinese/Latin fonts, responsive settings transitions, readable noncolliding mount names and Linux metadata-only preflight.
 
@@ -34,24 +34,26 @@ Tests use disposable synthetic accounts. Native mount tests require accessible `
 
 | Locally executed validation | Result |
 |---|---|
-| Flutter model/widget tests and analyzer | 96 passed |
-| Rust library / engine / editable bridge | 111 / 25 / 6 passed; 7 default ignored excluded |
+| Flutter model/widget tests and analyzer | 93 passed |
+| Rust library / engine / editable bridge | 112 / 26 / 7 passed; 7 default ignored excluded |
 | Strict release Clippy and Linux release binaries | Passed |
 | Actual editable bridge FUSE | 1 explicit test passed |
 | Actual read-only FUSE Statfs/GIO with held cloud quota, then capacity recovery | 1 explicit test passed |
-| Dual read-only native mounts, copy to local and navigation with a paused upstream | 8 groups passed |
-| Relock, pending bytes, explicit unlock recovery | 5 groups passed |
+| Dual owner-granted read-only peer mounts, copy to local and navigation with a paused upstream | 8 groups passed |
+| Default editable restart, pending bytes and recovery | 4 groups passed |
 | Native saved-session restart | 6 groups passed |
 | Concurrent online switching/control | 9 groups passed |
 | Synthetic local QUIC sharing | 7 groups passed |
-| Private GNOME/Xvfb window transitions | Passed; no exposed reconfiguration in fixed fixture |
+| Private GNOME/Xvfb window transitions | Earlier verified; native runner unchanged in this update |
 
-These results do not establish hosted CI success, a Windows rebuild, real-cloud editing acceptance, or full Nautilus preview performance. iCloud/Baidu manual edits retain the documented check-to-publication race and do not gain atomic conditional-upload/backup capability. See incidents TD-20261029-33/34/35/36/37.
+These results do not establish hosted CI success, a Windows rebuild, real-cloud editing acceptance, or full Nautilus preview performance. iCloud/Baidu manual edits retain the documented check-to-publication race and do not gain atomic conditional-upload/backup capability. See incidents TD-20261029-33/34/35/36/37/38.
 
 ## Delivery
 
-Published in the separate Linux branch via [PR #50](https://github.com/LumiaBlack51/twodrive/pull/50), ready for review. The local backend includes the latest Baidu digest fix and the read-concurrency/metadata optimization and bounded directory LRU/navigation retention; existing mounts were restored. The user confirmed successful client downloads and a slower successful mount copy before the read optimization, but reported that navigation still waited after the directory-cache change. The subsequent quota/Statfs and Linux read-only iCloud metadata isolation fixes passed isolated native checks and were deployed. Local directory/FS metadata remained responsive after opening the file manager and crossing directory-cache expiry/cleanup intervals; full navigation/preview acceptance still requires user feedback. See TD-20261029-36/37. The agent did not read private file contents for validation.
+Published in the separate Linux branch via [PR #50](https://github.com/LumiaBlack51/twodrive/pull/50), ready for review. PR47 through `730a824` is synchronized. The Linux GUI and three backend programs are rebuilt, and the four original mounts restore in read-write mode without changing account profiles or saved identities. Icons, desktop preferences, simultaneous-account switching and earlier metadata fixes remain.
+
+The user previously reported slow iCloud navigation despite caching. This update extends the existing directory and encrypted metadata isolation to editable connections, with isolated regression coverage; it does not promise instantaneous cold directories or cloud contents. No private file contents or real-cloud writes were used for deployment validation. See TD-20261029-38 for the cache regression and local recovery/verification boundaries.
 
 ## 隐私范围
 
-公开分支只包含程序源码、通用文档、合成测试和可分发字体及其许可证。真实账号、邮箱、授权凭据、OAuth客户端JSON、网盘列表/容量、缓存/数据库、主机路径、截图和本机部署报告均留在本地。默认启动只读，编辑密码由使用者在界面内自行设置。
+公开分支只包含程序源码、通用文档、合成测试和可分发字体及其许可证。真实账号、邮箱、授权凭据、OAuth客户端JSON、网盘列表/容量、缓存/数据库、主机路径、截图和本机部署报告均留在本地。云盘默认可编辑，已取消本机只读模式及编辑密码；设备共享仍由共享方授权。

@@ -25,7 +25,7 @@ Future<void> showMountHelp(
             const SelectableText('https://winfsp.dev/rel/'),
           ],
           const SizedBox(height: 12),
-          const Text('默认只读；在网盘的连接权限中解锁后，客户端和挂载都允许编辑。'),
+          const Text('连接后即可在客户端和挂载目录中编辑，具体操作取决于网盘授权。'),
         ],
       ),
     ),
@@ -55,11 +55,6 @@ class MountCard extends StatelessWidget {
     final p = c.profiles.where((p) => p['id'] == id).firstOrNull;
     final mount = id == null ? null : c.mountForProfile(id);
     final isMounted = mount != null;
-    final readOnly = mount?['writable'] is bool
-        ? mount!['writable'] != true
-        : mount?['readonly'] as bool? ??
-              p?['mount_readonly'] as bool? ??
-              c.readOnlyMount;
     return Card(
       color: Colors.white,
       child: Padding(
@@ -72,10 +67,7 @@ class MountCard extends StatelessWidget {
                 p?['name'] as String? ?? '网盘',
                 style: Theme.of(context).textTheme.titleMedium,
               ),
-            Text(
-              readOnly ? '文件管理器挂载 · 只读' : '文件管理器挂载',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
+            Text('文件管理器挂载', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 10),
             SelectableText(
               mount?['path'] as String? ??
@@ -128,9 +120,7 @@ class MountCard extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text(
-              readOnly
-                  ? '可浏览、打开和复制文件，不能在挂载内修改或删除。首次打开文件需下载到临时缓存，较大文件可能需要等待。切换网盘保留挂载；卸载或退出前，请先完成文件管理器中的文件复制。'
-                  : '挂载按需下载。写入先保存到本地缓存，待上传完成后才代表服务器已收到。',
+              '挂载按需下载。写入先保存到本地缓存，待上传完成后才代表服务器已收到。删除的文件请到网盘回收站恢复；覆盖前仍保留版本检查和恢复副本。卸载或退出前，请先完成文件操作。',
             ),
           ],
         ),

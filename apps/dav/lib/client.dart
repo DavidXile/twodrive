@@ -824,27 +824,6 @@ class StorageClient extends ChangeNotifier {
       await openLocalDirectory(directory as String);
     }
   });
-  Future<void> setAccess(Json owner, String mode, String password) => action(
-    '正在调整网盘权限',
-    () async {
-      try {
-        if (mode == 'editable' && status['write_lock']?['configured'] != true) {
-          await request('set_write_password', {'password': password});
-        }
-        await request('set_access', {
-          'profile': owner['id'],
-          'revision': owner['revision'],
-          'mode': mode,
-          if (mode == 'editable') 'password': password,
-        });
-      } finally {
-        await loadProfiles();
-        await refreshStatus();
-        _directoryStale = true;
-      }
-    },
-  );
-
   Future<void> disconnect([String? profileId]) => action('正在断开', () async {
     final id = profileId ?? selected;
     _selectionEpoch++;

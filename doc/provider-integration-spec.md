@@ -108,7 +108,7 @@ flowchart LR
 
 ## 4. 上传入口与数据合同
 
-UI 上传入口必须由实际 `upload && conditional_upload` 能力共同开启；覆盖文件必须明确选择目标和现存版本。`writable=true` 是用户许可，仍需服务端和适配器能力同时允许。不能将“可以调用 PUT”直接等同于“支持安全覆盖/备份/读写挂载”。
+UI 手动上传入口必须由实际 `upload && (conditional_upload || manual_upload)` 能力共同开启；覆盖文件必须明确选择目标和现存版本。云盘默认可编辑，仍需服务端和适配器能力同时允许；成对设备授权由分享方决定。不能将“可以调用 PUT”直接等同于“支持安全覆盖/备份/读写挂载”。当前策略见 [默认可编辑](default-editable-2026-10-29.md)。
 
 | 操作/值 | 必须保证的语义 |
 | --- | --- |
@@ -134,6 +134,8 @@ UI 上传入口必须由实际 `upload && conditional_upload` 能力共同开启
 备份依赖 upload/mkdir/conditional_upload，记录本地内容意图及远端版本；扫描与上传能暂停/取消，登录变化须拒绝旧 session。旧有“本地删除不传播云端删除”的语义不因新增提供者改变。备份源需排除私有身份/凭据/状态目录和符号链接逃逸。
 
 Linux FUSE 使用通用 Backend 与持久缓存，挂载完成前有独立冷索引预算；待上传内容、冲突和恢复状态不得因卸载/退出/清理缓存丢弃。Windows 文件浏览与传输不等于 Windows 挂载驱动支持。
+
+Windows 原生挂载的私有 Provider 桥：HEAD 只查询元数据并复用条件头/范围响应，不下载正文；实际 GET 仍完整下载到临时缓存，核验版本、大小及适配器内容摘要后发布。不同文件的网络下载不持有全局缓存队列锁，同一对象/版本仍协调合并；共享缓存只在查找、LRU 和发布时短暂加锁。冷缓存首次真正读取仍可能等待网络和完整校验，不能保证零等待或把暖缓存体验当作首次下载性能。此机制修正及边界见 [TD-20261029-34](incidents.md#td-20261029-34客户端下载成功但挂载复制使资源管理器等待)。
 
 ## 6. 网络、桌面与辅助组件
 
@@ -168,6 +170,8 @@ Ship protocol/auth/contract/UI/recovery regressions and clearly separate mock, i
 
 
 ## 2026-10-28：显式手动写入与本机写入锁
+
+本节的本机密码和重启只读为历史设计，已由 [2026-10-29 默认可编辑策略](default-editable-2026-10-29.md) 替代。手动写入与原子条件上传的区别、恢复副本和缓存隔离约束继续生效。
 
 用户明确要求三家网盘的客户端及 Windows 挂载都可编辑，并要求修改前增加密码/锁。新增 `manual_upload_supported/manual_upload` 明确区分不具备原子 CAS 的手动编辑；原 `upload_controlled`、`upload_path/upload_snapshot` 与自动备份的原子版本合同保持不变。前端仅在实际 `upload && (conditional_upload || manual_upload)` 时允许手动上传，不使用网盘类型分支。iCloud/百度普通写入必须先保存原内容和编辑内容、核对版本、上传后核对内容，并公开不具备原子覆盖的边界；它们不因此获得 backup 能力。
 

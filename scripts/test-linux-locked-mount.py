@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Actual Linux FUSE relock/restart recovery, using a disposable loopback account."""
+"""Actual Linux FUSE default editing and restart recovery, using a disposable loopback account."""
 import argparse
 import importlib.util
 import json
@@ -55,20 +55,26 @@ def run(args):
         engine = desktop.Engine(args.engine, args.peer, root)
         engine.call('save_profile', dict(id='locked', kind='dav', name='Disposable Linux account',
             url=url, **credentials, network_route='system', writable=True, mount_path=str(target)))
+        # Simulate a legacy on-disk readonly profile and mount binding.
+        config_path = root / 'client/profiles.json'
+        engine.close(); engine = None
+        config = json.loads(config_path.read_text(encoding='utf-8'))
+        config['profiles'][0]['writable'] = False
+        config_path.write_text(json.dumps(config), encoding='utf-8')
+        engine = desktop.Engine(args.engine, args.peer, root)
         engine.call('connect', {'id': 'locked'})
-        engine.unlock_for_test('locked')
         owner = lambda: {'profile': 'locked', 'revision': engine.active_revision}
         engine.call('mount', owner())
         assert (target / 'existing.txt').read_bytes() == b'original remote bytes'
         binding_file = root / 'client/mount-locked/binding.json'
         assert json.loads(binding_file.read_text(encoding='utf-8'))['writable']
         engine.call('pause', {'paused': True})
-        (target / 'pending.txt').write_bytes(b'local edit retained across relock')
+        (target / 'pending.txt').write_bytes(b'local edit retained across restart')
         wait_for(lambda: engine.call('status')['cache']['pending'] > 0)
         assert not (share / 'pending.txt').exists()
         engine.call('unmount', owner(), failure=True)
         engine.call('quit', failure=True)
-        checks['unlocked_pending_writes_still_block_unmount_and_quit'] = True
+        checks['default_editing_pending_writes_still_block_unmount_and_quit'] = True
         engine.process.terminate()
         engine.process.wait(timeout=10)
         engine.close()
@@ -77,46 +83,27 @@ def run(args):
             subprocess.run(['fusermount3', '-u', str(target)], check=True)
         assert not mounted(target)
         saved = json.loads((root / 'client/profiles.json').read_text(encoding='utf-8'))['profiles'][0]
-        assert saved['writable'] and json.loads(binding_file.read_text(encoding='utf-8'))['writable']
+        assert not saved['writable'] and json.loads(binding_file.read_text(encoding='utf-8'))['writable']
         engine = desktop.Engine(args.engine, args.peer, root)
         engine.call('resume', {'id': 'locked', 'revision': saved['revision']})
         engine.active_profile = 'locked'
         engine.active_revision = saved['revision']
         engine.call('pause', {'paused': False})
         status = engine.call('status')
-        assert status['capabilities']['mount'] and not status['capabilities']['upload']
+        assert status['capabilities']['mount'] and status['capabilities']['upload']
         engine.call('mount', owner())
-        assert not json.loads(binding_file.read_text(encoding='utf-8'))['writable']
-        assert (target / 'pending.txt').read_bytes() == b'local edit retained across relock'
-        try:
-            (target / 'forbidden.txt').write_bytes(b'forbidden')
-        except OSError:
-            pass
-        else:
-            raise AssertionError('locked mount accepted a new write')
-        time.sleep(1)
-        assert not (share / 'pending.txt').exists() and not (share / 'forbidden.txt').exists()
-        assert engine.call('status')['cache']['pending'] > 0
-        checks['legacy_writable_binding_restores_readonly_without_replaying_pending_content'] = True
-        engine.close()
-        engine = None
-        assert not mounted(target)
-        checks['locked_quit_preserves_pending_content_and_releases_mount'] = True
-        engine = desktop.Engine(args.engine, args.peer, root)
-        engine.call('resume', {'id': 'locked', 'revision': saved['revision']})
-        engine.active_profile = 'locked'
-        engine.active_revision = saved['revision']
-        engine.call('mount', owner())
-        engine.unlock_for_test('locked')
+        assert json.loads(binding_file.read_text(encoding='utf-8'))['writable']
+        assert (target / 'pending.txt').read_bytes() == b'local edit retained across restart'
+        checks['legacy_readonly_profile_restores_editable_without_changing_revision'] = True
         wait_for(lambda: (share / 'pending.txt').exists() and
-            (share / 'pending.txt').read_bytes() == b'local edit retained across relock')
+            (share / 'pending.txt').read_bytes() == b'local edit retained across restart')
         wait_for(lambda: engine.call('status')['cache']['pending'] == 0)
         assert json.loads(binding_file.read_text(encoding='utf-8'))['writable']
-        (target / 'unlocked.txt').write_bytes(b'explicit password unlock only')
+        (target / 'unlocked.txt').write_bytes(b'default editing after restart')
         wait_for(lambda: (share / 'unlocked.txt').exists() and
-            (share / 'unlocked.txt').read_bytes() == b'explicit password unlock only')
+            (share / 'unlocked.txt').read_bytes() == b'default editing after restart')
         wait_for(lambda: engine.call('status')['cache']['pending'] == 0)
-        checks['explicit_password_unlock_remounts_and_recovers_original_pending_bytes'] = True
+        checks['restart_recovers_original_pending_bytes_and_allows_new_writes'] = True
         engine.close()
         engine = None
         assert not mounted(target)

@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+import re
 import tempfile
 
 spec = importlib.util.spec_from_file_location('desktop', Path(__file__).with_name('test-dav-desktop.py'))
@@ -90,7 +92,17 @@ def run(args):
             engine.close()
             engine = None
             if args.native:
-                assert all(not Path(by_id[name]['mount_path']).exists() for name in ['a', 'b'])
+                for name in ['a', 'b']:
+                    target = Path(by_id[name]['mount_path'])
+                    if sys.platform == 'linux':
+                        points = {re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), line.split()[4])
+                                  for line in Path('/proc/self/mountinfo').read_text().splitlines()}
+                        assert str(target) not in points, 'restored FUSE survived normal quit'
+                        # The conditional-upload filesystem retains its empty
+                        # target; bridge-owned targets can be removed on exit.
+                        assert not target.exists() or (target.is_dir() and not any(target.iterdir()))
+                    else:
+                        assert not target.exists()
                 report['checks']['quit_cleans_both_restored_mounts'] = True
         finally:
             if engine:

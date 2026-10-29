@@ -66,86 +66,32 @@ void main() {
     variant: TargetPlatformVariant({TargetPlatform.windows}),
   );
 
-  testWidgets(
-    'read-only adapter explains its limit without offering write access',
-    (tester) async {
-      final c = connection();
-      final before = Map<String, dynamic>.from(c.status);
-      await tester.pumpWidget(DavApp(client: c));
-      await tester.tap(find.byKey(const ValueKey('connection-access')));
-      await tester.pumpAndSettle();
-      expect(find.text('连接权限'), findsOneWidget);
-      expect(find.textContaining('当前网盘适配器仅支持浏览和下载'), findsOneWidget);
-      expect(find.text('浏览文件'), findsOneWidget);
-      expect(find.text('下载文件'), findsOneWidget);
-      expect(find.text('上传文件'), findsNothing);
-      expect(find.byType(Switch), findsNothing);
-      await tester.tap(find.text('知道了'));
-      await tester.pumpAndSettle();
-      expect(find.byType(AlertDialog), findsNothing);
-      expect(c.status, before);
-      await tester.pumpWidget(const SizedBox());
-      c.dispose();
-    },
-  );
+  testWidgets('large text header has no local access controls', (tester) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 1.4;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    tester.view.physicalSize = const Size(840, 580);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final c = connection(
+      adapterWrites: true,
+      capabilities: {
+        'upload': true,
+        'conditional_upload': true,
+        'rename': true,
+      },
+    );
+    await tester.pumpWidget(DavApp(client: c));
+    expect(find.byKey(const ValueKey('connection-access')), findsNothing);
+    expect(find.text('只读'), findsNothing);
+    expect(find.text('断开'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
 
   testWidgets(
-    'read-only configuration explains where to enable supported writes',
-    (tester) async {
-      final c = connection(adapterWrites: true);
-      await tester.pumpWidget(DavApp(client: c));
-      await tester.tap(find.byKey(const ValueKey('connection-access')));
-      await tester.pumpAndSettle();
-      expect(find.text('客户端和挂载权限'), findsOneWidget);
-      expect(find.textContaining('客户端和文件管理器挂载共用权限'), findsOneWidget);
-      await tester.pumpWidget(const SizedBox());
-      c.dispose();
-    },
-  );
-
-  testWidgets(
-    'negotiated permissions list only enabled operations at large text size',
-    (tester) async {
-      tester.platformDispatcher.textScaleFactorTestValue = 1.4;
-      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-      tester.view.physicalSize = const Size(840, 580);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      final c = connection(
-        adapterWrites: true,
-        configuredWrites: true,
-        capabilities: {
-          'upload': true,
-          'conditional_upload': false,
-          'rename': true,
-        },
-      );
-      await tester.pumpWidget(DavApp(client: c));
-      final button = find.byKey(const ValueKey('connection-access'));
-      expect(
-        find.descendant(of: button, matching: find.text('可编辑')),
-        findsOneWidget,
-      );
-      await tester.tap(button);
-      await tester.pumpAndSettle();
-      expect(find.text('重命名'), findsOneWidget);
-      expect(find.text('上传文件'), findsNothing);
-      expect(find.text('删除'), findsNothing);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-      c.status['capabilities'] = {};
-      await tester.pumpWidget(DavApp(client: c));
-      await tester.tap(find.byKey(const ValueKey('connection-access')));
-      await tester.pumpAndSettle();
-      expect(find.text('客户端和挂载权限'), findsOneWidget);
-      await tester.pumpWidget(const SizedBox());
-      c.dispose();
-    },
-  );
-
-  testWidgets(
-    'shared typography covers connections, form, permissions and tray',
+    'shared typography covers connections, form and tray',
     (tester) async {
       tester.view.physicalSize = const Size(1200, 800);
       tester.view.devicePixelRatio = 1;
@@ -187,16 +133,6 @@ void main() {
       await tester.tap(find.text('连接').first);
       await tester.pumpAndSettle();
       await appearanceSnapshot(tester, 'ui-font-connections');
-      await tester.tap(find.byKey(const ValueKey('connection-access')));
-      await tester.pumpAndSettle();
-      final permissionTheme = Theme.of(tester.element(find.text('连接权限')));
-      expect(
-        permissionTheme.textTheme.bodyMedium!.fontFamily,
-        'Microsoft YaHei UI',
-      );
-      await appearanceSnapshot(tester, 'ui-permissions');
-      await tester.tap(find.text('知道了'));
-      await tester.pumpAndSettle();
       await tester.tap(find.text('添加连接'));
       await tester.pumpAndSettle();
       expect(find.byType(ProfileDialog), findsOneWidget);

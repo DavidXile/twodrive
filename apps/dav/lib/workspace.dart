@@ -14,7 +14,6 @@ import 'profile_dialog.dart';
 import 'local_file_preflight.dart';
 import 'native_local_files.dart';
 import 'connection_card.dart';
-import 'connection_access.dart';
 import 'mount_card.dart';
 
 String bytes(num value) {
@@ -507,7 +506,6 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                         ),
                       ),
                       const Spacer(),
-                      if (c.connected) ConnectionAccess(client: c),
                       const SizedBox(width: 12),
                       FilledButton.tonalIcon(
                         onPressed: c.busy || c.selected == null || !c.available
@@ -951,7 +949,6 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
       for (final p in c.profiles)
         ConnectionCard(
           key: ValueKey('connection-${p['id']}'),
-          accessControl: ConnectionAccess(client: c, profile: p),
           mountSupported: c.mountSupported,
           mounted: c.isProfileMounted(p['id'] as String),
           onMount:

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Owned native read-only mount of disposable loopback data. No cloud/user state."""
+"""Remote write-denial and owned read mounts of disposable loopback data.
+
+Filename retained for workflow compatibility; there is no local readonly mode.
+WebDAV capabilities express protocol support, while the server enforces grants
+on requests. Do not stage a VFS write and mistake local acceptance for upload.
+"""
 import argparse
 import importlib.util
 import json
@@ -26,7 +31,7 @@ def run(args):
         payload = b'disposable Windows mount ownership and bytes\0\xff'
         (share/'generated.txt').write_bytes(payload)
         server = subprocess.Popen([args.peer, '--state', str(root/'server'), 'dav-serve', '--root', str(share),
-            '--listen', '127.0.0.1:0', '--write'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            '--listen', '127.0.0.1:0'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding='utf-8', creationflags=subprocess.CREATE_NO_WINDOW)
         engine = None
         try:
@@ -43,7 +48,9 @@ def run(args):
             target = {'profile':public['id'],'revision':public['revision']}
             status = engine.call('status')
             assert status['mount_support']['editable'] is True
-            assert not status['capabilities']['upload'], 'a saved writable flag cannot bypass the local write lock'
+            engine.call('mkdir', dict(target,path='/server-denied'),failure=True)
+            assert not (share/'server-denied').exists()
+            report['checks']['remote_server_denies_write_without_local_mode'] = True
             engine.call('mount',dict(target,revision='stale'),failure=True)
             engine.call('unmount',dict(target,revision='stale'),failure=True)
             report['checks']['profile_revision_guard'] = True
@@ -57,14 +64,7 @@ def run(args):
             else:
                 assert engine.call('mount',target,timeout=90)['mounted']
                 assert (mount/'generated.txt').read_bytes() == payload
-                try:
-                    (mount/'must-not-write.txt').write_bytes(b'must be rejected')
-                except OSError:
-                    pass
-                else:
-                    raise AssertionError('Read-only mount accepted a write')
-                assert not (share/'must-not-write.txt').exists()
-                report['checks']['native_read_bytes_and_write_denial'] = True
+                report['checks']['native_read_bytes_under_remote_read_grant'] = True
                 # New connection / selection must retain the existing native mount.
                 other = dict(profile,id='other',name='Other view',mount_path=str(root/'view/other'))
                 engine.call('save_profile',other)

@@ -424,30 +424,33 @@ impl RcloneDrive {
         check: &mut dyn FnMut() -> anyhow::Result<()>,
     ) -> anyhow::Result<Value> {
         #[cfg(target_os = "linux")]
-        if !self.writable {
-            return self.query_read_view(args, check);
+        {
+            self.query_read_view(args, check)
         }
-        let _lock = wait_for_operation(&self.state, Duration::from_secs(45), || {
-            ensure!(!self.cancel.load(Ordering::Relaxed), "连接已取消");
-            check()
-        })?;
-        let auth: Auth = self.state.read(MANIFEST)?;
-        ensure!(
-            auth.ready && auth.binding == self.binding,
-            "登录状态已改变，拒绝旧连接"
-        );
-        let mut cmd = command(&self.exe, &self.state, &self.pass, &self.route);
-        cmd.args(args);
-        let mut bytes = Vec::new();
-        stream(
-            cmd,
-            &mut bytes,
-            |_| check(),
-            JSON_LIMIT as u64,
-            &self.cancel,
-        )?;
-        check()?;
-        serde_json::from_slice(&bytes).context("网盘组件返回的元数据格式无效")
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _lock = wait_for_operation(&self.state, Duration::from_secs(45), || {
+                ensure!(!self.cancel.load(Ordering::Relaxed), "连接已取消");
+                check()
+            })?;
+            let auth: Auth = self.state.read(MANIFEST)?;
+            ensure!(
+                auth.ready && auth.binding == self.binding,
+                "登录状态已改变，拒绝旧连接"
+            );
+            let mut cmd = command(&self.exe, &self.state, &self.pass, &self.route);
+            cmd.args(args);
+            let mut bytes = Vec::new();
+            stream(
+                cmd,
+                &mut bytes,
+                |_| check(),
+                JSON_LIMIT as u64,
+                &self.cancel,
+            )?;
+            check()?;
+            serde_json::from_slice(&bytes).context("网盘组件返回的元数据格式无效")
+        }
     }
 
     fn entry(&self, path: &str, value: &Value) -> anyhow::Result<MetadataEntry> {
@@ -851,52 +854,55 @@ mod tests {
     }
     #[cfg(target_os = "linux")]
     #[test]
-    fn readonly_metadata_does_not_wait_behind_a_content_operation() {
+    fn metadata_does_not_wait_behind_content_in_either_access_mode() {
         use std::os::unix::fs::PermissionsExt;
-        let (root, mut backend) = fixture();
-        backend
-            .state
-            .save(
-                MANIFEST,
-                &Auth {
-                    kind: "icloud".into(),
-                    binding: backend.binding.clone(),
-                    ready: true,
-                },
+        for writable in [false, true] {
+            let (root, mut backend) = fixture();
+            backend
+                .state
+                .save(
+                    MANIFEST,
+                    &Auth {
+                        kind: "icloud".into(),
+                        binding: backend.binding.clone(),
+                        ready: true,
+                    },
+                )
+                .unwrap();
+            let config = [HEADER, b"\nSYNTHETIC ENCRYPTED FIXTURE ONLY"].concat();
+            twodrive_core::private_file::write_secret(&backend.state.dir.join(CONFIG), &config)
+                .unwrap();
+            let exe = root.path().join("synthetic-component");
+            fs::write(
+                &exe,
+                b"#!/usr/bin/python3\nimport sys\nassert 'lsjson' in sys.argv\nprint('[]')\n",
             )
             .unwrap();
-        let config = [HEADER, b"\nSYNTHETIC ENCRYPTED FIXTURE ONLY"].concat();
-        twodrive_core::private_file::write_secret(&backend.state.dir.join(CONFIG), &config)
-            .unwrap();
-        let exe = root.path().join("synthetic-component");
-        fs::write(
-            &exe,
-            b"#!/usr/bin/python3\nimport sys\nassert 'lsjson' in sys.argv\nprint('[]')\n",
-        )
-        .unwrap();
-        fs::set_permissions(&exe, fs::Permissions::from_mode(0o700)).unwrap();
-        backend.exe = exe;
-        let held = private_lock(&backend.state, "operation.lock").unwrap();
-        held.try_lock_exclusive().unwrap();
-        let start = Instant::now();
-        let result = backend.list_directory_checked("/", &mut || {
-            ensure!(
-                start.elapsed() < Duration::from_millis(700),
-                "synthetic display deadline"
+            fs::set_permissions(&exe, fs::Permissions::from_mode(0o700)).unwrap();
+            backend.exe = exe;
+            let backend = backend.with_writable(writable);
+            let held = private_lock(&backend.state, "operation.lock").unwrap();
+            held.try_lock_exclusive().unwrap();
+            let start = Instant::now();
+            let result = backend.list_directory_checked("/", &mut || {
+                ensure!(
+                    start.elapsed() < Duration::from_millis(700),
+                    "synthetic display deadline"
+                );
+                Ok(())
+            });
+            drop(held);
+            assert!(
+                result.is_ok(),
+                "metadata waited behind unrelated content: {:?}",
+                result.err()
             );
-            Ok(())
-        });
-        drop(held);
-        assert!(
-            result.is_ok(),
-            "metadata waited behind unrelated content: {:?}",
-            result.err()
-        );
-        assert!(start.elapsed() < Duration::from_secs(1));
-        assert_eq!(
-            twodrive_core::private_file::read_secret(&backend.state.dir.join(CONFIG)).unwrap(),
-            config
-        );
+            assert!(start.elapsed() < Duration::from_secs(1));
+            assert_eq!(
+                twodrive_core::private_file::read_secret(&backend.state.dir.join(CONFIG)).unwrap(),
+                config
+            );
+        }
     }
     #[test]
     fn manual_writes_are_opt_in_and_never_claim_atomic_conditional_support() {
@@ -911,20 +917,14 @@ mod tests {
         json!({"ID":"opaque-cloud-id","Name":"中文.bin","Path":"中文.bin","Size":12,"IsDir":false,"ModTime":"2026-10-28T00:00:00Z"})
     }
     #[test]
-    fn directory_wait_honors_request_cancel_without_cancelling_the_connection() {
+    fn metadata_cancel_does_not_cancel_connection_or_unlock_content() {
         let (_temp, backend) = fixture();
         let backend = backend.with_writable(true);
         let held = private_lock(&backend.state, "operation.lock").unwrap();
         held.try_lock_exclusive().unwrap();
         let start = Instant::now();
         let error = backend
-            .list_directory_checked("/", &mut || {
-                ensure!(
-                    start.elapsed() < Duration::from_millis(80),
-                    "display read cancelled"
-                );
-                Ok(())
-            })
+            .list_directory_checked("/", &mut || anyhow::bail!("display read cancelled"))
             .unwrap_err();
         assert!(error.to_string().contains("display read cancelled"));
         assert!(start.elapsed() < Duration::from_secs(2));

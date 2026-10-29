@@ -715,6 +715,85 @@ fn repeated_directory_display_reuses_a_complete_snapshot() {
 }
 
 #[test]
+fn editable_navigation_reuses_display_without_weakening_live_reads() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"contents");
+    let bridge = Bridge::start_writable(
+        Backend::new(fixture.clone()),
+        root.path(),
+        &root.path().join("recovery"),
+    )
+    .unwrap();
+    let c = client();
+    for _ in 0..4 {
+        let response = request(&c, &bridge, "PROPFIND", "/")
+            .header("Depth", "1")
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), 207);
+        response.text().unwrap();
+    }
+    assert_eq!(
+        fixture.listings.load(Ordering::SeqCst),
+        1,
+        "editable navigation must retain the display snapshot optimization"
+    );
+    let before = fixture.metadata_reads.load(Ordering::SeqCst);
+    let response = request(
+        &c,
+        &bridge,
+        "HEAD",
+        &format!(
+            "/{}",
+            percent_encoding::utf8_percent_encode(NAME, percent_encoding::NON_ALPHANUMERIC)
+        ),
+    )
+    .send()
+    .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(fixture.metadata_reads.load(Ordering::SeqCst), before);
+    fixture.change(b"external version");
+    assert_eq!(
+        request(
+            &c,
+            &bridge,
+            "GET",
+            &format!(
+                "/{}",
+                percent_encoding::utf8_percent_encode(NAME, percent_encoding::NON_ALPHANUMERIC)
+            )
+        )
+        .send()
+        .unwrap()
+        .bytes()
+        .unwrap(),
+        &b"external version"[..]
+    );
+    assert!(fixture.metadata_reads.load(Ordering::SeqCst) > before);
+}
+
+#[test]
+fn editable_mutation_epoch_rejects_an_older_inflight_listing() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"contents");
+    fixture.hold_listing.store(true, Ordering::SeqCst);
+    let bridge = Bridge::start_writable(
+        Backend::new(fixture.clone()),
+        root.path(),
+        &root.path().join("recovery"),
+    )
+    .unwrap();
+    let fs = bridge.fs.clone();
+    let read = thread::spawn(move || fs.fetch_directory("/"));
+    wait_until(|| fixture.listings.load(Ordering::SeqCst) == 1);
+    bridge.fs.invalidate_display();
+    fixture.hold_listing.store(false, Ordering::SeqCst);
+    assert!(read.join().unwrap().is_err());
+    assert!(bridge.fs.0.directories.lock().unwrap().samples.is_empty());
+    assert_eq!(root_count(&client(), &bridge), 1);
+}
+
+#[test]
 fn browsing_many_children_keeps_the_active_parent_directory_cached() {
     let root = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(b"contents");

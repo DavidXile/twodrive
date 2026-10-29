@@ -25,7 +25,7 @@ pub(super) fn installed() -> bool {
 #[cfg(windows)]
 pub(super) fn support() -> Value {
     json!({"supported":true,"platform":"windows","driver_installed":installed(),"readonly":false,"editable":true,
-        "help":"挂载权限跟随每个网盘的写入锁；解锁后可编辑。保存先进入本机缓存，请等待上传完成再卸载。",
+        "help":"连接后即可编辑，具体操作取决于网盘授权。保存先进入本机缓存，请等待上传完成再卸载。",
         "driver_url":"https://winfsp.dev/rel/"})
 }
 #[cfg(target_os = "linux")]
@@ -38,7 +38,7 @@ pub(super) fn installed() -> bool {
 #[cfg(target_os = "linux")]
 pub(super) fn support() -> Value {
     json!({"supported":true,"platform":"linux","driver_installed":installed(),"readonly":false,
-        "help":"Linux 挂载使用 FUSE 和 fusermount3；默认只读，输入本机写入密码解锁后可编辑。"})
+        "help":"Linux 挂载使用 FUSE 和 fusermount3；连接后即可编辑，具体操作取决于网盘授权。"})
 }
 fn missing_driver() -> &'static str {
     if cfg!(windows) {

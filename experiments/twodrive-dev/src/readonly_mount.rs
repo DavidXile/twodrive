@@ -1,4 +1,4 @@
-//! A private loopback read-only filesystem bridge over the existing Provider
+//! A private loopback filesystem bridge over the existing Provider
 //! contract. The native filesystem component never receives cloud credentials.
 use crate::{
     model::{CloudBackend, MetadataEntry},
@@ -73,6 +73,7 @@ struct DirectorySample {
 struct DirectoryCache {
     samples: VecDeque<DirectorySample>,
     pending: HashSet<String>,
+    generation: u64,
 }
 struct Inner {
     backend: Backend,
@@ -212,10 +213,9 @@ impl RemoteFs {
         // A real GET must use live metadata before response headers, including
         // zero-byte files and conditional/range requests. Display caches are
         // only for HEAD/PROPFIND, never download validity or authentication.
-        if self.0.writer.is_some()
-            || !DISPLAY_METADATA_ONLY
-                .try_with(|value| *value)
-                .unwrap_or(false)
+        if !DISPLAY_METADATA_ONLY
+            .try_with(|value| *value)
+            .unwrap_or(false)
         {
             // dav-server can ask for metadata and then open the same path in
             // one GET. Reuse only that request's live lookup, never a display
@@ -297,8 +297,21 @@ impl RemoteFs {
             cache.samples.pop_back();
         }
     }
+    fn invalidate_display(&self) {
+        if let Ok(mut cache) = self.0.directories.lock() {
+            cache.generation = cache.generation.wrapping_add(1);
+            cache.samples.clear();
+            self.0.directory_ready.notify_all();
+        }
+    }
     fn fetch_directory(&self, path: &str) -> FsResult<DirectoryEntries> {
-        let result = self
+        let generation = self
+            .0
+            .directories
+            .lock()
+            .map_err(|_| FsError::GeneralFailure)?
+            .generation;
+        let mut result = self
             .check()
             .map_err(|_| FsError::GeneralFailure)
             .and_then(|_| {
@@ -313,10 +326,22 @@ impl RemoteFs {
             .directories
             .lock()
             .map_err(|_| FsError::GeneralFailure)?;
-        if !self.0.stop.load(Ordering::Relaxed)
-            && let Ok(entries) = &result
-        {
-            Self::remember(&mut cache, path.into(), entries.clone());
+        if cache.generation != generation || self.0.stop.load(Ordering::Relaxed) {
+            // A mutation can finish while a background listing is in flight.
+            // Never republish its pre-mutation snapshot, including on failure.
+            result = Err(FsError::GeneralFailure);
+        }
+        if let Some(entries) = result.as_ref().ok().cloned() {
+            let observed = self.0.writer.as_ref().map_or(Ok(()), |writer| {
+                // First observed version remains conservative; every mutation
+                // compares it to live metadata before changing the remote.
+                writer.observe_many(&entries.values().cloned().collect::<Vec<_>>())
+            });
+            if observed.is_ok() {
+                Self::remember(&mut cache, path.into(), entries);
+            } else {
+                result = Err(FsError::GeneralFailure);
+            }
         }
         // A failed refresh never replaces the last complete snapshot with [];
         // a genuinely successful empty listing still replaces it normally.
@@ -325,18 +350,6 @@ impl RemoteFs {
         result
     }
     fn directory_snapshot(&self, path: &str) -> FsResult<DirectoryEntries> {
-        if let Some(writer) = &self.0.writer {
-            let entries = self
-                .0
-                .backend
-                .list_directory_checked(path, &mut || self.check())
-                .map_err(|_| FsError::GeneralFailure)?;
-            let entries = Self::validated_entries(path, entries)?;
-            writer
-                .observe_many(&entries.values().cloned().collect::<Vec<_>>())
-                .map_err(|_| FsError::GeneralFailure)?;
-            return Ok(entries);
-        }
         loop {
             self.check().map_err(|_| FsError::GeneralFailure)?;
             let mut cache = self
@@ -722,6 +735,9 @@ impl Bridge {
         {
             let entries = RemoteFs::validated_entries("/", entries)
                 .map_err(|_| anyhow::anyhow!("invalid initial directory listing"))?;
+            if let Some(writer) = &writer {
+                writer.observe_many(&entries.values().cloned().collect::<Vec<_>>())?;
+            }
             RemoteFs::remember(&mut directories, "/".into(), entries);
             directories.samples.front_mut().unwrap().checked = checked;
             directories.samples.front_mut().unwrap().attempted = checked;
@@ -851,6 +867,9 @@ impl Bridge {
                                             address,
                                         )
                                         .await;
+                                        // Invalidate on errors too: an upstream operation may
+                                        // have completed before its acknowledgement failed.
+                                        fs.invalidate_display();
                                         return Ok::<_, Infallible>(response);
                                     }
                                     match tokio::time::timeout(

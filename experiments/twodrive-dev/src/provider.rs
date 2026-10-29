@@ -127,7 +127,7 @@ impl Backend {
         self
     }
     fn check_write(&self) -> anyhow::Result<()> {
-        ensure!(self.writable, "此网盘为只读或写入锁尚未解锁");
+        ensure!(self.writable, "此连接未获写入权限");
         ensure!(
             self.write_guard.as_ref().is_none_or(|(path, token)| {
                 crate::provider_guard::write_permit_allowed(path, token)
