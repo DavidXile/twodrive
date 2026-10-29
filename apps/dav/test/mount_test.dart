@@ -77,6 +77,75 @@ class MountClient extends StorageClient {
 
 void main() {
   setUpAll(loadPreviewFonts);
+  testWidgets('Linux component help describes FUSE without a Windows driver', (
+    tester,
+  ) async {
+    final c = MountClient(installed: false);
+    c.status['mount_support']['platform'] = 'linux';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MountCard(client: c, onOpen: () {}),
+        ),
+      ),
+    );
+    await tester.tap(find.text('查看安装说明'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('fusermount3'), findsOneWidget);
+    expect(find.text('https://winfsp.dev/rel/'), findsNothing);
+    expect(c.calls, isEmpty);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+  testWidgets('Linux mixed mounts show each account permission independently', (
+    tester,
+  ) async {
+    final c = MountClient();
+    c.profiles.add({
+      'id': 'b',
+      'revision': 'rev-b',
+      'name': 'Read only cloud',
+      'mount_path': '/tmp/b',
+    });
+    c.status = {
+      ...c.status,
+      'mounts': [
+        {
+          'profile': 'a',
+          'revision': 'rev-a',
+          'path': '/tmp/a',
+          'readonly': false,
+          'failed': false,
+        },
+        {
+          'profile': 'b',
+          'revision': 'rev-b',
+          'path': '/tmp/b',
+          'readonly': true,
+          'failed': false,
+        },
+      ],
+    };
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: Column(
+              children: [
+                MountCard(client: c, profileId: 'a', onOpen: () {}),
+                MountCard(client: c, profileId: 'b', onOpen: () {}),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(find.text('文件管理器挂载 · 只读'), findsOneWidget);
+    expect(find.text('文件管理器挂载'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
   testWidgets(
     'missing driver gives installation help without requesting mount',
     (tester) async {

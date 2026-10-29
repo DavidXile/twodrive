@@ -8,6 +8,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
 pub type Progress = Arc<dyn Fn(u64, u64) -> anyhow::Result<()> + Send + Sync>;
@@ -56,6 +57,11 @@ pub trait Provider: CloudBackend {
     ) -> anyhow::Result<Option<StorageUsage>> {
         check()?;
         Ok(None)
+    }
+    /// Optional complete root listing already validated by this connection.
+    /// Only a mount display seed: never evidence for file contents or writes.
+    fn initial_directory_listing(&self) -> Option<(Instant, Vec<MetadataEntry>)> {
+        None
     }
     fn list_directory(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>>;
     fn list_directory_checked(
@@ -153,6 +159,9 @@ impl Backend {
         check: &mut dyn FnMut() -> anyhow::Result<()>,
     ) -> anyhow::Result<Option<StorageUsage>> {
         self.inner.storage_usage(check)
+    }
+    pub fn initial_directory_listing(&self) -> Option<(Instant, Vec<MetadataEntry>)> {
+        self.inner.initial_directory_listing()
     }
     pub fn list_directory(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
         self.check_pause()?;

@@ -38,11 +38,13 @@ mod local_files;
 #[cfg(all(target_os = "linux", feature = "mount"))]
 #[path = "mount.rs"]
 mod mount;
+#[path = "desktop_mount_paths.rs"]
+mod mount_paths;
+#[cfg(any(windows, all(target_os = "linux", feature = "mount")))]
+#[path = "desktop_readonly_mount.rs"]
+mod native_mount;
 #[path = "desktop_sharing.rs"]
 mod sharing;
-#[cfg(windows)]
-#[path = "desktop_windows_mount.rs"]
-mod windows_mount;
 
 #[derive(Parser)]
 struct Args {
@@ -91,7 +93,37 @@ fn string<'a>(args: &'a Value, key: &str) -> anyhow::Result<&'a str> {
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
 }
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn linux_mount_info(path: &Path) -> anyhow::Result<Option<(String, String, String)>> {
+    for line in fs::read_to_string("/proc/self/mountinfo")?.lines() {
+        let Some((left, right)) = line.split_once(" - ") else {
+            continue;
+        };
+        let fields: Vec<_> = left.split_whitespace().collect();
+        let Some(target) = fields.get(4) else {
+            continue;
+        };
+        let target = target
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\");
+        if Path::new(&target) == path {
+            let mut parts = right.split_whitespace();
+            return Ok(Some((
+                fields[0].into(),
+                parts.next().context("missing mount type")?.into(),
+                parts.next().context("missing mount source")?.into(),
+            )));
+        }
+    }
+    Ok(None)
+}
+#[cfg(target_os = "linux")]
+fn is_mount(path: &Path) -> anyhow::Result<bool> {
+    Ok(linux_mount_info(path)?.is_some())
+}
+#[cfg(not(any(windows, target_os = "linux")))]
 fn is_mount(path: &Path) -> anyhow::Result<bool> {
     Ok(Command::new("mountpoint")
         .args(["-q", "--"])
@@ -160,6 +192,10 @@ fn drain_errors(process: &mut Process, network: Arc<Diagnostics>) {
                 // Only the network layer's credential-free diagnostics enter the UI.
                 if line.starts_with("network:") {
                     network.record(&line);
+                } else if std::env::var_os("TWODRIVE_MOUNT_TRACE").is_some()
+                    && line.starts_with("mount-lifecycle ")
+                {
+                    eprintln!("{line}");
                 }
             }
         });
@@ -218,6 +254,8 @@ impl App {
                 let mut public = providers::public_profile(p);
                 public["account_name"] = json!(self.account_name(p));
                 public["connected"] = json!(self.online(&p.id));
+                public["mount_readonly"] =
+                    json!(!twodrive_dev::write_lock::unlocked(&self.state, p));
                 public["startup_ready"] = json!(self.saved_session(p).is_some());
                 public["write_locked"] =
                     json!(p.writable && !twodrive_dev::write_lock::unlocked(&self.state, p));
@@ -233,7 +271,11 @@ impl App {
         let path = self.mount_state(p).join("mount.sqlite3");
         if !path.exists() {
             #[cfg(windows)]
-            return windows_mount::cache_status(self, p);
+            return native_mount::cache_status(self, p);
+            #[cfg(all(target_os = "linux", feature = "mount"))]
+            if providers::uses_readonly_bridge(p) {
+                return native_mount::cache_status(self, p);
+            }
             #[cfg(not(windows))]
             return Ok(json!({"bytes":0,"pending":0,"released":0}));
         }
@@ -294,9 +336,9 @@ impl App {
         let mut result = json!({"bytes":bytes,"pending":pending,"released":released,"waiting":waiting,
             "deletes_pending":deletes.len(),"deletes_deferred":deferred,"deletes_rejected":rejected,"delete_next_retry_unix":next_retry});
         result["legacy_pending"] = json!(pending);
-        #[cfg(windows)]
+        #[cfg(any(windows, all(target_os = "linux", feature = "mount")))]
         {
-            let native = windows_mount::cache_status(self, p)?;
+            let native = native_mount::cache_status(self, p)?;
             result["pending"] = json!(pending as u64 + native["pending"].as_u64().unwrap_or(0));
             for key in ["write_error", "recovery_files", "recovery_directories"] {
                 result[key] = native[key].clone();
@@ -315,17 +357,29 @@ impl App {
                 && twodrive_dev::write_lock::unlocked(&self.state, p)
             {
                 ensure!(
-                    windows_mount::cache_status(self, p)?["pending"] == 0,
+                    native_mount::cache_status(self, p)?["pending"] == 0,
                     "挂载仍有未上传内容，请关闭编辑器并等待同步完成；本机缓存已保留"
                 );
             }
-            windows_mount::stop(self.mounted.as_mut().unwrap())?;
+            native_mount::stop(self.mounted.as_mut().unwrap())?;
             self.mounted.take();
             Ok(())
         }
         #[cfg(not(windows))]
         {
             let p = self.connected.as_ref().context("missing mount profile")?;
+            #[cfg(all(target_os = "linux", feature = "mount"))]
+            if providers::uses_readonly_bridge(p) {
+                if check_pending && twodrive_dev::write_lock::unlocked(&self.state, p) {
+                    ensure!(
+                        native_mount::cache_status(self, p)?["pending"] == 0,
+                        "挂载仍有未上传内容，请关闭编辑器并等待同步完成；本机缓存已保留"
+                    );
+                }
+                native_mount::stop(self.mounted.as_mut().unwrap())?;
+                self.mounted.take();
+                return Ok(());
+            }
             if !is_mount(&p.mount_path)? {
                 self.mounted.take();
                 return Ok(());
@@ -353,7 +407,7 @@ impl App {
         {
             let profile = self.connected.as_ref().context("请先连接")?.clone();
             ensure!(self.mounted.is_none(), "已经挂载");
-            let process = windows_mount::start(self, &profile, cancel)?;
+            let process = native_mount::start(self, &profile, cancel)?;
             self.mounted = Some(process);
             Ok(())
         }
@@ -370,6 +424,12 @@ impl App {
                 "目录已被其他进程挂载，请使用另一个空目录"
             );
             ensure!(self.capabilities()["mount"] == true, "此连接不支持安全挂载");
+            #[cfg(all(target_os = "linux", feature = "mount"))]
+            if providers::uses_readonly_bridge(p) {
+                let process = native_mount::start(self, p, cancel)?;
+                self.mounted = Some(process);
+                return Ok(());
+            }
             let mut cmd = Command::new(std::env::current_exe()?);
             cmd.arg("--state")
                 .arg(&self.state.dir)
@@ -542,13 +602,21 @@ impl App {
                 .is_some_and(|b| b.manual_upload_supported())
         );
         #[cfg(windows)]
-        let supported_mount = windows_mount::installed();
+        let supported_mount = native_mount::installed();
         #[cfg(not(windows))]
         let supported_mount = cfg!(all(target_os = "linux", feature = "mount"))
+            && self
+                .connected
+                .as_ref()
+                .is_some_and(providers::mount_supported)
             && (self
                 .connected
                 .as_ref()
                 .is_none_or(|p| !twodrive_dev::write_lock::unlocked(&self.state, p))
+                || self
+                    .connected
+                    .as_ref()
+                    .is_some_and(providers::uses_readonly_bridge)
                 || (c.backup() && c.rename && c.delete));
         value["mount"] = json!(self.backend.is_some() && supported_mount);
         value
@@ -562,7 +630,7 @@ impl App {
             .filter(|a| a["mounted"] == true)
             .map(|a| {
                 json!({"profile":a["profile"],"revision":a["revision"],"name":a["name"],
-                "path":a["mount_path"],"writable":a["writable"],"failed":a["mount_failed"]})
+                "path":a["mount_path"],"writable":a["writable"],"readonly":a["mount_readonly"],"failed":a["mount_failed"]})
             })
             .collect();
         let gateway_dead = self
@@ -601,11 +669,22 @@ impl App {
         let mount_support = {
             #[cfg(windows)]
             {
-                windows_mount::support()
+                native_mount::support()
             }
             #[cfg(not(windows))]
             {
-                json!({"supported":cfg!(all(target_os = "linux", feature = "mount"))})
+                #[cfg(all(target_os = "linux", feature = "mount"))]
+                {
+                    let mut support = native_mount::support();
+                    support["readonly"] = json!(
+                        self.connected
+                            .as_ref()
+                            .is_some_and(providers::uses_readonly_bridge)
+                    );
+                    support
+                }
+                #[cfg(not(all(target_os = "linux", feature = "mount")))]
+                json!({"supported":false})
             }
         };
         Ok(
@@ -676,7 +755,10 @@ impl App {
             "profiles" => Ok(self.public_profiles()),
             "write_recovery" => {
                 let p = self.profile(string(a, "profile")?)?;
-                let mut directories = vec![self.mount_state(&p).join("windows-accounts")];
+                let mut directories = vec![
+                    self.mount_state(&p)
+                        .join(twodrive_dev::mount_write::account_cache_directory()),
+                ];
                 if let Some(key) = providers::descriptor(&p.kind)?["write_recovery_field"].as_str()
                 {
                     directories.push(PathBuf::from(p.option(key)).join("recovery"));
@@ -715,7 +797,8 @@ impl App {
                 if p.mount_path.as_os_str().is_empty() {
                     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
                         .context("home missing")?;
-                    p.mount_path = PathBuf::from(home).join("TwoDrive Development").join(&p.id);
+                    p.mount_path =
+                        mount_paths::default_path(Path::new(&home), &p, &self.config.profiles)?;
                 }
                 ensure!(p.mount_path.is_absolute(), "挂载目录必须是绝对路径");
                 let previous = self.config.profiles.iter().find(|c| c.id == p.id);
@@ -750,6 +833,7 @@ impl App {
                 Ok(json!({}))
             }
             "connect" => self.connect(string(a, "id")?, &cancel),
+            "select" => self.select_profile(a),
             "resume" => {
                 let p = self.profile(string(a, "id")?)?;
                 ensure!(
@@ -847,7 +931,7 @@ impl App {
                     fs::write(
                         &path,
                         format!(
-                            "[Desktop Entry]\nType=Application\nName=TwoDrive Development\nExec=\"{escaped}\" --background\nIcon=twodrive-dav\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
+                            "[Desktop Entry]\nType=Application\nName=TwoDrive\nExec=\"{escaped}\" --background\nIcon=twodrive-dav-minimal\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
                         ),
                     )?;
                     #[cfg(windows)]
@@ -942,6 +1026,10 @@ pub fn run() -> anyhow::Result<()> {
     #[cfg(all(target_os = "linux", feature = "mount"))]
     if let Some(id) = &app.args.mount_worker {
         let p = app.profile(id)?;
+        ensure!(providers::mount_supported(&p), "此连接不支持安全挂载");
+        if providers::uses_readonly_bridge(&p) {
+            return native_mount::worker(&app, &p);
+        }
         ensure!(!is_mount(&p.mount_path)?, "mount target is already mounted");
         let session = app.state.read(&format!("session-{}.json", p.id))?;
         let (backend, binding) =
@@ -957,7 +1045,7 @@ pub fn run() -> anyhow::Result<()> {
     }
     #[cfg(windows)]
     if let Some(id) = &app.args.mount_worker {
-        return windows_mount::worker(&app, &app.profile(id)?);
+        return native_mount::worker(&app, &app.profile(id)?);
     }
     let _lock = app.state.run_lock()?;
     twodrive_dev::write_lock::begin_run(&app.state)?;
@@ -980,7 +1068,7 @@ pub fn run() -> anyhow::Result<()> {
                 .cloned()
                 .unwrap_or_default();
             app.reap_jobs();
-            if matches!(req.op.as_str(), "upload" | "download" | "quota") {
+            if matches!(req.op.as_str(), "upload" | "download" | "quota" | "list") {
                 let id = req.id;
                 if let Err(error) = app.start_file_job(
                     req,
@@ -1000,7 +1088,13 @@ pub fn run() -> anyhow::Result<()> {
             let observable = worker_notifications.load(Ordering::Relaxed)
                 && !matches!(
                     req.op.as_str(),
-                    "status" | "profiles" | "list" | "backups" | "local_preflight" | "local_items"
+                    "status"
+                        | "profiles"
+                        | "list"
+                        | "select"
+                        | "backups"
+                        | "local_preflight"
+                        | "local_items"
                 );
             if observable {
                 emit(

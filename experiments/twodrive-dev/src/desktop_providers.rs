@@ -51,6 +51,19 @@ pub(super) fn descriptor(kind: &str) -> anyhow::Result<Value> {
         _ => anyhow::bail!("unsupported provider: {kind}"),
     }
 }
+pub fn mount_supported(p: &Profile) -> bool {
+    descriptor(&p.kind)
+        .map(|d| d["capabilities"]["mount"] == true)
+        .unwrap_or(false)
+}
+pub fn uses_readonly_bridge(p: &Profile) -> bool {
+    descriptor(&p.kind)
+        .map(|d| {
+            d["capabilities"]["mount"] == true
+                && (d["mount_backend"] == "readonly_bridge" || !p.writable)
+        })
+        .unwrap_or(false)
+}
 pub fn prepare(p: &mut Profile, state: &twodrive_dev::state::State) -> anyhow::Result<()> {
     descriptor(&p.kind)?;
     match p.kind.as_str() {
@@ -132,7 +145,7 @@ pub fn retain_secrets(p: &mut Profile, previous: Option<&Profile>, clear: bool) 
 }
 pub fn public_profile(p: &Profile) -> Value {
     let mut value = json!({"id":p.id,"revision":p.revision,"name":p.name,"kind":p.kind,
-        "writable":p.writable,"mount_path":p.mount_path,"network_route":p.network_route});
+        "writable":p.writable,"mount_readonly":cfg!(windows) || uses_readonly_bridge(p),"mount_path":p.mount_path,"network_route":p.network_route});
     if let Ok(d) = descriptor(&p.kind) {
         if p.kind == "icloud" {
             value["login_required"] = json!(icloud::login_required(p));

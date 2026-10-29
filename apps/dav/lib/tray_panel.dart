@@ -204,11 +204,12 @@ class TrayPanel extends StatelessWidget {
                     ),
                     PopupMenuButton<String>(
                       tooltip: '设置',
+                      popUpAnimationStyle: AnimationStyle.noAnimation,
                       icon: const Icon(Icons.settings_outlined),
                       onSelected: (value) async {
                         switch (value) {
                           case 'settings':
-                            await onManage(4);
+                            await onManage(5);
                           case 'backups':
                             await onManage(3);
                           case 'pause':
@@ -453,7 +454,7 @@ class TrayPanel extends StatelessWidget {
           const Padding(
             padding: EdgeInsets.only(bottom: 8),
             child: Text(
-              'TwoDrive Development',
+              'TwoDrive',
               style: TextStyle(fontSize: 10, color: Colors.blueGrey),
             ),
           ),

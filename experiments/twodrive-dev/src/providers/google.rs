@@ -21,7 +21,7 @@ use twodrive_dev::{
 pub fn descriptor() -> Value {
     json!({"id":"google","label":"Google Drive","account_label":"Google 账号","icon":"cloud",
         "account_key":"name","summary_key":"name","identity_fields":["google_state","client_file"],"protected_paths":["google_state","client_file"],"mount_startup_timeout_seconds":600,
-        "capabilities":{"upload":true,"conditional_upload":true,"mkdir":true,"rename":true,"delete":true,"backup":true},
+        "capabilities":{"mount":true,"upload":true,"conditional_upload":true,"mkdir":true,"rename":true,"delete":true,"backup":true},
         "help":"连接时打开系统浏览器授权 Google Drive 读写权限。在线文档显示为网页快捷入口；删除移入回收站。",
         "fields":[{"key":"client_file","label":"Google 桌面应用凭据 JSON","required":true,"type":"file"},{"key":"google_state","label":"私有登录目录（留空自动创建）","advanced":true}]})
 }

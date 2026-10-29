@@ -9,6 +9,7 @@ import 'backup_page.dart';
 import 'sharing_page.dart';
 import 'package:window_manager/window_manager.dart';
 import 'client.dart';
+import 'desktop_typography.dart';
 import 'profile_dialog.dart';
 import 'local_file_preflight.dart';
 import 'native_local_files.dart';
@@ -145,21 +146,45 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
   }
 
   Future<void> showManagement([int destination = 0]) async {
+    if (presenting) return;
     presenting = true;
-    setState(() {
-      panel = false;
-      page = destination;
-    });
-    await windowManager.setAlwaysOnTop(false);
-    await windowManager.setSkipTaskbar(false);
-    await tray.panel(false);
-    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
-    await windowManager.setMinimumSize(const Size(840, 580));
-    await windowManager.setSize(const Size(1120, 760));
-    await windowManager.center();
-    await windowManager.show();
-    await windowManager.focus();
-    presenting = false;
+    final fromPanel = panel;
+    var veiled = false;
+    try {
+      // The tray and management page share a native surface. Never expose
+      // decoration/geometry changes with the old tray frame still visible.
+      await windowManager.hide();
+      if (!mounted) return;
+      setState(() {
+        panel = false;
+        page = destination;
+      });
+      await windowManager.setAlwaysOnTop(false);
+      await windowManager.setSkipTaskbar(false);
+      await tray.panel(false);
+      await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+      await windowManager.setMinimumSize(const Size(840, 580));
+      await windowManager.setSize(const Size(1120, 760));
+      await windowManager.center();
+      if (Platform.isLinux && fromPanel) {
+        await windowManager.setOpacity(0);
+        veiled = true;
+      }
+      await windowManager.show();
+      if (veiled) {
+        // A mapped surface receives its final GTK size. Allow that layout and
+        // the following Flutter frame to replace the tray-sized scene before
+        // revealing it. This is a framework-frame wait, not a GPU fence.
+        await WidgetsBinding.instance.endOfFrame;
+        await WidgetsBinding.instance.endOfFrame;
+        await windowManager.setOpacity(1);
+        veiled = false;
+      }
+      await windowManager.focus();
+    } finally {
+      presenting = false;
+      if (veiled) await windowManager.setOpacity(1);
+    }
   }
 
   Future<void> show() => showManagement(page);
@@ -594,9 +619,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                     ListTile(
                       dense: true,
                       leading: const Icon(Icons.system_update_alt),
-                      title: Text(
-                        'Development ${c.updates.latest!.version} 可用',
-                      ),
+                      title: Text('TwoDrive ${c.updates.latest!.version} 可用'),
                       trailing: TextButton(
                         onPressed: c.updates.openRelease,
                         child: const Text('查看更新'),
@@ -940,7 +963,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
               : () =>
                     c.mountDriverMissing &&
                         !c.isProfileMounted(p['id'] as String)
-                    ? showMountHelp(context)
+                    ? showMountHelp(context, client: c)
                     : c.mountToggle(p['id'] as String),
           onOpenMount:
               c.busy ||
@@ -1004,7 +1027,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '软件更新 · Development ${c.updates.current}',
+                  '软件更新 · ${c.updates.current}',
                   style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w600,
@@ -1080,6 +1103,16 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
               child: Text('本机文件所有者不可用。原生操作已关闭，请保留目录与恢复日志。'),
             ),
           ),
+        if (Platform.isLinux && c.mountSupported)
+          Card(
+            color: Colors.white,
+            child: SwitchListTile(
+              title: const Text('连接后自动挂载'),
+              subtitle: const Text('账户连接成功后自动挂载到文件管理器。'),
+              value: c.autoMountOnConnect,
+              onChanged: c.busy ? null : c.setAutoMountOnConnect,
+            ),
+          ),
         if (c.mountSupported) ...[
           const Padding(padding: EdgeInsets.all(12), child: Text('文件管理器挂载')),
           if (c.mounts.isEmpty)
@@ -1096,7 +1129,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
             ),
           if (c.mountDriverMissing)
             TextButton(
-              onPressed: () => showMountHelp(context),
+              onPressed: () => showMountHelp(context, client: c),
               child: const Text('查看挂载组件安装说明'),
             ),
         ],
@@ -1149,8 +1182,9 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                     padding: const EdgeInsets.symmetric(vertical: 3),
                     child: SelectableText(
                       line,
-                      style: const TextStyle(
-                        fontFamily: 'monospace',
+                      style: TextStyle(
+                        fontFamily: DesktopTypography.monospace,
+                        fontFamilyFallback: DesktopTypography.fallback,
                         fontSize: 12,
                       ),
                     ),
@@ -1173,7 +1207,9 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
         .where((p) => p['id'] == profile['kind'])
         .firstOrNull;
     final action = provider?['login_action'];
-    if (profile['login_required'] == true && action is String) {
+    if (!c.isProfileConnected(profile['id'] as String) &&
+        profile['login_required'] == true &&
+        action is String) {
       await editProfile(profile, action, true);
     } else {
       await c.connect(profile['id'] as String);

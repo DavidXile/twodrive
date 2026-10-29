@@ -9,6 +9,14 @@ const NAME: &str = "你好 & <tag>.txt";
 struct Fixture {
     data: Arc<Mutex<(Vec<u8>, u64)>>,
     downloads: Arc<AtomicUsize>,
+    listings: Arc<AtomicUsize>,
+    fail_listing: Arc<AtomicBool>,
+    hold_listing: Arc<AtomicBool>,
+    empty_listing: Arc<AtomicBool>,
+    invalid_listing: Arc<AtomicBool>,
+    cancelled_listings: Arc<AtomicUsize>,
+    seed_root: bool,
+    metadata_reads: Arc<AtomicUsize>,
     change_during_read: Arc<AtomicBool>,
 }
 impl Fixture {
@@ -16,6 +24,14 @@ impl Fixture {
         Self {
             data: Arc::new(Mutex::new((bytes.to_vec(), 1))),
             downloads: Arc::default(),
+            listings: Arc::default(),
+            fail_listing: Arc::default(),
+            hold_listing: Arc::default(),
+            empty_listing: Arc::default(),
+            invalid_listing: Arc::default(),
+            cancelled_listings: Arc::default(),
+            seed_root: false,
+            metadata_reads: Arc::default(),
             change_during_read: Arc::default(),
         }
     }
@@ -50,6 +66,7 @@ impl CloudBackend for Fixture {
         Ok(Some(self.meta()))
     }
     fn get_metadata_by_path(&self, path: &str) -> anyhow::Result<Option<MetadataEntry>> {
+        self.metadata_reads.fetch_add(1, Ordering::SeqCst);
         Ok(if path == "/" {
             Some(MetadataEntry::new_dir("root", "/", 1, "root"))
         } else if path == format!("/{NAME}") {
@@ -109,7 +126,132 @@ impl CloudBackend for Fixture {
         panic!("mount must never write")
     }
 }
+#[test]
+fn directory_snapshot_avoids_per_file_probes_and_head_never_downloads() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"0123456789");
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let c = client();
+    assert_eq!(
+        request(&c, &bridge, "PROPFIND", "/")
+            .header("Depth", "1")
+            .send()
+            .unwrap()
+            .status(),
+        207
+    );
+    let before = fixture.metadata_reads.load(Ordering::SeqCst);
+    for _ in 0..4 {
+        let response = c
+            .head(file_url(&bridge))
+            .bearer_auth(&bridge.token)
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["content-length"], "10");
+        assert!(response.bytes().unwrap().is_empty());
+        assert_eq!(
+            request(&c, &bridge, "PROPFIND", "/.hidden")
+                .header("Depth", "0")
+                .send()
+                .unwrap()
+                .status(),
+            404
+        );
+    }
+    assert_eq!(
+        fixture.downloads.load(Ordering::SeqCst),
+        0,
+        "HEAD must never materialize cloud file contents"
+    );
+    assert_eq!(
+        fixture.metadata_reads.load(Ordering::SeqCst),
+        before,
+        "fresh complete directory metadata must cover existing and absent children"
+    );
+    assert_eq!(
+        c.get(file_url(&bridge))
+            .bearer_auth(&bridge.token)
+            .send()
+            .unwrap()
+            .bytes()
+            .unwrap(),
+        b"0123456789"[..]
+    );
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 1);
+}
+#[test]
+fn stale_directory_snapshot_cannot_serve_old_file_bytes() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"old-content");
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let c = client();
+    assert_eq!(
+        request(&c, &bridge, "PROPFIND", "/")
+            .header("Depth", "1")
+            .send()
+            .unwrap()
+            .status(),
+        207
+    );
+    fixture.change(b"new-content-with-different-size");
+    let first = c
+        .get(file_url(&bridge))
+        .bearer_auth(&bridge.token)
+        .send()
+        .unwrap();
+    assert_eq!(first.headers()["content-length"], "31");
+    assert_eq!(
+        first.bytes().unwrap(),
+        b"new-content-with-different-size"[..]
+    );
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        c.get(file_url(&bridge))
+            .bearer_auth(&bridge.token)
+            .send()
+            .unwrap()
+            .bytes()
+            .unwrap(),
+        b"new-content-with-different-size"[..]
+    );
+}
+#[test]
+fn get_rechecks_empty_file_size_before_publishing_headers() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"");
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let c = client();
+    assert_eq!(
+        request(&c, &bridge, "PROPFIND", "/")
+            .header("Depth", "1")
+            .send()
+            .unwrap()
+            .status(),
+        207
+    );
+    fixture.change(b"now not empty");
+    let response = c
+        .get(file_url(&bridge))
+        .bearer_auth(&bridge.token)
+        .send()
+        .unwrap();
+    assert_eq!(response.headers()["content-length"], "13");
+    assert_eq!(response.bytes().unwrap(), b"now not empty"[..]);
+}
 impl Provider for Fixture {
+    fn initial_directory_listing(&self) -> Option<(Instant, Vec<MetadataEntry>)> {
+        self.seed_root.then(|| {
+            (
+                Instant::now(),
+                if self.invalid_listing.load(Ordering::SeqCst) {
+                    vec![self.meta(), self.meta()]
+                } else {
+                    vec![self.meta()]
+                },
+            )
+        })
+    }
     fn storage_usage(
         &self,
         check: &mut dyn FnMut() -> anyhow::Result<()>,
@@ -131,8 +273,36 @@ impl Provider for Fixture {
         }
     }
     fn list_directory(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
+        self.list_directory_checked(path, &mut || Ok(()))
+    }
+    fn list_directory_checked(
+        &self,
+        path: &str,
+        check: &mut dyn FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Vec<MetadataEntry>> {
         ensure!(path == "/");
-        Ok(vec![self.meta()])
+        self.listings.fetch_add(1, Ordering::SeqCst);
+        loop {
+            if let Err(error) = check() {
+                self.cancelled_listings.fetch_add(1, Ordering::SeqCst);
+                return Err(error);
+            }
+            if !self.hold_listing.load(Ordering::SeqCst) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        ensure!(
+            !self.fail_listing.load(Ordering::SeqCst),
+            "synthetic listing failure"
+        );
+        Ok(if self.empty_listing.load(Ordering::SeqCst) {
+            vec![]
+        } else if self.invalid_listing.load(Ordering::SeqCst) {
+            vec![self.meta(), self.meta()]
+        } else {
+            vec![self.meta()]
+        })
     }
     fn upload_controlled(
         &self,
@@ -316,7 +486,8 @@ fn equal_paths_remain_scoped_to_their_provider_and_shutdown_closes_listener() {
 fn official_rclone_reads_the_private_provider_bridge() {
     let exe = std::env::var_os("TWODRIVE_TEST_RCLONE").expect("TWODRIVE_TEST_RCLONE required");
     let root = tempfile::tempdir().unwrap();
-    let bridge = Bridge::start(Backend::new(Fixture::new(b"0123456789")), root.path()).unwrap();
+    let fixture = Fixture::new(b"0123456789");
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
     let run = |args: &[&str]| {
         let mut command = std::process::Command::new(&exe);
         for (key, _) in std::env::vars_os() {
@@ -363,6 +534,7 @@ fn official_rclone_reads_the_private_provider_bridge() {
         serde_json::from_slice(&run(&["about", "TWODRIVE:", "--json"])).unwrap();
     assert_eq!(quota["used"], 10);
     assert_eq!(quota["total"], 1000);
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 0);
     assert_eq!(
         run(&[
             "cat",
@@ -371,5 +543,185 @@ fn official_rclone_reads_the_private_provider_bridge() {
             "--count=4"
         ]),
         b"3456"
+    );
+}
+
+#[test]
+fn failed_directory_read_is_not_reported_as_a_successful_empty_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"contents");
+    fixture.fail_listing.store(true, Ordering::SeqCst);
+    let bridge = Bridge::start(Backend::new(fixture), root.path()).unwrap();
+    let response = request(&client(), &bridge, "PROPFIND", "/")
+        .header("Depth", "1")
+        .send()
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        503,
+        "failed enumeration must be visible before DAV sends a success header"
+    );
+}
+
+#[test]
+fn repeated_directory_display_reuses_a_complete_snapshot() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"contents");
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let c = client();
+    for _ in 0..4 {
+        let response = request(&c, &bridge, "PROPFIND", "/")
+            .header("Depth", "1")
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), 207);
+        let xml = response.text().unwrap();
+        assert!(!xml.contains("opaque-id-never-a-path"));
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        assert_eq!(
+            document
+                .descendants()
+                .filter(|n| n.has_tag_name(("DAV:", "response")))
+                .count(),
+            2
+        );
+    }
+    assert_eq!(
+        fixture.listings.load(Ordering::SeqCst),
+        1,
+        "a fresh directory must not queue a new cloud operation on each display"
+    );
+}
+
+fn expire_display(bridge: &Bridge, age: Duration) {
+    let mut cache = bridge.fs.0.directories.lock().unwrap();
+    let sample = cache.samples.iter_mut().find(|s| s.path == "/").unwrap();
+    sample.checked = Instant::now() - age;
+    sample.attempted = Instant::now() - age;
+}
+fn wait_until(mut condition: impl FnMut() -> bool) {
+    let start = Instant::now();
+    while !condition() {
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "synthetic worker timed out"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+fn root_count(c: &reqwest::blocking::Client, bridge: &Bridge) -> usize {
+    let response = request(c, bridge, "PROPFIND", "/")
+        .header("Depth", "1")
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), 207);
+    let xml = response.text().unwrap();
+    let doc = roxmltree::Document::parse(&xml).unwrap();
+    doc.descendants()
+        .filter(|n| n.has_tag_name(("DAV:", "response")))
+        .count()
+        - 1
+}
+#[test]
+fn slow_background_refresh_does_not_block_display_and_shutdown_cancels_it() {
+    let root = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(b"data");
+    fixture.seed_root = true;
+    fixture.hold_listing.store(true, Ordering::SeqCst);
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let c = client();
+    assert_eq!(root_count(&c, &bridge), 1);
+    assert_eq!(
+        fixture.listings.load(Ordering::SeqCst),
+        0,
+        "reuse the already validated connection listing"
+    );
+    expire_display(&bridge, DIRECTORY_FRESH + Duration::from_secs(1));
+    assert_eq!(root_count(&c, &bridge), 1);
+    wait_until(|| fixture.listings.load(Ordering::SeqCst) == 1);
+    // The provider cannot finish until released. These must complete anyway.
+    for _ in 0..8 {
+        assert_eq!(root_count(&c, &bridge), 1);
+    }
+    assert_eq!(
+        fixture.listings.load(Ordering::SeqCst),
+        1,
+        "one refresh in flight"
+    );
+    let start = Instant::now();
+    drop(bridge);
+    assert!(start.elapsed() < Duration::from_secs(2));
+    assert_eq!(fixture.cancelled_listings.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 0);
+}
+#[test]
+fn refresh_failure_preserves_snapshot_but_a_verified_empty_result_replaces_it() {
+    let root = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(b"data");
+    fixture.seed_root = true;
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let c = client();
+    fixture.fail_listing.store(true, Ordering::SeqCst);
+    expire_display(&bridge, DIRECTORY_FRESH + Duration::from_secs(1));
+    assert_eq!(root_count(&c, &bridge), 1);
+    wait_until(|| {
+        fixture.listings.load(Ordering::SeqCst) == 1
+            && bridge.fs.0.directories.lock().unwrap().pending.is_empty()
+    });
+    assert_eq!(root_count(&c, &bridge), 1);
+    assert_eq!(
+        fixture.listings.load(Ordering::SeqCst),
+        1,
+        "failed refresh uses retry backoff"
+    );
+    fixture.fail_listing.store(false, Ordering::SeqCst);
+    fixture.empty_listing.store(true, Ordering::SeqCst);
+    expire_display(&bridge, DIRECTORY_FRESH + Duration::from_secs(1));
+    assert_eq!(root_count(&c, &bridge), 1);
+    wait_until(|| {
+        fixture.listings.load(Ordering::SeqCst) == 2
+            && bridge.fs.0.directories.lock().unwrap().pending.is_empty()
+    });
+    assert_eq!(
+        root_count(&c, &bridge),
+        0,
+        "a successful empty listing is authoritative"
+    );
+}
+#[test]
+fn expired_or_invalid_listings_are_not_exposed_as_complete_directory_contents() {
+    let root = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(b"data");
+    fixture.seed_root = true;
+    fixture.fail_listing.store(true, Ordering::SeqCst);
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    expire_display(&bridge, DIRECTORY_MAX_AGE + Duration::from_secs(1));
+    assert_eq!(
+        request(&client(), &bridge, "PROPFIND", "/")
+            .header("Depth", "1")
+            .send()
+            .unwrap()
+            .status(),
+        503
+    );
+    fixture.fail_listing.store(false, Ordering::SeqCst);
+    fixture.invalid_listing.store(true, Ordering::SeqCst);
+    assert_eq!(
+        request(&client(), &bridge, "PROPFIND", "/")
+            .header("Depth", "1")
+            .send()
+            .unwrap()
+            .status(),
+        503
+    );
+    assert!(
+        Bridge::start(
+            Backend::new(Fixture {
+                seed_root: true,
+                ..fixture
+            }),
+            root.path()
+        )
+        .is_err()
     );
 }

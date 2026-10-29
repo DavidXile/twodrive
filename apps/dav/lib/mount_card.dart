@@ -1,22 +1,31 @@
 import 'package:flutter/material.dart';
 import 'client.dart';
 
-Future<void> showMountHelp(BuildContext context) => showDialog<void>(
+Future<void> showMountHelp(
+  BuildContext context, {
+  StorageClient? client,
+}) => showDialog<void>(
   context: context,
   builder: (context) => AlertDialog(
     title: const Text('安装挂载组件'),
     scrollable: true,
-    content: const SizedBox(
+    content: SizedBox(
       width: 420,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Windows 挂载需要 WinFsp。请从官方页面下载安装程序，完成后回到此处重试；已有网盘登录会保留。'),
-          SizedBox(height: 12),
-          SelectableText('https://winfsp.dev/rel/'),
-          SizedBox(height: 12),
-          Text('默认只读；在网盘的连接权限中解锁后，客户端和挂载都允许编辑。'),
+          if (client?.status['mount_support']?['platform'] == 'linux')
+            const Text(
+              'Linux 挂载使用 FUSE 和 fusermount3。请确认已安装 fuse3 且可访问 /dev/fuse，已有网盘登录会保留。',
+            )
+          else ...[
+            const Text('Windows 挂载需要 WinFsp。请从官方页面下载安装程序，完成后回到此处重试；已有网盘登录会保留。'),
+            const SizedBox(height: 12),
+            const SelectableText('https://winfsp.dev/rel/'),
+          ],
+          const SizedBox(height: 12),
+          const Text('默认只读；在网盘的连接权限中解锁后，客户端和挂载都允许编辑。'),
         ],
       ),
     ),
@@ -46,7 +55,11 @@ class MountCard extends StatelessWidget {
     final p = c.profiles.where((p) => p['id'] == id).firstOrNull;
     final mount = id == null ? null : c.mountForProfile(id);
     final isMounted = mount != null;
-    final readOnly = mount?['writable'] != true;
+    final readOnly = mount?['writable'] is bool
+        ? mount!['writable'] != true
+        : mount?['readonly'] as bool? ??
+              p?['mount_readonly'] as bool? ??
+              c.readOnlyMount;
     return Card(
       color: Colors.white,
       child: Padding(
@@ -71,9 +84,13 @@ class MountCard extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             if (c.mountDriverMissing) ...[
-              const Text('尚未安装 WinFsp，安装后即可挂载。'),
+              Text(
+                c.status['mount_support']?['platform'] == 'linux'
+                    ? 'FUSE 组件不可用，请检查 fuse3 和 /dev/fuse。'
+                    : '尚未安装 WinFsp，安装后即可挂载。',
+              ),
               TextButton(
-                onPressed: () => showMountHelp(context),
+                onPressed: () => showMountHelp(context, client: c),
                 child: const Text('查看安装说明'),
               ),
             ],
@@ -112,7 +129,7 @@ class MountCard extends StatelessWidget {
             const SizedBox(height: 12),
             Text(
               readOnly
-                  ? '可浏览、打开和复制文件，不能在挂载内修改或删除。首次打开文件需下载到临时缓存，较大文件可能需要等待。切换网盘保留挂载；卸载或退出前，请先完成资源管理器中的文件复制。'
+                  ? '可浏览、打开和复制文件，不能在挂载内修改或删除。首次打开文件需下载到临时缓存，较大文件可能需要等待。切换网盘保留挂载；卸载或退出前，请先完成文件管理器中的文件复制。'
                   : '挂载按需下载。写入先保存到本地缓存，待上传完成后才代表服务器已收到。',
             ),
           ],

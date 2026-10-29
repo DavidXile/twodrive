@@ -37,7 +37,7 @@ class Engine:
 
     def call(self, op, args=None, failure=False, timeout=90):
         args = dict(args or {})
-        if op in ('list', 'mkdir', 'rename', 'delete', 'upload', 'download'):
+        if op in ('list', 'mkdir', 'rename', 'delete', 'upload', 'download', 'mount', 'unmount'):
             args.setdefault('profile', self.active_profile)
             args.setdefault('revision', self.active_revision)
         self.counter += 1

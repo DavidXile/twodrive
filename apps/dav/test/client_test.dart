@@ -71,7 +71,7 @@ void main() {
       c.updates.current = '0.1.4';
       c.updates.latest = DevelopmentRelease('0.1.5');
       await tester.pumpWidget(DavApp(client: c));
-      expect(find.text('Development 0.1.5 可用'), findsOneWidget);
+      expect(find.text('TwoDrive 0.1.5 可用'), findsOneWidget);
       expect(tester.takeException(), isNull);
       c.updates.latest = null;
       c.updates.managed = true;

@@ -108,6 +108,9 @@ impl CloudBackend for OpaqueProvider {
         Ok(self.files.lock().unwrap().get(id).map(|(m, _)| m.clone()))
     }
     fn get_metadata_by_path(&self, path: &str) -> anyhow::Result<Option<MetadataEntry>> {
+        if path == "/" {
+            return Ok(Some(MetadataEntry::new_dir("opaque-root", "/", 42, "1")));
+        }
         Ok(self.list_all()?.into_iter().find(|m| m.path == path))
     }
     fn download(&self, id: &str) -> anyhow::Result<Vec<u8>> {

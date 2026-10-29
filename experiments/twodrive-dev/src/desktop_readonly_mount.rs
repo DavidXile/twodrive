@@ -1,8 +1,17 @@
-//! Owned Windows read-only mount over a generic private Provider bridge.
+//! Owned account mount: Linux FUSE or Windows WinFsp over the Provider bridge.
 use super::*;
-use std::path::{Component, Prefix};
+use std::path::Component;
+#[cfg(windows)]
+use std::path::Prefix;
 use twodrive_dev::{rclone_drive, readonly_mount::Bridge, state::random_secret};
 
+fn lifecycle(stage: &str) {
+    if std::env::var_os("TWODRIVE_MOUNT_TRACE").is_some() {
+        eprintln!("mount-lifecycle pid={} {stage}", std::process::id());
+    }
+}
+
+#[cfg(windows)]
 pub(super) fn installed() -> bool {
     ["ProgramFiles(x86)", "ProgramFiles"]
         .into_iter()
@@ -13,10 +22,30 @@ pub(super) fn installed() -> bool {
                 .is_file()
         })
 }
+#[cfg(windows)]
 pub(super) fn support() -> Value {
     json!({"supported":true,"platform":"windows","driver_installed":installed(),"readonly":false,"editable":true,
         "help":"挂载权限跟随每个网盘的写入锁；解锁后可编辑。保存先进入本机缓存，请等待上传完成再卸载。",
         "driver_url":"https://winfsp.dev/rel/"})
+}
+#[cfg(target_os = "linux")]
+pub(super) fn installed() -> bool {
+    Path::new("/dev/fuse").exists()
+        && std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|p| p.join("fusermount3").is_file())
+        })
+}
+#[cfg(target_os = "linux")]
+pub(super) fn support() -> Value {
+    json!({"supported":true,"platform":"linux","driver_installed":installed(),"readonly":false,
+        "help":"Linux 挂载使用 FUSE 和 fusermount3；默认只读，输入本机写入密码解锁后可编辑。"})
+}
+fn missing_driver() -> &'static str {
+    if cfg!(windows) {
+        "请先安装 WinFsp，再重试挂载（https://winfsp.dev/rel/）"
+    } else {
+        "Linux 挂载需要可用的 /dev/fuse 和 fusermount3，请检查 fuse3 安装与访问权限"
+    }
 }
 pub(super) fn require_owner(profile: &Profile, args: &Value) -> anyhow::Result<()> {
     ensure!(
@@ -27,6 +56,7 @@ pub(super) fn require_owner(profile: &Profile, args: &Value) -> anyhow::Result<(
     Ok(())
 }
 fn validate_target(path: &Path, private: &Path, protected: &[PathBuf]) -> anyhow::Result<()> {
+    #[cfg(windows)]
     ensure!(
         path.is_absolute()
             && matches!(path.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_)))
@@ -36,10 +66,29 @@ fn validate_target(path: &Path, private: &Path, protected: &[PathBuf]) -> anyhow
                 .all(|p| matches!(p, Component::RootDir | Component::Normal(_))),
         "挂载目录必须是本机磁盘上的绝对路径"
     );
+    #[cfg(windows)]
     ensure!(
         !path.exists() && fs::symlink_metadata(path).is_err(),
         "挂载目录必须是尚不存在的子文件夹，请更换目录"
     );
+    #[cfg(target_os = "linux")]
+    {
+        ensure!(
+            path.is_absolute()
+                && path.file_name().is_some()
+                && path
+                    .components()
+                    .all(|c| matches!(c, Component::RootDir | Component::Normal(_))),
+            "挂载目录必须是规范的 Linux 绝对路径"
+        );
+        ensure!(!is_mount(path)?, "目录已被其他进程挂载");
+        if let Ok(meta) = fs::symlink_metadata(path) {
+            ensure!(
+                meta.is_dir() && !meta.is_symlink() && fs::read_dir(path)?.next().is_none(),
+                "Linux 挂载目录必须为空，且不能是链接或文件"
+            );
+        }
+    }
     // Canonicalize the deepest existing ancestor before creating anything.
     let parent = path.parent().context("挂载目录缺少父目录")?;
     let mut ancestor = parent;
@@ -61,10 +110,7 @@ fn validate_target(path: &Path, private: &Path, protected: &[PathBuf]) -> anyhow
     Ok(())
 }
 pub(super) fn start(app: &App, p: &Profile, cancel: &AtomicBool) -> anyhow::Result<Process> {
-    ensure!(
-        installed(),
-        "请先安装 WinFsp，再重试挂载（https://winfsp.dev/rel/）"
-    );
+    ensure!(installed(), "{}", missing_driver());
     rclone_drive::binary()?;
     validate_target(
         &p.mount_path,
@@ -100,7 +146,7 @@ pub(super) fn start(app: &App, p: &Profile, cancel: &AtomicBool) -> anyhow::Resu
         ensure!(!cancel.load(Ordering::Relaxed), "挂载已取消");
         ensure!(
             process.0.try_wait()?.is_none(),
-            "挂载启动失败，请检查 WinFsp 已安装、目录不存在且网络可用"
+            "挂载启动失败，请检查系统挂载组件、空目录和网络状态"
         );
         if let Ok(line) = receive.recv_timeout(Duration::from_millis(50)) {
             let reply: Value = serde_json::from_str(&line).context("挂载组件启动失败")?;
@@ -119,6 +165,7 @@ pub(super) fn start(app: &App, p: &Profile, cancel: &AtomicBool) -> anyhow::Resu
     }
 }
 pub(super) fn stop(process: &mut Process) -> anyhow::Result<()> {
+    lifecycle("parent-stop-request");
     if process.0.try_wait()?.is_some() {
         return Ok(());
     }
@@ -157,7 +204,7 @@ impl Control {
             .map_err(|_| anyhow::anyhow!("本机挂载组件暂不可用"))?;
         ensure!(
             response.status().is_success(),
-            "本机挂载操作失败，请检查目录或 WinFsp 安装"
+            "本机挂载操作失败，请检查目录或系统挂载组件"
         );
         // Never return arbitrary component errors/logs to public IPC.
         use std::io::Read;
@@ -199,7 +246,11 @@ fn start_component(
     command
         .args([
             "rcd",
-            "--config=NUL",
+            if cfg!(windows) {
+                "--config=NUL"
+            } else {
+                "--config=/dev/null"
+            },
             "--ask-password=false",
             "--log-level=ERROR",
             "--stats=0",
@@ -262,7 +313,10 @@ fn start_component(
     Ok((component, control))
 }
 pub(super) fn worker(app: &App, p: &Profile) -> anyhow::Result<()> {
-    ensure!(installed(), "WinFsp 尚未安装");
+    lifecycle("worker-start");
+    #[cfg(target_os = "linux")]
+    install_worker_termination_handler()?;
+    ensure!(installed(), "{}", missing_driver());
     validate_target(
         &p.mount_path,
         &app.state.dir,
@@ -271,7 +325,13 @@ pub(super) fn worker(app: &App, p: &Profile) -> anyhow::Result<()> {
     let session = app.state.read(&format!("session-{}.json", p.id))?;
     let (backend, binding) =
         providers::restore_session(p, &session, &app.state.dir.join("paused"))?;
-    let cache = State::new(app.mount_state(p).join("windows-readonly"))?;
+    let cache = State::new(app.mount_state(p).join(if cfg!(windows) {
+        "windows-readonly"
+    } else {
+        "linux-readonly"
+    }))?;
+    #[cfg(target_os = "linux")]
+    let _target = LinuxTarget::prepare(&p.mount_path)?;
     let _lock = cache.run_lock()?;
     let writable = backend.manual_upload_supported();
     let persistent = State::new(account_cache(app, p, &binding).join("vfs"))?;
@@ -290,23 +350,41 @@ pub(super) fn worker(app: &App, p: &Profile) -> anyhow::Result<()> {
         &bridge.token,
         &persistent.dir,
     )?;
-    control.call("mount/mount", json!({"fs":"TWODRIVE:","mountPoint":p.mount_path,"mountOpt":{"VolName":"TwoDrive"},"vfsOpt":{"ReadOnly":!writable,"CacheMode":if writable{3}else{0},"WriteBack":"0s","DirCacheTime":"5s","CacheMaxAge":"24h","CachePollInterval":"5s"}}))?;
+    let options = json!({"fs":"TWODRIVE:","mountPoint":p.mount_path,"mountOpt":{"VolName":"TwoDrive"},"vfsOpt":{"ReadOnly":!writable,"CacheMode":if writable{3}else{0},"WriteBack":"0s","DirCacheTime":"5s","CacheMaxAge":"24h","CachePollInterval":"5s"}});
+    #[cfg(target_os = "linux")]
+    let options = {
+        ensure!(
+            !WORKER_TERMINATING.load(Ordering::Relaxed),
+            "挂载所属引擎已退出"
+        );
+        let mut options = options;
+        options["mountOpt"]["DeviceName"] = json!(_target.device);
+        options
+    };
+    control.call("mount/mount", options)?;
     println!(
         "{}",
         json!({"ready":true,"profile":p.id,"revision":p.revision})
     );
     std::io::stdout().flush()?;
+    lifecycle("worker-ready");
     let (send, receive) = mpsc::channel();
     thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
+            lifecycle("worker-input-line");
             if line.is_ok_and(|line| line == "unmount") && send.send(()).is_err() {
                 return;
             }
         }
         let _ = send.send(()); // Parent pipe closed: never leave a native mount.
     });
+    let mut unmount_requested = false;
     let mut sample = Instant::now() - Duration::from_secs(2);
     loop {
+        #[cfg(target_os = "linux")]
+        if WORKER_TERMINATING.load(Ordering::Relaxed) {
+            unmount_requested = true;
+        }
         ensure!(component.0.try_wait()?.is_none(), "挂载组件已退出");
         if writable && sample.elapsed() >= Duration::from_secs(1) {
             let result = control.call("vfs/stats", json!({}));
@@ -324,24 +402,114 @@ pub(super) fn worker(app: &App, p: &Profile) -> anyhow::Result<()> {
         }
         match receive.recv_timeout(Duration::from_millis(200)) {
             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                if writable && dirty_cache(&persistent.dir)? > 0 {
-                    continue;
-                }
-                if control
-                    .call("mount/unmount", json!({"mountPoint":p.mount_path}))
-                    .is_ok()
-                {
-                    let _ = control.call("core/quit", json!({}));
-                    persistent.save("status.json", &json!({"pending":0,"error":false}))?;
-                    break;
-                }
+                unmount_requested = true;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
+        if unmount_requested {
+            if writable && dirty_cache(&persistent.dir)? > 0 {
+                continue;
+            }
+            lifecycle("worker-unmount-rpc");
+            let mut unmounted = control
+                .call("mount/unmount", json!({"mountPoint":p.mount_path}))
+                .is_ok();
+            // A lost reply may follow an accepted unmount. Only this private,
+            // PID-verified component owns its mount table; never detach an
+            // arbitrary filesystem or treat an unknown component as success.
+            if !unmounted {
+                let empty = control
+                    .call("mount/listmounts", json!({}))
+                    .ok()
+                    .is_some_and(|reply| {
+                        reply["mountPoints"].as_array().is_some_and(Vec::is_empty)
+                    });
+                #[cfg(target_os = "linux")]
+                let detached = !is_mount(&p.mount_path)?;
+                #[cfg(windows)]
+                let detached = !p.mount_path.exists();
+                unmounted = empty && detached;
+            }
+            if unmounted {
+                persistent.save("status.json", &json!({"pending":0,"error":false}))?;
+                lifecycle("worker-unmount-ack");
+                let _ = control.call("core/quit", json!({}));
+                lifecycle("worker-component-quit-ack");
+                break;
+            }
+            lifecycle("worker-unmount-retry");
+            // Keep the request latched. An early Linux unmount can fail while
+            // the FUSE mount is settling; waiting for another stdin command
+            // would strand the parent until its stop budget expires.
+            thread::sleep(Duration::from_millis(200));
+        }
     }
     drop(component);
+    lifecycle("worker-component-dropped");
     drop(bridge);
+    lifecycle("worker-bridge-dropped");
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+static WORKER_TERMINATING: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "linux")]
+extern "C" fn request_worker_termination(_: libc::c_int) {
+    WORKER_TERMINATING.store(true, Ordering::Relaxed);
+}
+#[cfg(target_os = "linux")]
+fn install_worker_termination_handler() -> anyhow::Result<()> {
+    // PR_SET_PDEATHSIG must request orderly unmount, not bypass Rust cleanup.
+    ensure!(
+        unsafe {
+            libc::signal(
+                libc::SIGTERM,
+                request_worker_termination as *const () as libc::sighandler_t,
+            )
+        } != libc::SIG_ERR,
+        "无法安装挂载退出处理"
+    );
+    Ok(())
+}
+#[cfg(target_os = "linux")]
+struct LinuxTarget {
+    path: PathBuf,
+    created: bool,
+    device: String,
+}
+#[cfg(target_os = "linux")]
+impl LinuxTarget {
+    fn prepare(path: &Path) -> anyhow::Result<Self> {
+        let created = !path.exists();
+        if created {
+            fs::create_dir(path)?;
+        }
+        Ok(Self {
+            path: path.into(),
+            created,
+            device: format!("twodrive-ro-{}", random_secret()),
+        })
+    }
+}
+#[cfg(target_os = "linux")]
+impl Drop for LinuxTarget {
+    fn drop(&mut self) {
+        // A dead FUSE can fail stat with ENOTCONN and still be kernel-mounted.
+        // Only detach the exact filesystem bearing this worker's random source.
+        if linux_mount_info(&self.path).is_ok_and(|entry| {
+            entry.is_some_and(|(_, kind, source)| kind == "fuse.rclone" && source == self.device)
+        }) {
+            let _ = Command::new("fusermount3")
+                .arg("-u")
+                .arg("--")
+                .arg(&self.path)
+                .status();
+        }
+        // Never remove a pre-existing directory or detach an unknown mount.
+        if self.created && is_mount(&self.path).is_ok_and(|mounted| !mounted) {
+            let _ = fs::remove_dir(&self.path);
+        }
+    }
 }
 
 fn account_cache(app: &App, p: &Profile, binding: &str) -> PathBuf {
@@ -396,7 +564,10 @@ pub(super) fn cache_status(app: &App, p: &Profile) -> anyhow::Result<Value> {
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or(json!({}));
     let recovery = twodrive_dev::mount_write::recovery_status(&root.join("write-recovery"))?;
-    let mut directories = vec![app.mount_state(p).join("windows-accounts")];
+    let mut directories = vec![
+        app.mount_state(p)
+            .join(twodrive_dev::mount_write::account_cache_directory()),
+    ];
     if let Ok(d) = providers::descriptor(&p.kind)
         && let Some(key) = d["write_recovery_field"].as_str()
     {
@@ -412,6 +583,38 @@ pub(super) fn cache_status(app: &App, p: &Profile) -> anyhow::Result<Value> {
 mod tests {
     use super::*;
     #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_mount_target_preserves_existing_data_and_owned_empty_directory() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let private = root.path().join("private");
+        fs::create_dir(&private).unwrap();
+        let saved = root.path().join("keep.txt");
+        fs::write(&saved, b"user bytes").unwrap();
+        assert!(validate_target(&saved, &private, &[]).is_err());
+        assert_eq!(fs::read(&saved).unwrap(), b"user bytes");
+        assert!(validate_target(&private.join("nested/mount"), &private, &[]).is_err());
+        assert!(!private.join("nested").exists());
+        assert!(validate_target(&root.path().join("../escape"), &private, &[]).is_err());
+        let linked = root.path().join("linked");
+        symlink(&private, &linked).unwrap();
+        assert!(validate_target(&linked, &private, &[]).is_err());
+        assert!(validate_target(&linked.join("nested/view"), &private, &[]).is_err());
+        let occupied = root.path().join("occupied");
+        fs::create_dir(&occupied).unwrap();
+        fs::write(occupied.join("keep"), b"keep").unwrap();
+        assert!(validate_target(&occupied, &private, &[]).is_err());
+        let empty = root.path().join("existing-empty");
+        fs::create_dir(&empty).unwrap();
+        validate_target(&empty, &private, &[]).unwrap();
+        drop(LinuxTarget::prepare(&empty).unwrap());
+        assert!(empty.is_dir());
+        let created = root.path().join("new-view");
+        validate_target(&created, &private, &[]).unwrap();
+        drop(LinuxTarget::prepare(&created).unwrap());
+        assert!(!created.exists());
+    }
+    #[test]
     fn unmount_owner_is_bound_to_revision_without_requiring_a_live_backend() {
         let profile: Profile = serde_json::from_value(
             json!({"id":"owner","revision":"r1","kind":"dav","name":"Owner"}),
@@ -422,6 +625,7 @@ mod tests {
         assert!(require_owner(&profile, &json!({"profile":"owner","revision":"old"})).is_err());
     }
     #[test]
+    #[cfg(windows)]
     fn native_mount_target_never_covers_existing_or_private_data() {
         let root = tempfile::tempdir().unwrap();
         let private = root.path().join("private");
@@ -448,6 +652,7 @@ mod tests {
         assert!(target.parent().unwrap().is_dir() && !target.exists());
     }
     #[test]
+    #[cfg(windows)]
     fn owned_worker_receives_unmount_and_is_reaped() {
         let mut command = Command::new("powershell.exe");
         command.args([

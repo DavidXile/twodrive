@@ -174,3 +174,7 @@ Ship protocol/auth/contract/UI/recovery regressions and clearly separate mock, i
 通用 `set_access {profile,revision,mode,password?}` 从后端保存的原配置复制，仅修改权限及新 revision；密码校验通过后才解锁。在线切换先检查传输、卸载该账号，再非交互恢复相同 binding、发布实际新 worker recipe 并重新挂载。其余连接和选中浏览对象保留；失败尽量恢复原配置及挂载，不能改账号凭据。所有 provider 工厂按本机锁决定实际 writable，直接保存 writable=true 不能绕过密码。许可绑定 profile/revision/本次进程运行，底层变异和进度回调重复检查，读取不受写锁影响。重启恢复为已连接、已挂载的锁定只读状态。
 
 Windows 持久缓存以账号 binding 摘要隔离，重启前的版本声明持久化，不能将旧缓存重新绑定新账号。未完成原生写入阻止普通权限切换/卸载/退出；异常结束仍保留编辑及版本，重启不越过写入锁自动上传。恢复说明及本地验证范围见 [Windows 写入锁](windows-write-lock.md)。Linux FUSE 的既有条件上传约束没有放宽，本轮可编辑挂载适配与验证范围为 Windows。
+
+## Zorin 本机适配补充（2026-10-29）
+
+PR47 0346913 的写入锁、启动恢复和存储根隔离在本机Linux适配中保留。条件上传继续使用原Linux持久FUSE路径；仅支持手动编辑的提供者使用私有Provider桥与Linux FUSE组件，缓存置于身份隔离的linux-accounts中。默认启动锁定，只读显示缓存不作为编辑版本依据。实际合成FUSE验证和真实云端验证的区别见TD-20261029-32；不将iCloud/百度的手动版本核对宣传为服务端原子CAS。

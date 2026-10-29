@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'updates.dart';
+import 'desktop_preferences.dart';
 import 'file_manager.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -24,6 +25,17 @@ class StorageClient extends ChangeNotifier {
     updates.addListener(notifyListeners);
   }
   final updates = UpdateChecker();
+  final preferences = DesktopPreferences();
+  bool get autoMountOnConnect => preferences.autoMountOnConnect;
+
+  Future<void> setAutoMountOnConnect(bool enabled) async {
+    await preferences.setAutoMountOnConnect(enabled);
+    notifyListeners();
+    if (enabled && connected && canMount && !mounted && !busy) {
+      await mountToggle();
+    }
+  }
+
   Process? _process;
   final Map<int, Completer<Json>> _pending = {};
   final List<Transfer> transfers = [];
@@ -63,6 +75,9 @@ class StorageClient extends ChangeNotifier {
   bool quitting = false;
   int _id = 0;
   int _browseGeneration = 0;
+  int _selectionEpoch = 0;
+  String? _selectingProfile;
+  int? _directoryRequest;
   int? activeId;
   Timer? _poll;
   bool get connected => status['connected'] == true;
@@ -234,7 +249,7 @@ class StorageClient extends ChangeNotifier {
   String get trayTitle {
     final connection = connected ? ' · $providerLabel · $account' : '';
     final host = hosting ? ' · 正在共享 ${sharing['settings']?['name'] ?? ''}' : '';
-    return 'TwoDrive Development$connection$host${!connected && !hosting ? ' · 未连接' : ''}';
+    return 'TwoDrive$connection$host${!connected && !hosting ? ' · 未连接' : ''}';
   }
 
   String get trayState => error != null || syncError
@@ -273,6 +288,7 @@ class StorageClient extends ChangeNotifier {
     String? nativeFixtureRoot,
   }) async {
     try {
+      await preferences.load(File('$state/desktop-settings.json'));
       final p = await Process.start(engine, [
         '--state',
         state,
@@ -402,6 +418,9 @@ class StorageClient extends ChangeNotifier {
     _engineOperations.clear();
     status = {};
     entries = [];
+    _views.clear();
+    _selectingProfile = null;
+    _selectionEpoch++;
     _browseGeneration++;
     error = message;
     for (final pending in _pending.values) {
@@ -472,9 +491,18 @@ class StorageClient extends ChangeNotifier {
         'revision': profiles
             .where((p) => p['id'] == previous)
             .firstOrNull?['revision'],
+        'checked': _directoryChecked,
+        'stale': _directoryStale,
       };
     }
     status = next;
+    _views.removeWhere(
+      (id, view) =>
+          !isProfileConnected(id) ||
+          !profiles.any(
+            (p) => p['id'] == id && p['revision'] == view['revision'],
+          ),
+    );
     if (connected) selected = status['profile'] as String? ?? selected;
     if (!connected ||
         previous != status['profile'] ||
@@ -482,8 +510,9 @@ class StorageClient extends ChangeNotifier {
       final view = connected ? _views[status['profile']] : null;
       entries = ((view?['entries'] as List?) ?? []).cast<Json>();
       path = view?['path'] as String? ?? '/';
+      _directoryChecked = view?['checked'] as DateTime?;
       _browseGeneration++;
-      _directoryStale = true;
+      _directoryStale = view?['stale'] as bool? ?? true;
     }
     _pollError = status['gateway_failed'] == true
         ? '配对连接已断开，请重连。'
@@ -546,10 +575,12 @@ class StorageClient extends ChangeNotifier {
   // behind a long engine operation. A timer tick must never enqueue another.
   Future<void> refreshStatus() => _statusRefresh ??= _readStatus();
   Future<void> _readStatus() async {
+    final epoch = _selectionEpoch;
     try {
       final next = await request('status');
-      if (!_disposed) _applyStatus(next);
+      if (!_disposed && epoch == _selectionEpoch) _applyStatus(next);
     } catch (e) {
+      if (epoch != _selectionEpoch) return;
       if (!_disposed) _pollError = '$e'.replaceFirst('Bad state: ', '');
       rethrow;
     } finally {
@@ -568,8 +599,11 @@ class StorageClient extends ChangeNotifier {
     try {
       if (busy || !available || quitting || _disposed) return;
       final previous = selected;
+      final epoch = _selectionEpoch;
       await refreshStatus();
-      if (_disposed || quitting || !available) return;
+      if (_disposed || quitting || !available || epoch != _selectionEpoch) {
+        return;
+      }
       if (selected != previous) await loadProfiles();
       if (!busy &&
           connected &&
@@ -612,12 +646,37 @@ class StorageClient extends ChangeNotifier {
     }
   }
 
-  Future<void> connect([String? profileId]) => action(
-    isProfileConnected(profileId ?? selected ?? '') ? '正在切换网盘' : '正在登录并连接',
-    () async {
-      final id = profileId ?? selected;
+  // Optional maintenance restart: restore exactly the previously online IDs,
+  // serially through this GUI-owned engine, then restore the selected account.
+  Future<void> restoreConnectionsAtStartup(Iterable<String> ids) async {
+    final original = selected;
+    final known = profiles.map((p) => p['id'] as String).toSet();
+    final order = ids.where(known.contains).toSet()..remove(original);
+    if (original != null && known.contains(original)) order.add(original);
+    final failed = <String>[];
+    for (final id in order) {
+      await connect(id);
+      if (error != null) failed.add(id);
+    }
+    if (failed.isNotEmpty) {
+      error = '部分连接未能恢复，请在连接页重试。';
+      notifyListeners();
+    }
+  }
+
+  Future<void> connect([String? profileId]) {
+    final id = profileId ?? selected;
+    if (id != null && isProfileConnected(id)) {
+      if (status['profile'] == id && _selectingProfile == null) {
+        return Future.value();
+      }
+      return _selectConnected(id);
+    }
+    return action('正在登录并连接', () async {
       if (id == null) throw StateError('请先添加连接');
       if (connected && status['profile'] == id) return;
+      _selectionEpoch++;
+      _selectingProfile = null;
       _browseGeneration++;
       activeId = ++_id;
       try {
@@ -630,14 +689,70 @@ class StorageClient extends ChangeNotifier {
               .map((e) => {...e as Json, ...target})
               .toList();
         }
-        _directoryStale = true;
+        _directoryStale = result['entries'] is! List;
+        if (!_directoryStale) _directoryChecked = DateTime.now();
+        if (Platform.isLinux &&
+            autoMountOnConnect &&
+            connected &&
+            canMount &&
+            !mounted) {
+          activity = '已连接，正在自动挂载';
+          activeId = ++_id;
+          notifyListeners();
+          await request('mount', {
+            'profile': id,
+            'revision': profile?['revision'],
+          }, activeId);
+          await refreshStatus();
+        }
+        if (result['entries'] is List) {
+          _directoryChecked = DateTime.now();
+          _directoryStale = false;
+        }
       } finally {
         await refreshStatus();
         if (connected) selected = status['profile'] as String;
         notifyListeners();
       }
-    },
-  );
+    });
+  }
+
+  Future<void> _selectConnected(String id) async {
+    final revision = profiles
+        .where((p) => p['id'] == id)
+        .firstOrNull?['revision'];
+    if (revision == null || !available || quitting || _disposed) return;
+    final epoch = ++_selectionEpoch;
+    _selectingProfile = id;
+    _browseGeneration++; // Invalidate the previous display before cancelling it.
+    error = null;
+    final oldRead = _directoryRequest;
+    if (oldRead != null) {
+      try {
+        await request('cancel', {'id': oldRead});
+      } catch (_) {
+        /* selection reports errors */
+      }
+    }
+    try {
+      final result = await request('select', {'id': id, 'revision': revision});
+      if (_disposed || quitting || epoch != _selectionEpoch) return;
+      if (!profiles.any((p) => p['id'] == id && p['revision'] == revision)) {
+        throw StateError('连接配置已更新，请刷新后重试');
+      }
+      _applyStatus(Map<String, dynamic>.from(result['status'] as Map));
+    } catch (e) {
+      if (!_disposed && epoch == _selectionEpoch) {
+        error = '$e'.replaceFirst('Bad state: ', '');
+      }
+    } finally {
+      if (!_disposed && epoch == _selectionEpoch) {
+        _selectingProfile = null;
+        notifyListeners();
+        unawaited(pollNow());
+      }
+    }
+  }
 
   /// Restore every previously authenticated account once per app process.
   /// The engine refuses browser login here and validates revision and binding.
@@ -732,6 +847,8 @@ class StorageClient extends ChangeNotifier {
 
   Future<void> disconnect([String? profileId]) => action('正在断开', () async {
     final id = profileId ?? selected;
+    _selectionEpoch++;
+    _selectingProfile = null;
     await request('disconnect', {'id': ?id});
     if (id == selected) {
       _browseGeneration++;
@@ -745,20 +862,36 @@ class StorageClient extends ChangeNotifier {
   Future<void> readDirectory(String target) async {
     final generation = ++_browseGeneration;
     final identity = this.target;
-    final result = await request('list', {'path': target, ...identity});
-    if (generation != _browseGeneration ||
-        !available ||
-        _disposed ||
-        quitting) {
-      return;
+    final requestId = ++_id;
+    _directoryRequest = requestId;
+    try {
+      final result = await request('list', {
+        'path': target,
+        ...identity,
+      }, requestId);
+      if (generation != _browseGeneration ||
+          !available ||
+          _disposed ||
+          quitting) {
+        return;
+      }
+      _directoryChecked = DateTime.now();
+      _directoryStale = false;
+      path = target;
+      entries = (result['entries'] as List)
+          .map((e) => {...e as Json, ...identity})
+          .toList();
+      notifyListeners();
+    } catch (_) {
+      if (generation == _browseGeneration &&
+          !_disposed &&
+          available &&
+          !quitting) {
+        rethrow;
+      }
+    } finally {
+      if (_directoryRequest == requestId) _directoryRequest = null;
     }
-    _directoryChecked = DateTime.now();
-    _directoryStale = false;
-    path = target;
-    entries = (result['entries'] as List)
-        .map((e) => {...e as Json, ...identity})
-        .toList();
-    notifyListeners();
   }
 
   Future<void> mutate(String op, Json args) => action('正在更新文件', () async {

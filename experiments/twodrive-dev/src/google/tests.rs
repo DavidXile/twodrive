@@ -516,3 +516,18 @@ fn snapshot_uses_one_inventory_for_nested_directories() {
     assert!(entries.iter().any(|m| m.path == "/one/two/file"));
     assert_eq!(f.list_requests.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn malformed_aggregate_usage_never_becomes_zero() {
+    let f = Fixture::new();
+    for invalid in [
+        json!("-1"),
+        json!("18446744073709551616"),
+        json!("unknown"),
+        json!(true),
+    ] {
+        *f.quota.lock().unwrap() = json!({"quotaType":"LIMITED","quotaBytesTotal":"100","quotaBytesUsedAggregate":invalid});
+        assert!(f.drive.storage_usage(&mut || Ok(())).is_err());
+    }
+    assert_eq!(f.list_requests.load(Ordering::Relaxed), 0);
+}

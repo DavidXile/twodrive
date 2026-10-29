@@ -50,10 +50,12 @@ pub fn mount<B: CloudBackend + Clone>(
     twodrive_dev::state::private_dir(&cache)?;
     let db = Database::new(state.dir.join("mount.sqlite3"));
     db.init()?;
-    sync_delta_metadata(&db, &backend)?;
     if writable {
+        // The writable mount already refreshes metadata on its recovery thread.
+        // Serving the local cache must not wait for a complete cloud scan.
         return mount_backend(target, db, cache, backend, 4);
     }
+    sync_delta_metadata(&db, &backend)?;
     let fs = TwoDriveFs::new(db.clone(), cache, backend.clone())?;
     let (stop, stopped) = mpsc::channel();
     let refresh = thread::spawn(move || {
@@ -78,6 +80,116 @@ pub fn mount<B: CloudBackend + Clone>(
     let _ = refresh.join();
     result?;
     Ok(())
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+    use std::sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    use twodrive_backend::{CloudBackend, DeltaResult, MockBackend};
+    use twodrive_core::MetadataEntry;
+
+    #[derive(Clone)]
+    struct DelayedMetadata {
+        inner: Arc<MockBackend>,
+        started: Arc<AtomicBool>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+    impl CloudBackend for DelayedMetadata {
+        fn list_all(&self) -> anyhow::Result<Vec<MetadataEntry>> {
+            self.inner.list_all()
+        }
+        fn list_delta(&self, cursor: Option<&str>) -> anyhow::Result<DeltaResult> {
+            self.started.store(true, Ordering::SeqCst);
+            let (lock, wake) = &*self.release;
+            let mut allowed = lock.lock().unwrap();
+            while !*allowed {
+                allowed = wake.wait(allowed).unwrap();
+            }
+            self.inner.list_delta(cursor)
+        }
+        fn download(&self, id: &str) -> anyhow::Result<Vec<u8>> {
+            self.inner.download(id)
+        }
+        fn upload(&self, path: &str, content: Vec<u8>) -> anyhow::Result<MetadataEntry> {
+            self.inner.upload(path, content)
+        }
+        fn create_folder(&self, path: &str) -> anyhow::Result<MetadataEntry> {
+            self.inner.create_folder(path)
+        }
+        fn rename(&self, id: &str, path: &str) -> anyhow::Result<MetadataEntry> {
+            self.inner.rename(id, path)
+        }
+        fn delete(&self, id: &str) -> anyhow::Result<()> {
+            self.inner.delete(id)
+        }
+    }
+    fn mounted(path: &std::path::Path) -> bool {
+        std::process::Command::new("mountpoint")
+            .arg("-q")
+            .arg(path)
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+    #[test]
+    #[ignore = "requires /dev/fuse; uses only private synthetic metadata"]
+    fn writable_mount_does_not_wait_for_cloud_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("mount");
+        let state = State::new(temp.path().join("state")).unwrap();
+        let started = Arc::new(AtomicBool::new(false));
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let backend = DelayedMetadata {
+            inner: Arc::new(MockBackend::new()),
+            started: started.clone(),
+            release: release.clone(),
+        };
+        let thread_target = target.clone();
+        let runner = thread::spawn(move || {
+            mount(
+                state,
+                thread_target,
+                backend,
+                "synthetic-delayed-metadata".into(),
+                true,
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline
+            && !(started.load(Ordering::SeqCst) && mounted(&target))
+        {
+            thread::sleep(Duration::from_millis(25));
+        }
+        let ready_before_metadata = mounted(&target);
+        let metadata_started = started.load(Ordering::SeqCst);
+        let (lock, wake) = &*release;
+        *lock.lock().unwrap() = true;
+        wake.notify_all();
+        let cleanup_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !mounted(&target)
+            && !runner.is_finished()
+            && std::time::Instant::now() < cleanup_deadline
+        {
+            thread::sleep(Duration::from_millis(25));
+        }
+        if mounted(&target) {
+            let unmounted = std::process::Command::new("fusermount3")
+                .arg("-u")
+                .arg(&target)
+                .status()
+                .unwrap();
+            assert!(unmounted.success(), "synthetic mount cleanup failed");
+        }
+        runner.join().unwrap().unwrap();
+        assert!(metadata_started, "synthetic cloud refresh was not reached");
+        assert!(
+            ready_before_metadata,
+            "writable mount waited for the initial cloud scan"
+        );
+    }
 }
 
 #[cfg(test)]

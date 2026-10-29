@@ -53,6 +53,10 @@ class MultiClient extends StorageClient {
     int? requestId,
   ]) async {
     calls.add({'op': op, ...args, 'request_id': requestId});
+    if (op == 'select') {
+      active = args['id'] as String;
+      return {'retained': true, 'status': engineStatus()};
+    }
     if (op == 'connect') {
       active = args['id'] as String;
       return {'retained': true};

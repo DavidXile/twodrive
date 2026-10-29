@@ -21,7 +21,7 @@ pub fn descriptor() -> Value {
     json!({"id":"onedrive","label":"OneDrive","account_label":"Microsoft 账号","icon":"cloud",
         "identity_fields":["onedrive_state"],"network_modes":["system"],"protected_paths":["onedrive_state"],"mount_startup_timeout_seconds":600,
         "help":"保存后点击连接，在系统浏览器登录 Microsoft 账号。支持个人/组织 OneDrive；使用独立登录数据。",
-        "capabilities":{"upload":true,"conditional_upload":true,"mkdir":true,"rename":true,"delete":true,"backup":true},
+        "capabilities":{"mount":true,"upload":true,"conditional_upload":true,"mkdir":true,"rename":true,"delete":true,"backup":true},
         "fields":[{"key":"onedrive_state","label":"私有登录目录（留空自动创建）","advanced":true}]})
 }
 pub fn prepare(p: &mut Profile, state: &State) -> anyhow::Result<()> {

@@ -17,11 +17,19 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+pub fn account_cache_directory() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "linux-accounts"
+    } else {
+        "windows-accounts"
+    }
+}
+
 /// A profile's durable native cache follows the provider's storage identity,
 /// never its permission revision. Old identities remain available for recovery.
 pub fn account_cache(mount_state: &Path, binding: &str) -> std::path::PathBuf {
     mount_state
-        .join("windows-accounts")
+        .join(account_cache_directory())
         .join(format!("{:x}", Sha256::digest(binding.as_bytes())))
 }
 

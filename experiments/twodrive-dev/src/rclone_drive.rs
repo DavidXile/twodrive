@@ -325,6 +325,8 @@ pub struct RcloneDrive {
     pass: String,
     route: String,
     pub binding: String,
+    initial_root: Vec<MetadataEntry>,
+    root_checked: Instant,
     writable: bool,
     _account_lock: File,
     cancel: Arc<AtomicBool>,
@@ -386,17 +388,20 @@ impl RcloneDrive {
             &["lsjson", "twodrive:", "--no-mimetype", "--max-depth=1"],
             cancel,
         )?;
-        let backend = Self {
+        let mut backend = Self {
             state,
             exe,
             pass,
             route: route.into(),
             binding: auth.binding,
+            initial_root: Vec::new(),
+            root_checked: Instant::now(),
             writable: false,
             _account_lock: account_lock,
             cancel: Arc::new(AtomicBool::new(false)),
         };
-        backend.entries("/", &values)?;
+        backend.initial_root = backend.entries("/", &values)?;
+        backend.root_checked = Instant::now();
         Ok(backend)
     }
 
@@ -503,6 +508,9 @@ impl RcloneDrive {
 }
 
 impl Provider for RcloneDrive {
+    fn initial_directory_listing(&self) -> Option<(Instant, Vec<MetadataEntry>)> {
+        Some((self.root_checked, self.initial_root.clone()))
+    }
     fn storage_usage(
         &self,
         check: &mut dyn FnMut() -> anyhow::Result<()>,
@@ -827,6 +835,8 @@ mod tests {
             pass: "synthetic".into(),
             route: "direct".into(),
             binding: "icloud:synthetic:epoch-a".into(),
+            initial_root: Vec::new(),
+            root_checked: Instant::now(),
             writable: false,
             _account_lock: lock,
             cancel: Arc::new(AtomicBool::new(false)),

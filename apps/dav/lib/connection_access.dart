@@ -115,7 +115,7 @@ class _AccessDialogState extends State<_AccessDialog> {
               ),
               const SizedBox(height: 16),
               const Text(
-                '解锁仅对这个网盘生效。客户端和 D 盘挂载共用权限；重启后重新锁定，仍可浏览和下载。切换时会重新挂载，请先关闭正在编辑的文件。',
+                '解锁仅对这个网盘生效。客户端和文件管理器挂载共用权限；重启后重新锁定，仍可浏览和下载。切换时会重新挂载，请先关闭正在编辑的文件。',
               ),
               if (mode == 'editable') ...[
                 const SizedBox(height: 16),

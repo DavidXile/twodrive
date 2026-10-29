@@ -21,9 +21,7 @@ Future<void> main(List<String> args) async {
     return index >= 0 && index + 1 < args.length ? args[index + 1] : fallback;
   }
 
-  await windowManager.setTitle(
-    option('--window-title', 'TwoDrive Development'),
-  );
+  await windowManager.setTitle(option('--window-title', 'TwoDrive'));
 
   final root = File(Platform.resolvedExecutable).parent.path;
   final client = StorageClient();
@@ -42,7 +40,12 @@ Future<void> main(List<String> args) async {
     nativeFixtureRoot: fixtureRoot.isEmpty ? null : fixtureRoot,
   );
   if (fixtureRoot.isEmpty) {
-    unawaited(client.restoreOnStartup());
+    final restore = option('--restore-connections', '');
+    unawaited(
+      restore.isEmpty
+          ? client.restoreOnStartup()
+          : client.restoreConnectionsAtStartup(restore.split(',')),
+    );
   }
   if (args.contains('--background') && trayReady) {
     await windowManager.hide();
@@ -55,7 +58,7 @@ class DavApp extends StatelessWidget {
   final bool desktop;
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'TwoDrive Development',
+    title: 'TwoDrive',
     debugShowCheckedModeBanner: false,
     theme: appTheme(),
     home: Workspace(client: client, desktop: desktop),

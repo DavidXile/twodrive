@@ -97,7 +97,7 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('connection-access')));
       await tester.pumpAndSettle();
       expect(find.text('客户端和挂载权限'), findsOneWidget);
-      expect(find.textContaining('客户端和 D 盘挂载共用权限'), findsOneWidget);
+      expect(find.textContaining('客户端和文件管理器挂载共用权限'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
       c.dispose();
     },

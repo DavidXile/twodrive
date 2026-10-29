@@ -117,8 +117,8 @@ impl App {
             args["revision"].as_str() == Some(&profile.revision),
             "挂载所属连接或配置已改变，请刷新后重试"
         );
-        #[cfg(windows)]
-        windows_mount::require_owner(profile, args)?;
+        #[cfg(any(windows, all(target_os = "linux", feature = "mount")))]
+        native_mount::require_owner(profile, args)?;
         if mount {
             self.file_context(args)?;
         }
@@ -202,7 +202,7 @@ impl App {
                 .unwrap_or(json!({"active":[]}));
             states.push(json!({"profile":p.id,"revision":p.revision,"name":p.name,
                 "account_name":self.account_name(&p),"connected":connected,"mounted":mounted,
-                "mount_path":p.mount_path,"writable":twodrive_dev::write_lock::unlocked(&self.state,&p),"mount_failed":mount_failed,"backup_failed":backup_failed,
+                "mount_path":p.mount_path,"mount_readonly":!twodrive_dev::write_lock::unlocked(&self.state,&p),"writable":twodrive_dev::write_lock::unlocked(&self.state,&p),"mount_failed":mount_failed,"backup_failed":backup_failed,
                 "gateway_failed":gateway_failed,"route_fallback":fallback,
                 "cache":self.cache(&p,false)?,"backup":backup::report(&self.state,&p)?,"mount_activity":activity}));
         }
@@ -223,7 +223,10 @@ impl App {
         let ids: Vec<_> = self
             .jobs
             .iter()
-            .filter(|(_, job)| job.kind == "quota" && profile.is_none_or(|p| p == job.profile))
+            .filter(|(_, job)| {
+                matches!(job.kind.as_str(), "quota" | "list")
+                    && profile.is_none_or(|p| p == job.profile)
+            })
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
@@ -265,6 +268,18 @@ impl App {
         } else {
             false
         }
+    }
+    pub(super) fn select_profile(&mut self, args: &Value) -> anyhow::Result<Value> {
+        let id = string(args, "id")?;
+        let profile = self.profile(id)?;
+        ensure!(
+            args["revision"].as_str() == Some(profile.revision.as_str()),
+            "连接配置已改变，请刷新后重试"
+        );
+        self.refresh_inactive();
+        self.select_online(id)?.context("账号已断开，请先连接")?;
+        // Selection never invokes provider authentication, enumeration or mount.
+        Ok(json!({"retained":true,"status":self.status()?}))
     }
     pub(super) fn select_online(&mut self, id: &str) -> anyhow::Result<Option<Value>> {
         if !self.online(id) {
@@ -388,7 +403,7 @@ impl App {
         let kind = req.op.clone();
         let job_cancel = cancel.clone();
         let job = thread::spawn(move || {
-            let observable = notifications && req.op != "quota";
+            let observable = notifications && !matches!(req.op.as_str(), "quota" | "list");
             if observable {
                 emit(
                     &out,
@@ -667,6 +682,31 @@ mod tests {
         assert!(app.online("a"));
         assert!(!app.online("b"));
         assert_eq!(app.public_profiles()["profiles"][0]["connected"], true);
+    }
+    #[test]
+    fn explicit_selection_reuses_online_sessions_and_rejects_offline_or_stale_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = fixture(root.path());
+        for (id, revision) in [("a", "rev-a"), ("b", "rev-b"), ("a", "rev-a")] {
+            let result = app
+                .select_profile(&json!({"id":id,"revision":revision}))
+                .unwrap();
+            assert_eq!(result["retained"], true);
+            assert_eq!(result["status"]["profile"], id);
+            assert!(app.online("a") && app.online("b"));
+        }
+        assert!(
+            app.select_profile(&json!({"id":"b","revision":"rev-a"}))
+                .is_err()
+        );
+        assert_eq!(app.connected.as_ref().unwrap().id, "a");
+        app.disconnect_profile("b").unwrap();
+        let error = app
+            .select_profile(&json!({"id":"b","revision":"rev-b"}))
+            .unwrap_err();
+        assert!(error.to_string().contains("账号已断开"));
+        assert!(app.online("a") && !app.online("b"));
+        assert_eq!(app.connected.as_ref().unwrap().id, "a");
     }
     #[test]
     fn switching_during_a_transfer_preserves_owner_and_disconnect_refuses_until_done() {

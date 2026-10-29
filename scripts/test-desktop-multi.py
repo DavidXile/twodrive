@@ -101,7 +101,7 @@ def run(args):
 
                 send(500, 'download', file_args('a', output=str(root/'a.txt')))
                 assert started.wait(8), 'download did not reach gate'
-                send(501, 'connect', {'id': 'b'})
+                send(501, 'select', {'id': 'b', 'revision': revisions['b']})
                 send(502, 'status')
                 send(503, 'disconnect', {'id': 'a'})
                 send(504, 'quota', file_args('a'))
@@ -128,6 +128,26 @@ def run(args):
                 assert not replies[507]['ok'] and not replies[508]['ok']
                 assert (root/'a.txt').read_bytes() == payloads['a']
                 report['checks']['no_clobber_and_revision_guards_retained'] = True
+                list_hold.set()
+                send(520, 'list', file_args('b', path='/'))
+                assert list_started.wait(8), 'directory read did not reach selection gate'
+                send(521, 'select', {'id': 'a', 'revision': revisions['a']})
+                send(522, 'status')
+                receive({521, 522})
+                assert 520 not in replies, 'gated directory must still be pending'
+                assert replies[521]['ok'] and replies[521]['result']['status']['profile'] == 'a'
+                assert replies[522]['result']['profile'] == 'a'
+                send(523, 'cancel', {'id': 520})
+                receive({523})
+                list_release.set()
+                receive({520})
+                assert not replies[520]['ok'], 'cancelled display result must not publish'
+                list_hold.clear(); list_started.clear(); list_release.clear()
+                send(524, 'select', {'id': 'b', 'revision': revisions['b']})
+                receive({524})
+                assert replies[524]['ok']
+                report['checks']['selection_and_status_do_not_wait_for_gated_directory'] = True
+                report['checks']['cancelled_directory_cannot_publish_late_result'] = True
                 send(509, 'disconnect', {'id': 'a'})
                 send(510, 'status')
                 receive({509, 510})
