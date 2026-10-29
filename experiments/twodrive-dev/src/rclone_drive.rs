@@ -439,6 +439,47 @@ impl RcloneDrive {
         serde_json::from_slice(&bytes).context("网盘组件返回的元数据格式无效")
     }
 
+    fn metadata_with(
+        &self,
+        path: &str,
+        query: impl FnOnce(&[&str]) -> anyhow::Result<Value>,
+    ) -> anyhow::Result<Option<MetadataEntry>> {
+        valid_path(path)?;
+        if path == "/" {
+            return self
+                .entry("/", &serde_json::json!({"ID":"root","IsDir":true,"Size":0}))
+                .map(Some);
+        }
+        // Rooting an Fs at an existing directory makes lsjson --stat return
+        // Rclone's synthetic root (no ID, generated timestamp). Resolve the
+        // child from one shallow parent listing instead, retaining the real
+        // object identity/version for both directories and files.
+        let (parent, _) = path.rsplit_once('/').context("invalid cloud path")?;
+        let parent = if parent.is_empty() { "/" } else { parent };
+        let remote = format!("twodrive:{}", parent.trim_start_matches('/'));
+        match query(&["lsjson", &remote, "--no-mimetype", "--max-depth=1"]) {
+            Ok(value) => {
+                let mut matches = self
+                    .entries(parent, &value)?
+                    .into_iter()
+                    .filter(|entry| entry.path == path || entry.path.eq_ignore_ascii_case(path));
+                let entry = matches.next();
+                ensure!(
+                    matches.next().is_none(),
+                    "目录含大小写歧义，拒绝不确定的文件"
+                );
+                Ok(entry)
+            }
+            Err(e)
+                if e.downcast_ref::<RemoteError>()
+                    .is_some_and(|e| matches!(e.code, 3 | 4)) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     fn entry(&self, path: &str, value: &Value) -> anyhow::Result<MetadataEntry> {
         valid_path(path)?;
         let directory = value["IsDir"].as_bool().context("missing directory flag")?;
@@ -586,23 +627,7 @@ impl CloudBackend for RcloneDrive {
         bail!("iCloud 适配器未提供可靠增量流，请重新读取完整索引")
     }
     fn get_metadata_by_path(&self, path: &str) -> anyhow::Result<Option<MetadataEntry>> {
-        valid_path(path)?;
-        if path == "/" {
-            return self
-                .entry("/", &serde_json::json!({"ID":"root","IsDir":true,"Size":0}))
-                .map(Some);
-        }
-        let remote = format!("twodrive:{}", &path[1..]);
-        match self.query(&["lsjson", &remote, "--stat", "--no-mimetype"]) {
-            Ok(value) => self.entry(path, &value).map(Some),
-            Err(e)
-                if e.downcast_ref::<RemoteError>()
-                    .is_some_and(|e| matches!(e.code, 3 | 4)) =>
-            {
-                Ok(None)
-            }
-            Err(e) => Err(e),
-        }
+        self.metadata_with(path, |args| self.query(args))
     }
     fn get_metadata(&self, id: &str) -> anyhow::Result<Option<MetadataEntry>> {
         let snapshot = Snapshot::decode(id, &self.binding)?;
@@ -832,6 +857,106 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
         };
         (temp, backend)
+    }
+    #[test]
+    fn directory_metadata_uses_real_parent_entry_instead_of_synthetic_fs_root() {
+        let (_temp, backend) = fixture();
+        let listed = json!({"ID":"stable-folder#v1","Name":"folder","Path":"folder",
+            "Size":-1,"IsDir":true,"ModTime":"2000-01-01T00:00:00Z"});
+        // Official Rclone StatJSON(remote="") emits a synthetic root without
+        // an ID. NewFs roots an existing directory at that path, even though
+        // its parent listing has a genuine iCloud directory ID and version.
+        let expected = backend.entry("/folder", &listed).unwrap();
+        let actual = backend
+            .metadata_with("/folder", |args| {
+                if args.contains(&"--stat") {
+                    Ok(json!({"Path":"","Name":"","Size":-1,"IsDir":true,
+                    "ModTime":"2026-10-29T00:00:00Z"}))
+                } else {
+                    assert_eq!(
+                        args,
+                        ["lsjson", "twodrive:", "--no-mimetype", "--max-depth=1"]
+                    );
+                    Ok(json!([listed]))
+                }
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual.remote_id, expected.remote_id);
+        assert_eq!(actual.etag, expected.etag);
+        assert!(actual.is_dir);
+    }
+    #[test]
+    fn shallow_parent_lookup_keeps_nested_identity_and_rejects_partial_or_ambiguous_results() {
+        let (_temp, backend) = fixture();
+        let rows = json!([
+            {"ID":"folder#v1","Name":"子目录","Path":"子目录","IsDir":true,"Size":-1},
+            {"ID":"file#v2","Name":"File.txt","Path":"File.txt","IsDir":false,"Size":12}
+        ]);
+        let lookup = |path: &str, values: Value| {
+            backend.metadata_with(path, |args| {
+                assert_eq!(
+                    args,
+                    [
+                        "lsjson",
+                        "twodrive:parent",
+                        "--no-mimetype",
+                        "--max-depth=1"
+                    ]
+                );
+                Ok(values)
+            })
+        };
+        assert!(
+            lookup("/parent/子目录", rows.clone())
+                .unwrap()
+                .unwrap()
+                .is_dir
+        );
+        let file = lookup("/parent/File.txt", rows.clone()).unwrap().unwrap();
+        assert!(!file.is_dir);
+        assert_eq!(
+            lookup("/parent/file.txt", rows.clone())
+                .unwrap()
+                .unwrap()
+                .remote_id,
+            file.remote_id
+        );
+        assert!(lookup("/parent/missing", rows.clone()).unwrap().is_none());
+        let mut changed = rows.clone();
+        changed[1]["ID"] = json!("different-file#v3");
+        assert_ne!(
+            lookup("/parent/File.txt", changed)
+                .unwrap()
+                .unwrap()
+                .remote_id,
+            file.remote_id
+        );
+        let mut malformed = rows.clone();
+        malformed
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"IsDir":true}));
+        assert!(lookup("/parent/File.txt", malformed).is_err());
+        let mut ambiguous = rows;
+        ambiguous.as_array_mut().unwrap().push(
+            json!({"ID":"other","Name":"FILE.txt","Path":"FILE.txt","IsDir":false,"Size":12}),
+        );
+        assert!(lookup("/parent/file.txt", ambiguous).is_err());
+        assert!(
+            backend
+                .metadata_with("/parent/child", |_| Err(anyhow::anyhow!(
+                    "synthetic transport failure"
+                )))
+                .is_err()
+        );
+        assert!(
+            backend
+                .metadata_with("/", |_| panic!("root lookup must stay local"))
+                .unwrap()
+                .unwrap()
+                .is_dir
+        );
     }
     #[test]
     fn manual_writes_are_opt_in_and_never_claim_atomic_conditional_support() {
