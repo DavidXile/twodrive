@@ -350,7 +350,14 @@ pub(super) fn worker(app: &App, p: &Profile) -> anyhow::Result<()> {
         &bridge.token,
         &persistent.dir,
     )?;
-    let options = json!({"fs":"TWODRIVE:","mountPoint":p.mount_path,"mountOpt":{"VolName":"TwoDrive"},"vfsOpt":{"ReadOnly":!writable,"CacheMode":if writable{3}else{0},"WriteBack":"0s","DirCacheTime":"5s","CacheMaxAge":"24h","CachePollInterval":"5s"}});
+    // Linux navigation should not discard a just-loaded read-only directory
+    // after a brief visit elsewhere. Edits retain the short coherence window.
+    let directory_cache_time = if cfg!(target_os = "linux") && !writable {
+        "30s"
+    } else {
+        "5s"
+    };
+    let options = json!({"fs":"TWODRIVE:","mountPoint":p.mount_path,"mountOpt":{"VolName":"TwoDrive"},"vfsOpt":{"ReadOnly":!writable,"CacheMode":if writable{3}else{0},"WriteBack":"0s","DirCacheTime":directory_cache_time,"CacheMaxAge":"24h","CachePollInterval":"5s"}});
     #[cfg(target_os = "linux")]
     let options = {
         ensure!(

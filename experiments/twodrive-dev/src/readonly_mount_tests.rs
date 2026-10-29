@@ -16,6 +16,7 @@ struct Fixture {
     invalid_listing: Arc<AtomicBool>,
     cancelled_listings: Arc<AtomicUsize>,
     seed_root: bool,
+    child_directories: usize,
     metadata_reads: Arc<AtomicUsize>,
     change_during_read: Arc<AtomicBool>,
     hold_download: Arc<AtomicBool>,
@@ -33,6 +34,7 @@ impl Fixture {
             invalid_listing: Arc::default(),
             cancelled_listings: Arc::default(),
             seed_root: false,
+            child_directories: 0,
             metadata_reads: Arc::default(),
             change_during_read: Arc::default(),
             hold_download: Arc::default(),
@@ -53,6 +55,11 @@ impl Fixture {
         let mut data = self.data.lock().unwrap();
         data.0 = bytes.to_vec();
         data.1 += 1;
+    }
+    fn child(&self, path: &str) -> Option<MetadataEntry> {
+        let number = path.strip_prefix("/folder-")?.parse::<usize>().ok()?;
+        (number < self.child_directories)
+            .then(|| MetadataEntry::new_dir(format!("folder-object-{number}"), path, 1, "1"))
     }
 }
 impl CloudBackend for Fixture {
@@ -88,7 +95,7 @@ impl CloudBackend for Fixture {
             metadata.remote_id = "slow-object".into();
             Some(metadata)
         } else {
-            None
+            self.child(path)
         })
     }
     fn download(&self, _: &str) -> anyhow::Result<Vec<u8>> {
@@ -303,7 +310,7 @@ impl Provider for Fixture {
         path: &str,
         check: &mut dyn FnMut() -> anyhow::Result<()>,
     ) -> anyhow::Result<Vec<MetadataEntry>> {
-        ensure!(path == "/");
+        ensure!(path == "/" || self.child(path).is_some());
         self.listings.fetch_add(1, Ordering::SeqCst);
         loop {
             if let Err(error) = check() {
@@ -319,13 +326,20 @@ impl Provider for Fixture {
             !self.fail_listing.load(Ordering::SeqCst),
             "synthetic listing failure"
         );
-        Ok(if self.empty_listing.load(Ordering::SeqCst) {
-            vec![]
-        } else if self.invalid_listing.load(Ordering::SeqCst) {
-            vec![self.meta(), self.meta()]
-        } else {
-            vec![self.meta()]
-        })
+        Ok(
+            if path != "/" || self.empty_listing.load(Ordering::SeqCst) {
+                vec![]
+            } else if self.invalid_listing.load(Ordering::SeqCst) {
+                vec![self.meta(), self.meta()]
+            } else {
+                let mut entries = vec![self.meta()];
+                entries.extend(
+                    (0..self.child_directories)
+                        .map(|number| self.child(&format!("/folder-{number}")).unwrap()),
+                );
+                entries
+            },
+        )
     }
     fn upload_controlled(
         &self,
@@ -676,6 +690,45 @@ fn repeated_directory_display_reuses_a_complete_snapshot() {
         1,
         "a fresh directory must not queue a new cloud operation on each display"
     );
+}
+
+#[test]
+fn browsing_many_children_keeps_the_active_parent_directory_cached() {
+    let root = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(b"contents");
+    fixture.child_directories = 96;
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let c = client();
+    assert_eq!(root_count(&c, &bridge), 97);
+    for number in 0..fixture.child_directories {
+        assert_eq!(
+            request(&c, &bridge, "PROPFIND", &format!("/folder-{number}"))
+                .header("Depth", "1")
+                .send()
+                .unwrap()
+                .status(),
+            207
+        );
+    }
+    let before = fixture.listings.load(Ordering::SeqCst);
+    fixture.hold_listing.store(true, Ordering::SeqCst);
+    let returned = request(&c, &bridge, "PROPFIND", "/")
+        .header("Depth", "1")
+        .timeout(Duration::from_millis(700))
+        .send();
+    fixture.hold_listing.store(false, Ordering::SeqCst);
+    assert_eq!(
+        returned
+            .expect("returning to the active parent refetched a slow cloud listing")
+            .status(),
+        207
+    );
+    assert_eq!(
+        fixture.listings.load(Ordering::SeqCst),
+        before,
+        "child-count probes must not evict and reload their active parent"
+    );
+    assert!(bridge.fs.0.directories.lock().unwrap().samples.len() <= 64);
 }
 
 fn expire_display(bridge: &Bridge, age: Duration) {

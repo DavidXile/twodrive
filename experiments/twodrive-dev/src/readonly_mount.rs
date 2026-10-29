@@ -39,6 +39,7 @@ const DIRECTORY_FRESH: Duration = Duration::from_secs(30);
 const DIRECTORY_MAX_AGE: Duration = Duration::from_secs(300);
 const DIRECTORY_RETRY: Duration = Duration::from_secs(10);
 const DIRECTORY_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
+const DIRECTORY_CACHE_LIMIT: usize = 64;
 tokio::task_local! {
     static DISPLAY_METADATA_ONLY: bool;
     static PREPARED_DIRECTORY: Option<(String, DirectoryEntries)>;
@@ -187,14 +188,19 @@ impl RemoteFs {
             directories
                 .samples
                 .retain(|sample| sample.checked.elapsed() < DIRECTORY_MAX_AGE);
-            if let Some(sample) = directories
+            if let Some(index) = directories
                 .samples
                 .iter()
-                .find(|sample| Some(sample.path.as_str()) == parent)
+                .position(|sample| Some(sample.path.as_str()) == parent)
             {
                 // Only a complete, validated shallow listing can prove that
                 // a child (including file-manager probes) does not exist.
-                return sample.entries.get(path).cloned().ok_or(FsError::NotFound);
+                // Child-count/attribute probes actively use their parent too;
+                // keep it hot instead of evicting it after visiting siblings.
+                let sample = directories.samples.remove(index).unwrap();
+                let entry = sample.entries.get(path).cloned().ok_or(FsError::NotFound);
+                directories.samples.push_front(sample);
+                return entry;
             }
         }
         self.entry(path)
@@ -230,7 +236,7 @@ impl RemoteFs {
             entries,
         });
         while cache.samples.len() > 1
-            && (cache.samples.len() > 16
+            && (cache.samples.len() > DIRECTORY_CACHE_LIMIT
                 || cache.samples.iter().map(|s| s.entries.len()).sum::<usize>() > 100000)
         {
             cache.samples.pop_back();
@@ -299,6 +305,10 @@ impl RemoteFs {
                         cache.pending.remove(path);
                     }
                 }
+                // A successful display hit is a use, not merely an insertion
+                // timestamp. Background child probes must not age it out.
+                let sample = cache.samples.remove(index).unwrap();
+                cache.samples.push_front(sample);
                 return Ok(entries);
             }
             if cache.pending.contains(path) {

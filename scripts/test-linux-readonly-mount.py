@@ -68,6 +68,25 @@ def run(args):
             shutil.copyfile(mounts[0]/name,copied)
             assert copied.read_bytes()==payloads['a']
             checks['native_copy_to_local_preserves_complete_verified_bytes']=True
+            # A short visit elsewhere must not turn a cached listing into a
+            # blocking remote operation. Pause only our disposable server.
+            os.kill(servers[0].pid,signal.SIGSTOP)
+            probe=None;stalled=False
+            try:
+                time.sleep(6)
+                probe=subprocess.Popen([sys.executable,'-c',
+                    'import os,sys; assert len(os.listdir(sys.argv[1])) == 1',str(mounts[0])],
+                    stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+                try:probe.communicate(timeout=2)
+                except subprocess.TimeoutExpired:stalled=True
+            finally:
+                os.kill(servers[0].pid,signal.SIGCONT)
+                if probe is not None:
+                    try:probe.communicate(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        probe.kill();probe.communicate(timeout=10)
+            assert probe is not None and probe.returncode==0 and not stalled, 'Cached navigation waited for a slow remote after only six seconds'
+            checks['native_return_to_cached_directory_avoids_slow_remote']=True
             try:(mounts[0]/'forbidden-write').write_bytes(b'must not upload')
             except OSError:pass
             else:raise AssertionError('Read-only FUSE accepted a write')
