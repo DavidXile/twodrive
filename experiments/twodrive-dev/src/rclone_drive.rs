@@ -34,6 +34,8 @@ const JSON_LIMIT: usize = 16 * 1024 * 1024;
 
 mod gui;
 mod quota;
+#[cfg(target_os = "linux")]
+mod read_view;
 mod write;
 pub use gui::action as gui_auth;
 
@@ -421,6 +423,10 @@ impl RcloneDrive {
         args: &[&str],
         check: &mut dyn FnMut() -> anyhow::Result<()>,
     ) -> anyhow::Result<Value> {
+        #[cfg(target_os = "linux")]
+        if !self.writable {
+            return self.query_read_view(args, check);
+        }
         let _lock = wait_for_operation(&self.state, Duration::from_secs(45), || {
             ensure!(!self.cancel.load(Ordering::Relaxed), "连接已取消");
             check()
@@ -824,7 +830,7 @@ pub fn sign_out(state: State) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
-    fn fixture() -> (tempfile::TempDir, RcloneDrive) {
+    pub(super) fn fixture() -> (tempfile::TempDir, RcloneDrive) {
         let temp = tempfile::tempdir().unwrap();
         let state = State::new(temp.path().join("private")).unwrap();
         let lock = private_lock(&state, "auth.lock").unwrap();
@@ -843,6 +849,55 @@ mod tests {
         };
         (temp, backend)
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn readonly_metadata_does_not_wait_behind_a_content_operation() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, mut backend) = fixture();
+        backend
+            .state
+            .save(
+                MANIFEST,
+                &Auth {
+                    kind: "icloud".into(),
+                    binding: backend.binding.clone(),
+                    ready: true,
+                },
+            )
+            .unwrap();
+        let config = [HEADER, b"\nSYNTHETIC ENCRYPTED FIXTURE ONLY"].concat();
+        twodrive_core::private_file::write_secret(&backend.state.dir.join(CONFIG), &config)
+            .unwrap();
+        let exe = root.path().join("synthetic-component");
+        fs::write(
+            &exe,
+            b"#!/usr/bin/python3\nimport sys\nassert 'lsjson' in sys.argv\nprint('[]')\n",
+        )
+        .unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o700)).unwrap();
+        backend.exe = exe;
+        let held = private_lock(&backend.state, "operation.lock").unwrap();
+        held.try_lock_exclusive().unwrap();
+        let start = Instant::now();
+        let result = backend.list_directory_checked("/", &mut || {
+            ensure!(
+                start.elapsed() < Duration::from_millis(700),
+                "synthetic display deadline"
+            );
+            Ok(())
+        });
+        drop(held);
+        assert!(
+            result.is_ok(),
+            "metadata waited behind unrelated content: {:?}",
+            result.err()
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert_eq!(
+            twodrive_core::private_file::read_secret(&backend.state.dir.join(CONFIG)).unwrap(),
+            config
+        );
+    }
     #[test]
     fn manual_writes_are_opt_in_and_never_claim_atomic_conditional_support() {
         let (_root, backend) = fixture();
@@ -858,6 +913,7 @@ mod tests {
     #[test]
     fn directory_wait_honors_request_cancel_without_cancelling_the_connection() {
         let (_temp, backend) = fixture();
+        let backend = backend.with_writable(true);
         let held = private_lock(&backend.state, "operation.lock").unwrap();
         held.try_lock_exclusive().unwrap();
         let start = Instant::now();
@@ -1130,6 +1186,53 @@ mod tests {
         assert!(
             !String::from_utf8_lossy(&fs::read(state.dir.join(CONFIG)).unwrap()).contains("memory")
         );
+        #[cfg(target_os = "linux")]
+        {
+            // Exercise the actual component and encrypted read-view transport
+            // against an empty memory remote, never an Apple account. Normal
+            // connect still rejects this remote as iCloud (asserted above).
+            let account_lock = private_lock(&state, "auth.lock").unwrap();
+            FileExt::try_lock_shared(&account_lock).unwrap();
+            let binding = "icloud:synthetic-transport:epoch".to_owned();
+            state
+                .save(
+                    MANIFEST,
+                    &Auth {
+                        kind: "icloud".into(),
+                        binding: binding.clone(),
+                        ready: true,
+                    },
+                )
+                .unwrap();
+            let backend = RcloneDrive {
+                state: state.clone(),
+                exe: exe.clone(),
+                pass: pass.clone(),
+                route: "direct".into(),
+                binding,
+                initial_root: Vec::new(),
+                root_checked: Instant::now(),
+                writable: false,
+                _account_lock: account_lock,
+                cancel: Arc::new(AtomicBool::new(false)),
+            };
+            let before = fs::read(state.dir.join(CONFIG)).unwrap();
+            let held = private_lock(&state, "operation.lock").unwrap();
+            held.try_lock_exclusive().unwrap();
+            let start = Instant::now();
+            let value = backend
+                .query_read_view(&["lsjson", "twodrive:", "--no-mimetype"], &mut || {
+                    ensure!(
+                        start.elapsed() < Duration::from_secs(3),
+                        "synthetic metadata deadline"
+                    );
+                    Ok(())
+                })
+                .unwrap();
+            drop(held);
+            assert_eq!(value, json!([]));
+            assert_eq!(fs::read(state.dir.join(CONFIG)).unwrap(), before);
+        }
         let file = temp.path().join("generated.bin");
         let bytes = vec![42u8; 2 * 1024 * 1024];
         fs::write(&file, &bytes).unwrap();

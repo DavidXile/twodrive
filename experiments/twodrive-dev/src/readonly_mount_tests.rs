@@ -25,6 +25,7 @@ struct Fixture {
     quota_reads: Arc<AtomicUsize>,
     fail_quota: Arc<AtomicBool>,
     quota_scale: u64,
+    include_slow_file: bool,
 }
 impl Fixture {
     fn new(bytes: &[u8]) -> Self {
@@ -47,6 +48,7 @@ impl Fixture {
             quota_reads: Arc::default(),
             fail_quota: Arc::default(),
             quota_scale: 1,
+            include_slow_file: false,
         }
     }
     fn meta(&self) -> MetadataEntry {
@@ -350,6 +352,9 @@ impl Provider for Fixture {
                 vec![self.meta(), self.meta()]
             } else {
                 let mut entries = vec![self.meta()];
+                if self.include_slow_file {
+                    entries.push(self.get_metadata("slow-object")?.unwrap());
+                }
                 entries.extend(
                     (0..self.child_directories)
                         .map(|number| self.child(&format!("/folder-{number}")).unwrap()),
@@ -996,6 +1001,7 @@ fn native_statfs_and_gio_return_while_cloud_quota_is_stalled() {
     let root = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(b"synthetic mount bytes");
     fixture.quota_scale = 1024 * 1024;
+    fixture.include_slow_file = true;
     fixture.hold_quota.store(true, Ordering::SeqCst);
     let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
     let target = root.path().join("mount");
@@ -1051,7 +1057,7 @@ fn native_statfs_and_gio_return_while_cloud_quota_is_stalled() {
     // Include GIO's filesystem classification, not just readdir. This was the
     // missing native boundary in the earlier directory navigation regression.
     let mut probe = Command::new("/usr/bin/python3").args(["-c",
-        "import os,sys; from gi.repository import Gio; p=sys.argv[1]; assert len(os.listdir(p)) == 1; os.statvfs(p); Gio.File.new_for_path(p).query_filesystem_info('filesystem::remote,filesystem::type',None)"])
+        "import os,sys; from gi.repository import Gio; p=sys.argv[1]; assert len(os.listdir(p)) == 2; os.statvfs(p); Gio.File.new_for_path(p).query_filesystem_info('filesystem::remote,filesystem::type',None)"])
         .arg(&target).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     let start = Instant::now();
     let timely = loop {
@@ -1080,4 +1086,36 @@ fn native_statfs_and_gio_return_while_cloud_quota_is_stalled() {
         "native quota must eventually replace the unknown fallback"
     );
     assert_eq!(fixture.downloads.load(Ordering::SeqCst), 0);
+    fixture.hold_download.store(true, Ordering::SeqCst);
+    let mut reader = Command::new("/usr/bin/python3").args(["-c", "import pathlib,sys; assert pathlib.Path(sys.argv[1]).read_bytes() == b'synthetic mount bytes'"])
+        .arg(target.join("slow.bin")).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    wait_until(|| fixture.download_started.load(Ordering::SeqCst));
+    thread::sleep(Duration::from_millis(150));
+    let mut listing = Command::new("/usr/bin/python3")
+        .args([
+            "-c",
+            "import os,sys; assert len(os.listdir(sys.argv[1])) == 2",
+        ])
+        .arg(&target)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let timely = loop {
+        if let Some(status) = listing.try_wait().unwrap() {
+            break status.success();
+        }
+        if start.elapsed() >= Duration::from_millis(1500) {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    fixture.hold_download.store(false, Ordering::SeqCst);
+    assert!(reader.wait().unwrap().success());
+    let listed = listing.wait().unwrap();
+    assert!(
+        timely && listed.success(),
+        "native directory navigation waited for an unrelated held content read"
+    );
 }

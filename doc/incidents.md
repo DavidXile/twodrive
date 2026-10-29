@@ -44,6 +44,39 @@
 已核实的提交、Release 和详细调查链接；尚未提交或发布时明确注明。
 ```
 
+## TD-20261029-37：Linux iCloud 元数据等待同账号内容操作
+
+- 日期：2026-10-29；状态：同账号内容锁造成的元数据排队已修正，隔离旧失败/新通过，Linux 本机已更新；完整真实导航体验仍待核对。
+- 关联：TD-20261029-36 更新后文件系统属性查询保持快速，但文件管理器打开后的目录枚举仍可能等待。容量修复不是本条所有剩余等待的解释。
+
+### 症状、触发与证据
+
+本机私有桥根目录的有限属性和空正文 allprop 请求均在毫秒级返回；原生组件诊断栈同时显示 WebDAV 列目录和内容打开等待 HTTP。未将函数等待栈误判为原生文件锁死锁。独立合成 Provider 的实际 FUSE 回归中，慢内容读取不阻塞缓存目录，故不能直接归因为所有 FUSE 挂载或原生组件文件锁。
+
+iCloud 后端的路径/目录查询与内容下载持有同一个账号操作锁。新增回归持有该锁模拟内容读取，旧生产代码的目录查询在700毫秒受控期限内失败，修正后返回成功。该实验确认串行排队机制，不能据此量化真实云端每段延迟。
+
+### 修复与约束
+
+仅 Linux 且处于只读状态的 iCloud 元数据查询使用每次请求的私密加密配置副本；不在整个元数据网络请求期间持有账号内容操作锁。0700临时目录、0600文件、本用户所有权、O_NOFOLLOW、加密头和大小限制均检查，禁止明文/链接/公开文件，子进程结束后删除副本。不会共享或输出密码，也不会创建新的登录。
+
+子进程若刷新配置，先检查当前登录代次与真实账号身份，再非阻塞获取原有操作锁；只有原配置仍逐字节等于复制时才原子保存，锁忙或已有新配置时放弃本次配置回写，不覆盖新状态。绑定改变时拒绝结果。生命周期账号共享锁仍阻止重新登录/退出并发。内容下载、下载后版本/大小核验和所有写入原有锁规则保留；Windows路径及Linux已解锁编辑路径不改。
+
+核对[固定组件的配置保存实现](https://github.com/rclone/rclone/blob/v1.75.2/fs/config/configfile/configfile.go)后，额外覆盖旧文件移走、新文件就位之间的短文件名空隙：仅NotFound重试，最多200毫秒，不读取备份作为当前凭据。首轮测试发现临时目录默认权限不符合State的0700要求，程序在复制凭据前拒绝；改为创建时显式指定0700，没有放宽State检查。
+
+### 验证与本机恢复
+
+完整Rust库111项、引擎25项、可编辑桥6项通过，7项默认忽略不计入通过；严格release Clippy、格式与三个release程序通过。新回归覆盖账号内容锁下的只读元数据、配置更新比较保存、不覆盖较新配置、登录绑定改变、锁忙不释放他人锁、权限/明文/链接拒绝、失败后清理和配置名空隙有界重试。保留可编辑查询等待时的请求取消与原有内容版本校验。
+
+固定官方组件3项显式离线回归通过，其中实际加密配置副本可在账号操作锁被占用时列出合成memory远端；正常连接仍拒绝该远端冒充iCloud。显式实际FUSE/GIO/后台容量恢复及慢内容并发导航通过；可编辑FUSE1项、双账号只读FUSE8组通过。全部合成文件，零Apple写入或私人文件下载测试；没有声称托管CI或Windows重构建通过。
+
+本机先正常关闭文件管理器、检查挂载占用/待写队列，备份旧程序与私密加密配置后更新三个后端。四个原有挂载恢复，配置、账号绑定、密钥、前端、图标和偏好保留。真实目录/属性已做打开窗口前后采样，并跨过30秒目录缓存和60秒清理间隔：目录枚举约16–32毫秒、文件系统属性约64毫秒，打开后的文件管理器D-Bus响应保持亚毫秒。打开前应用尚未运行，未将该次Ping失败误判为卡死。不将元数据和Ping采样当作所有预览/内容读取体验已验收；实际来回切换等待用户复测。
+
+### 防复发与交付
+
+保留 `readonly_metadata_does_not_wait_behind_a_content_operation` 与 `read_view` 保护回归，以及原生慢容量/慢内容并发检查。不要取消canonical配置保存锁，也不要将只读快照用于写入许可或真实GET有效性。首次未缓存目录、Apple响应延迟、文件预览和内容下载仍有实际网络成本。
+
+源码继续通过独立 Ready for review [PR #50](https://github.com/LumiaBlack51/twodrive/pull/50) 交付；提交前完成脱敏扫描。本地账号、配置副本、凭据、文件名/容量、进程原始栈与部署报告不上传。
+
 ## TD-20261029-36：目录已缓存，但返回 iCloud 仍在等待文件系统属性
 
 - 日期：2026-10-29；状态：同步容量阻塞机制已修正，旧回归失败/新回归通过，Linux 本机已更新；完整文件管理器导航体验待用户复测。
@@ -76,7 +109,7 @@
 
 ### 防复发与交付
 
-保留 `cold_slow_quota_does_not_block_filesystem_attributes`、`quota_refresh_is_coalesced_retains_last_success_and_retries_without_blocking`、`shutdown_cancels_a_pending_quota_refresh_and_joins_its_worker` 及显式 `native_statfs_and_gio_return_while_cloud_quota_is_stalled`。同时测试属性和目录，不能只用 `os.listdir` 推断文件管理器响应性。源码随独立 Ready for review [PR #50](https://github.com/LumiaBlack51/twodrive/pull/50) 提交；当前修复提交待产生。私有日志、账号/凭据、真实列表/容量、主机路径和部署报告不上传。
+保留 `cold_slow_quota_does_not_block_filesystem_attributes`、`quota_refresh_is_coalesced_retains_last_success_and_retries_without_blocking`、`shutdown_cancels_a_pending_quota_refresh_and_joins_its_worker` 及显式 `native_statfs_and_gio_return_while_cloud_quota_is_stalled`。同时测试属性和目录，不能只用 `os.listdir` 推断文件管理器响应性。源码随独立 Ready for review [PR #50](https://github.com/LumiaBlack51/twodrive/pull/50) 提交；已上传[修复提交 9ab5986](https://github.com/DavidXile/twodrive/commit/9ab59869f102f5509ede2804cde720a82c071c31)。私有日志、账号/凭据、真实列表/容量、主机路径和部署报告不上传。
 
 ## TD-20261029-35：Linux 文件管理器目录无响应及返回目录重复等待
 
