@@ -36,6 +36,8 @@ mod gui;
 mod quota;
 #[cfg(target_os = "linux")]
 mod read_view;
+#[cfg(target_os = "linux")]
+mod rename_session;
 mod write;
 pub use gui::action as gui_auth;
 

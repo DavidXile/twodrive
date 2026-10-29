@@ -108,6 +108,10 @@ impl RcloneDrive {
                 })
                 .unwrap()
         };
+        #[cfg(target_os = "linux")]
+        if !s.directory && parent(&s.path) == parent(to) && !s.path.eq_ignore_ascii_case(to) {
+            return self.rename_in_session(&s, to, &parent(to));
+        }
         if parent(&s.path) == parent(to) {
             // Both checks need one fresh shallow listing of the same parent.
             // Each standalone --stat starts an authenticated component that

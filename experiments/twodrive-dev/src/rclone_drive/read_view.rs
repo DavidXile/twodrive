@@ -4,7 +4,7 @@
 use super::*;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-fn encrypted_bytes(state: &State) -> anyhow::Result<Vec<u8>> {
+pub(super) fn encrypted_bytes(state: &State) -> anyhow::Result<Vec<u8>> {
     encrypted_bytes_wait(state, thread::sleep)
 }
 fn encrypted_bytes_wait(state: &State, mut wait: impl FnMut(Duration)) -> anyhow::Result<Vec<u8>> {
@@ -45,7 +45,7 @@ fn encrypted_bytes_wait(state: &State, mut wait: impl FnMut(Duration)) -> anyhow
     Ok(bytes)
 }
 impl RcloneDrive {
-    fn check_read_identity(&self) -> anyhow::Result<()> {
+    pub(super) fn check_read_identity(&self) -> anyhow::Result<()> {
         ensure!(!self.cancel.load(Ordering::Relaxed), "连接已取消");
         let auth: Auth = self.state.read(MANIFEST)?;
         ensure!(
@@ -54,7 +54,7 @@ impl RcloneDrive {
         );
         Ok(())
     }
-    fn publish_read_refresh(
+    pub(super) fn publish_read_refresh(
         &self,
         view: &State,
         before: &[u8],

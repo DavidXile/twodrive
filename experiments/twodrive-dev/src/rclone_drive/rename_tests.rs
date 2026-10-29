@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 fn fixture() -> (tempfile::TempDir, RcloneDrive, PathBuf) {
     let (root, mut backend) = super::tests::fixture();
     backend.writable = true;
+    backend.binding = format!("icloud:{:x}:epoch-a", Sha256::digest(b"synthetic-account"));
     backend
         .state
         .save(
@@ -29,6 +30,50 @@ import json,pathlib,sys
 p=pathlib.Path(@STATE@)
 s=json.loads(p.read_text())
 args=sys.argv[1:]
+if 'config' in args and 'dump' in args:
+    print(json.dumps({'twodrive':{'type':'iclouddrive','apple_id':s.get('refresh_id','synthetic-account')}}));sys.exit(0)
+if 'rcd' in args:
+    import http.server,os,base64
+    s['launches']=s.get('launches',0)+1
+    p.write_text(json.dumps(s))
+    address=args[args.index('--rc-addr')+1]
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self,*args): pass
+        def do_POST(self):
+            auth='Basic '+base64.b64encode((os.environ['RCLONE_RC_USER']+':'+os.environ['RCLONE_RC_PASS']).encode()).decode()
+            if self.headers.get('Authorization')!=auth:
+                self.send_response(401);self.end_headers();return
+            body=json.loads(self.rfile.read(int(self.headers.get('Content-Length',0))))
+            value=json.loads(p.read_text())
+            status=200
+            if self.path=='/core/pid': result={'pid':os.getpid()}
+            else:
+                value['ops'].append(self.path.lstrip('/'))
+                def row(path,v):return dict(v,Name=path.rsplit('/',1)[1],Path=path.rsplit('/',1)[1])
+                if self.path=='/operations/list':
+                    parent=body['remote']
+                    result={'list':[row(k,v) for k,v in value['files'].items() if k.rsplit('/',1)[0].lstrip('/')==parent]}
+                elif self.path=='/operations/movefile':
+                    source='/'+body['srcRemote'];dest='/'+body['dstRemote']
+                    assert body['srcFs']==body['dstFs']=='twodrive:' and '--ignore-existing' in args
+                    if value.get('lost_reply'):
+                        value['files'][dest]=value['files'].pop(source)
+                        p.write_text(json.dumps(value));self.connection.close();return
+                    if value.get('late_collision'):
+                        value['files'][dest]=dict(value['files'][source],ID='other-object')
+                    elif source not in value['files'] or dest in value['files']:status=409
+                    else:value['files'][dest]=value['files'].pop(source)
+                    result={}
+                else:status=400;result={}
+                if value.get('refresh'):
+                    config=pathlib.Path(args[args.index('--config')+1]);config.write_bytes(config.read_bytes()+b'\nSYNTHETIC REFRESH')
+                if value.get('newer_canonical'):
+                    canonical=pathlib.Path(value['canonical_path']);canonical.write_bytes(b'# Encrypted rclone configuration File\nSYNTHETIC NEWER CONFIG')
+                p.write_text(json.dumps(value))
+            data=json.dumps(result).encode();self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+    host,port=address.rsplit(':',1)
+    http.server.HTTPServer((host,int(port)),Handler).serve_forever()
+s['launches']=s.get('launches',0)+1
 op=next((v for v in args if v in ['lsjson','moveto']),None)
 assert op is not None
 s['ops'].append(op)
@@ -89,9 +134,22 @@ fn mounted_same_directory_rename_uses_one_fresh_preflight_and_one_confirmation()
         result["files"]["/after.txt"].is_object() && result["files"].get("/before.txt").is_none()
     );
     assert_eq!(
+        result["launches"], 1,
+        "reuse one authenticated component for the transaction"
+    );
+    assert_eq!(
         result["ops"],
-        serde_json::json!(["lsjson", "moveto", "lsjson"]),
-        "one fresh preflight and one confirmation; no repeated layer checks"
+        serde_json::json!(["operations/list", "operations/movefile", "operations/list"])
+    );
+    let timing: Value = serde_json::from_slice(
+        &fs::read(root.path().join("private/last-rename-timing.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(timing["remote_confirmed"], true);
+    assert!(timing["move_ms"].is_u64());
+    assert!(
+        !timing.to_string().contains("before.txt")
+            && !timing.to_string().contains("synthetic-object")
     );
 }
 
@@ -157,7 +215,7 @@ fn coalesced_rename_refuses_external_changes_collisions_and_denied_access() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|op| op != "moveto"),
+                .all(|op| op != "moveto" && op != "operations/movefile"),
             "{scenario}"
         );
         assert_eq!(
@@ -192,4 +250,94 @@ fn snapshot_rename_preserves_cross_directory_checks_and_parent_refresh() {
         serde_json::json!(["lsjson", "lsjson", "moveto", "lsjson"])
     );
     drop(root);
+}
+
+#[test]
+fn session_rename_checks_post_state_and_never_retries_an_uncertain_move() {
+    for flag in ["late_collision", "lost_reply"] {
+        let (_root, backend, data) = fixture();
+        let expected = backend.initial_root[0].clone();
+        let mut value: Value = serde_json::from_slice(&fs::read(&data).unwrap()).unwrap();
+        value[flag] = serde_json::json!(true);
+        fs::write(&data, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(
+            Backend::new(backend)
+                .rename_snapshot(
+                    "/before.txt",
+                    "/after.txt",
+                    &expected.remote_id,
+                    &expected.etag,
+                    false
+                )
+                .is_err()
+        );
+        let result: Value = serde_json::from_slice(&fs::read(data).unwrap()).unwrap();
+        assert_eq!(
+            result["ops"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|op| **op == "operations/movefile")
+                .count(),
+            1,
+            "never replay a mutation with a lost reply"
+        );
+        if flag == "late_collision" {
+            assert!(result["files"]["/before.txt"].is_object());
+        } else {
+            assert!(result["files"]["/after.txt"].is_object());
+        }
+    }
+}
+
+#[test]
+fn session_refresh_checks_identity_keeps_newer_config_and_cleans_private_children() {
+    for scenario in ["refresh", "wrong_identity", "newer"] {
+        let (root, backend, data) = fixture();
+        let expected = backend.initial_root[0].clone();
+        let config = backend.state.dir.join(CONFIG);
+        let before = fs::read(&config).unwrap();
+        let mut contents: Value = serde_json::from_slice(&fs::read(&data).unwrap()).unwrap();
+        contents["refresh"] = serde_json::json!(true);
+        if scenario == "wrong_identity" {
+            contents["refresh_id"] = serde_json::json!("other-account");
+        }
+        if scenario == "newer" {
+            contents["newer_canonical"] = serde_json::json!(true);
+            contents["canonical_path"] = serde_json::json!(config);
+        }
+        fs::write(&data, serde_json::to_vec(&contents).unwrap()).unwrap();
+        let result = Backend::new(backend).rename_snapshot(
+            "/before.txt",
+            "/after.txt",
+            &expected.remote_id,
+            &expected.etag,
+            false,
+        );
+        match scenario {
+            "refresh" => {
+                assert!(result.is_ok());
+                assert!(fs::read(&config).unwrap().ends_with(b"SYNTHETIC REFRESH"));
+            }
+            "wrong_identity" => {
+                assert!(result.is_err());
+                assert_eq!(fs::read(&config).unwrap(), before);
+            }
+            "newer" => {
+                assert!(result.is_ok());
+                assert!(
+                    fs::read(&config)
+                        .unwrap()
+                        .ends_with(b"SYNTHETIC NEWER CONFIG")
+                );
+            }
+            _ => unreachable!(),
+        }
+        assert!(fs::read_dir(root.path().join("private")).unwrap().all(|e| {
+            !e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("rename-session-")
+        }));
+    }
 }
