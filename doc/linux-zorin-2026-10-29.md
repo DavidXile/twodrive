@@ -1,12 +1,13 @@
 # Linux / Zorin adaptation for PR47
 
-This branch starts at PR47 head `f4e07fe75bfb004e8d4591d1f9f6eff11391c4eb` (production code matches `0346913`). It adds Linux FUSE integration while retaining the shared UI, provider authentication, per-account write locks and storage identity checks. It does not replace the stable daemon.
+This branch starts at PR47 head `f4e07fe75bfb004e8d4591d1f9f6eff11391c4eb` (production code matches `0346913`). It incorporates the subsequent PR47 Baidu Content-MD5 fix through `960cf77e7511f70831aaded97be72c35e18f8d8e`. It adds Linux FUSE integration while retaining the shared UI, provider authentication, per-account write locks and storage identity checks. It does not replace the stable daemon.
 
 ## Behavior
 
 - Retain simultaneous accounts and their mounts. Selecting an online account uses revision-bound `select`, preserves its last directory, and never implicitly authenticates.
 - Keep native FUSE and its durable conditional-upload cache. The private Provider bridge uses Linux mount ownership/cleanup and platform-specific persistent caches for manual-edit adapters. Restart relocks writes; explicit local-password unlock remounts the affected account.
 - Bound read-only directory snapshots, coalesce refreshes, reject failed listings before successful DAV headers, and keep HEAD metadata-only. File downloads still validate live object/version/size. Editable views do not anchor writes to display snapshots.
+- Validate Baidu content digests in both strict hexadecimal and standard Base64 formats; invalid or mismatched digests still fail.
 - Transparent semantic cloud icons, bundled licensed Chinese/Latin fonts, responsive settings transitions, readable noncolliding mount names and Linux metadata-only preflight.
 
 ## Build and isolated checks
@@ -29,7 +30,7 @@ Tests use disposable synthetic accounts. Native mount tests require accessible `
 | Locally executed validation | Result |
 |---|---|
 | Flutter model/widget tests and analyzer | 96 passed |
-| Rust library / engine / editable bridge | 97 / 25 / 6 passed; 6 default ignored excluded |
+| Rust library / engine / editable bridge | 100 / 25 / 6 passed; 6 default ignored excluded |
 | Strict release Clippy and Linux release binaries | Passed |
 | Actual editable bridge FUSE | 1 explicit test passed |
 | Dual read-only native mounts | 6 groups passed |
@@ -39,7 +40,7 @@ Tests use disposable synthetic accounts. Native mount tests require accessible `
 | Synthetic local QUIC sharing | 7 groups passed |
 | Private GNOME/Xvfb window transitions | Passed; no exposed reconfiguration in fixed fixture |
 
-These results do not establish hosted CI success, a Windows rebuild, real-cloud editing acceptance, or full Nautilus preview performance. iCloud/Baidu manual edits retain the documented check-to-publication race and do not gain atomic conditional-upload/backup capability. See incident TD-20261029-32.
+These results do not establish hosted CI success, a Windows rebuild, real-cloud editing acceptance, or full Nautilus preview performance. iCloud/Baidu manual edits retain the documented check-to-publication race and do not gain atomic conditional-upload/backup capability. See incident TD-20261029-33.
 
 ## 隐私范围
 

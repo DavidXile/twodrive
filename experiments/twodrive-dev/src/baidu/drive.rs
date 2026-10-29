@@ -42,6 +42,25 @@ pub struct BaiduDrive {
 fn number(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
+fn content_md5(value: &str) -> anyhow::Result<[u8; 16]> {
+    // Content responses may encode the digest as hexadecimal rather than
+    // RFC 1864 Base64. Both must resolve to exactly the same 16 digest bytes.
+    // A 32-character hex string is also valid Base64, but decodes to 24 bytes.
+    let bytes = if value.len() == 32 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        (0..32)
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&value[at..at + 2], 16))
+            .collect::<Result<Vec<_>, _>>()
+            .context("百度内容摘要格式无效")?
+    } else {
+        base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .context("百度内容摘要格式无效")?
+    };
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("百度内容摘要长度无效"))
+}
 fn clean_root(root: &str) -> anyhow::Result<String> {
     valid_path(root)?;
     Ok(root.into())
@@ -328,7 +347,10 @@ impl BaiduDrive {
             .get("Content-MD5")
             .map(|v| v.to_str().map(str::to_owned))
             .transpose()
-            .context("百度内容摘要无效")?;
+            .context("百度内容摘要无效")?
+            .as_deref()
+            .map(content_md5)
+            .transpose()?;
         let mut digest = md5::Md5::new();
         let mut count = 0u64;
         let mut buffer = [0u8; 65536];
@@ -347,11 +369,8 @@ impl BaiduDrive {
         }
         ensure!(count == s.size, "百度下载不完整，未发布半文件");
         if let Some(expected) = expected {
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(expected)
-                .context("百度内容摘要格式无效")?;
             ensure!(
-                bytes.as_slice() == digest.finalize().as_slice(),
+                expected.as_slice() == digest.finalize().as_slice(),
                 "百度下载内容校验失败，未发布文件"
             );
         }
