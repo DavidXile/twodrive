@@ -42,4 +42,8 @@
 
 旧 head 的 [Dev WebDAV](https://github.com/LumiaBlack51/twodrive/actions/runs/40708457789)、[桌面](https://github.com/LumiaBlack51/twodrive/actions/runs/40708457786) 和 [CFAPI](https://github.com/LumiaBlack51/twodrive/actions/runs/40708457951) 确实失败；不能继续统称为“只是等待审批”。桌面 Windows 产物缺失是前序分享测试失败后未构建的后果，不是另一个打包根因。`e0778de` 的七项运行另为 action_required。本地通过不能替代最终提交的托管结果；最终 head 需要重新取得 Linux/Windows 检查，审批由仓库有权限的维护者完成。
 
-本轮未操作鼠标、未更新运行中的用户客户端、未改账号或挂载配置、未自动解锁。源码修正与交付说明一起提交现有 PR #47 并保持 Ready for review；没有合并或发布正式 Release。
+源码修正阶段未操作鼠标、未更新运行中的用户客户端、未改账号或挂载配置、未自动解锁。源码修正与交付说明一起提交现有 PR #47 并保持 Ready for review；没有合并或发布正式 Release。
+
+后续本机交付：用户亲自正常退出后，先核对旧 GUI/所属引擎/原生组件均已退出，再私密备份原状态与凭据。新包 `TwoDrive-0.1.7-reviewfix-20261029` 的 45 个文件摘要与实际包的 6 组原生双账号重启恢复检查通过；只读升级检查确认原 profile 文件字节一致。默认启动版本现已切换，Rust 来源为 `034691342479488468d5148064cc1921ffcf5899`，GUI 仍为 `800cb9246113711511c62614a36856208f6c1dcf`，无需重装驱动。
+
+本地交付核对：一个新版 GUI/main engine 使用原 state，四条完整账号配置和 D 盘路径保留，全部未解锁；另外三家的 session 身份不变，百度的新身份与原保存 generation、原 root 的预期摘要严格一致，原百度缓存文件未被覆盖。检查脚本最初误要求升级前后所有 binding 完全不变，已按精确升级规则修正，见 TD-20261029-31。当前浏览选择已变为百度；OneDrive/iCloud/Google 的所属挂载进程运行，百度检查时尚无挂载组件，需用户在卡片点击挂载。窗口已最小化，没有为截图而激活或进行鼠标/键盘输入；没有额外真实网盘探针。新包真实百度挂载及云端读写仍待用户验收，进程/配置核对不替代文件字节验证。
