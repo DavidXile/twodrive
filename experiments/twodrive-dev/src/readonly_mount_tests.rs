@@ -21,6 +21,10 @@ struct Fixture {
     change_during_read: Arc<AtomicBool>,
     hold_download: Arc<AtomicBool>,
     download_started: Arc<AtomicBool>,
+    hold_quota: Arc<AtomicBool>,
+    quota_reads: Arc<AtomicUsize>,
+    fail_quota: Arc<AtomicBool>,
+    quota_scale: u64,
 }
 impl Fixture {
     fn new(bytes: &[u8]) -> Self {
@@ -39,6 +43,10 @@ impl Fixture {
             change_during_read: Arc::default(),
             hold_download: Arc::default(),
             download_started: Arc::default(),
+            hold_quota: Arc::default(),
+            quota_reads: Arc::default(),
+            fail_quota: Arc::default(),
+            quota_scale: 1,
         }
     }
     fn meta(&self) -> MetadataEntry {
@@ -286,11 +294,20 @@ impl Provider for Fixture {
         &self,
         check: &mut dyn FnMut() -> anyhow::Result<()>,
     ) -> anyhow::Result<Option<crate::provider::StorageUsage>> {
+        self.quota_reads.fetch_add(1, Ordering::SeqCst);
+        while self.hold_quota.load(Ordering::SeqCst) {
+            check()?;
+            thread::sleep(Duration::from_millis(5));
+        }
         check()?;
+        ensure!(
+            !self.fail_quota.load(Ordering::SeqCst),
+            "synthetic quota failure"
+        );
         Ok(crate::provider::StorageUsage::account(
-            Some(1000),
-            Some(10),
-            Some(990),
+            Some(1000 * self.quota_scale),
+            Some(10 * self.quota_scale),
+            Some(990 * self.quota_scale),
         ))
     }
     fn capabilities(&self) -> Capabilities {
@@ -862,4 +879,205 @@ fn expired_or_invalid_listings_are_not_exposed_as_complete_directory_contents() 
         )
         .is_err()
     );
+}
+
+const QUOTA_PROPERTIES: &str = "<D:propfind xmlns:D=\"DAV:\"><D:prop><D:quota-used-bytes/><D:quota-available-bytes/></D:prop></D:propfind>";
+fn quota_request(
+    c: &reqwest::blocking::Client,
+    bridge: &Bridge,
+) -> reqwest::blocking::RequestBuilder {
+    request(c, bridge, "PROPFIND", "/")
+        .header("Depth", "0")
+        .body(QUOTA_PROPERTIES)
+}
+#[test]
+fn cold_slow_quota_does_not_block_filesystem_attributes() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"contents");
+    fixture.hold_quota.store(true, Ordering::SeqCst);
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let c = client();
+    let response = quota_request(&c, &bridge)
+        .timeout(Duration::from_millis(700))
+        .send();
+    // Always release the fixture before asserting, including on old-code failure.
+    fixture.hold_quota.store(false, Ordering::SeqCst);
+    let response = response.expect("filesystem attributes waited for cloud quota");
+    assert_eq!(response.status(), 207);
+    assert!(
+        !response.text().unwrap().contains(">990<"),
+        "cold unknown quota must not invent capacity"
+    );
+    wait_until(|| fixture.quota_reads.load(Ordering::SeqCst) != 0);
+}
+
+#[test]
+fn quota_refresh_is_coalesced_retains_last_success_and_retries_without_blocking() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"contents");
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    wait_until(|| bridge.fs.0.quota.lock().unwrap().sample.is_some());
+    fixture.hold_quota.store(true, Ordering::SeqCst);
+    {
+        let mut cache = bridge.fs.0.quota.lock().unwrap();
+        cache.sample.as_mut().unwrap().checked = Instant::now() - QUOTA_FRESH;
+        cache.attempted = None;
+    }
+    for _ in 0..20 {
+        assert_eq!(bridge.fs.quota_snapshot().unwrap(), (10, Some(1000)));
+    }
+    wait_until(|| fixture.quota_reads.load(Ordering::SeqCst) == 2);
+    assert_eq!(fixture.quota_reads.load(Ordering::SeqCst), 2);
+    fixture.fail_quota.store(true, Ordering::SeqCst);
+    fixture.hold_quota.store(false, Ordering::SeqCst);
+    wait_until(|| !bridge.fs.0.quota.lock().unwrap().pending);
+    assert_eq!(bridge.fs.quota_snapshot().unwrap(), (10, Some(1000)));
+    assert_eq!(
+        fixture.quota_reads.load(Ordering::SeqCst),
+        2,
+        "failed refresh must back off"
+    );
+    {
+        let mut cache = bridge.fs.0.quota.lock().unwrap();
+        cache.sample.as_mut().unwrap().checked = Instant::now() - QUOTA_MAX_AGE;
+    }
+    assert!(
+        matches!(bridge.fs.quota_snapshot(), Err(FsError::NotImplemented)),
+        "over-age display capacity must expire"
+    );
+    fixture.fail_quota.store(false, Ordering::SeqCst);
+    bridge.fs.0.quota.lock().unwrap().attempted = None;
+    let _ = bridge.fs.quota_snapshot();
+    wait_until(|| {
+        fixture.quota_reads.load(Ordering::SeqCst) == 3
+            && !bridge.fs.0.quota.lock().unwrap().pending
+    });
+    assert_eq!(bridge.fs.quota_snapshot().unwrap(), (10, Some(1000)));
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn shutdown_cancels_a_pending_quota_refresh_and_joins_its_worker() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"contents");
+    fixture.hold_quota.store(true, Ordering::SeqCst);
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    wait_until(|| fixture.quota_reads.load(Ordering::SeqCst) == 1);
+    let start = Instant::now();
+    drop(bridge);
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(
+        fixture.hold_quota.load(Ordering::SeqCst),
+        "cancellation must not need the provider gate released"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires Linux /dev/fuse and TWODRIVE_TEST_RCLONE; synthetic quota only"]
+fn native_statfs_and_gio_return_while_cloud_quota_is_stalled() {
+    use std::process::{Child, Command, Stdio};
+    struct Mounted {
+        target: std::path::PathBuf,
+        process: Child,
+    }
+    impl Drop for Mounted {
+        fn drop(&mut self) {
+            let _ = Command::new("fusermount3")
+                .arg("-u")
+                .arg(&self.target)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            let _ = self.process.kill();
+            let _ = self.process.wait();
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(b"synthetic mount bytes");
+    fixture.quota_scale = 1024 * 1024;
+    fixture.hold_quota.store(true, Ordering::SeqCst);
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let target = root.path().join("mount");
+    std::fs::create_dir(&target).unwrap();
+    let mut command = Command::new(
+        std::env::var_os("TWODRIVE_TEST_RCLONE").expect("explicit pinned component required"),
+    );
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("RCLONE_")
+        {
+            command.env_remove(key);
+        }
+    }
+    let process = command
+        .args(["mount", "TWODRIVE:"])
+        .arg(&target)
+        .args([
+            "--config=/dev/null",
+            "--ask-password=false",
+            "--read-only",
+            "--vfs-cache-mode=off",
+            "--dir-cache-time=100ms",
+            "--log-level=ERROR",
+            "--retries=1",
+            "--low-level-retries=1",
+        ])
+        .env("RCLONE_CONFIG_TWODRIVE_TYPE", "webdav")
+        .env(
+            "RCLONE_CONFIG_TWODRIVE_URL",
+            format!("http://{}/", bridge.address),
+        )
+        .env("RCLONE_CONFIG_TWODRIVE_BEARER_TOKEN", &bridge.token)
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .env("no_proxy", "127.0.0.1,localhost")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut mount = Mounted {
+        target: target.clone(),
+        process,
+    };
+    wait_until(|| {
+        assert!(mount.process.try_wait().unwrap().is_none());
+        std::fs::read_to_string("/proc/self/mountinfo")
+            .unwrap()
+            .lines()
+            .any(|line| line.split_whitespace().nth(4) == target.to_str())
+    });
+    // Include GIO's filesystem classification, not just readdir. This was the
+    // missing native boundary in the earlier directory navigation regression.
+    let mut probe = Command::new("/usr/bin/python3").args(["-c",
+        "import os,sys; from gi.repository import Gio; p=sys.argv[1]; assert len(os.listdir(p)) == 1; os.statvfs(p); Gio.File.new_for_path(p).query_filesystem_info('filesystem::remote,filesystem::type',None)"])
+        .arg(&target).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let start = Instant::now();
+    let timely = loop {
+        if let Some(status) = probe.try_wait().unwrap() {
+            break status.success();
+        }
+        if start.elapsed() >= Duration::from_millis(1500) {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    // Release before reaping even on regression: killing a FUSE caller can
+    // itself wait for the synthetic server operation to finish.
+    fixture.hold_quota.store(false, Ordering::SeqCst);
+    let status = probe.wait().unwrap();
+    assert!(
+        timely && status.success(),
+        "native filesystem classification waited for cloud quota"
+    );
+    wait_until(|| bridge.fs.0.quota.lock().unwrap().sample.is_some());
+    thread::sleep(Duration::from_millis(150));
+    let quota = Command::new("/usr/bin/python3").args(["-c", "import os,sys; s=os.statvfs(sys.argv[1]); assert s.f_blocks*s.f_frsize == 1000*1024*1024; assert s.f_bavail*s.f_frsize == 990*1024*1024"])
+        .arg(&target).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+    assert!(
+        quota.success(),
+        "native quota must eventually replace the unknown fallback"
+    );
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 0);
 }

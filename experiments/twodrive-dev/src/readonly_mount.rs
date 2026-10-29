@@ -40,6 +40,9 @@ const DIRECTORY_MAX_AGE: Duration = Duration::from_secs(300);
 const DIRECTORY_RETRY: Duration = Duration::from_secs(10);
 const DIRECTORY_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
 const DIRECTORY_CACHE_LIMIT: usize = 64;
+const QUOTA_FRESH: Duration = Duration::from_secs(300);
+const QUOTA_MAX_AGE: Duration = Duration::from_secs(1800);
+const QUOTA_RETRY: Duration = Duration::from_secs(30);
 tokio::task_local! {
     static DISPLAY_METADATA_ONLY: bool;
     static PREPARED_DIRECTORY: Option<(String, DirectoryEntries)>;
@@ -52,7 +55,13 @@ struct Cached {
 }
 struct QuotaSample {
     checked: Instant,
-    value: Option<(u64, u64)>,
+    value: (u64, u64),
+}
+#[derive(Default)]
+struct QuotaCache {
+    sample: Option<QuotaSample>,
+    attempted: Option<Instant>,
+    pending: bool,
 }
 struct DirectorySample {
     path: String,
@@ -70,7 +79,8 @@ struct Inner {
     writer: Option<Arc<crate::mount_write::Writer>>,
     cache: Mutex<VecDeque<Arc<Cached>>>,
     downloads: Mutex<DownloadGates>,
-    quota: Mutex<Option<QuotaSample>>,
+    quota: Mutex<QuotaCache>,
+    quota_refresh: mpsc::SyncSender<()>,
     directories: Mutex<DirectoryCache>,
     directory_ready: Condvar,
     refresh: mpsc::SyncSender<String>,
@@ -136,6 +146,51 @@ impl RemoteFs {
     fn check(&self) -> anyhow::Result<()> {
         ensure!(!self.0.stop.load(Ordering::Relaxed), "mount stopped");
         Ok(())
+    }
+    fn quota_snapshot(&self) -> FsResult<(u64, Option<u64>)> {
+        self.check().map_err(|_| FsError::GeneralFailure)?;
+        let mut cache = self.0.quota.lock().map_err(|_| FsError::GeneralFailure)?;
+        let fresh = cache
+            .sample
+            .as_ref()
+            .is_some_and(|sample| sample.checked.elapsed() < QUOTA_FRESH);
+        let retry = cache
+            .attempted
+            .is_none_or(|attempted| attempted.elapsed() >= QUOTA_RETRY);
+        if !fresh && retry && !cache.pending {
+            cache.pending = true;
+            if self.0.quota_refresh.try_send(()).is_err() {
+                cache.pending = false;
+            }
+        }
+        // Statfs also runs for type/remote classification and can block a file
+        // manager before it displays an already cached listing. Never perform
+        // account/network IO here, including on the first query. Unknown stays
+        // unknown; an old successful display value has a bounded grace period.
+        cache
+            .sample
+            .as_ref()
+            .filter(|sample| sample.checked.elapsed() < QUOTA_MAX_AGE)
+            .map(|sample| (sample.value.0, Some(sample.value.1)))
+            .ok_or(FsError::NotImplemented)
+    }
+    fn refresh_quota(&self) {
+        let value = self
+            .check()
+            .and_then(|()| self.0.backend.storage_usage(&mut || self.check()))
+            .ok()
+            .flatten()
+            .and_then(|usage| usage.used.zip(usage.total));
+        if let Ok(mut cache) = self.0.quota.lock() {
+            cache.pending = false;
+            cache.attempted = Some(Instant::now());
+            if let Some(value) = value.filter(|_| self.check().is_ok()) {
+                cache.sample = Some(QuotaSample {
+                    checked: Instant::now(),
+                    value,
+                });
+            }
+        }
     }
     fn entry(&self, path: &str) -> FsResult<MetadataEntry> {
         self.check().map_err(|_| FsError::GeneralFailure)?;
@@ -487,31 +542,7 @@ impl DavFile for RemoteFile {
 }
 impl DavFileSystem for RemoteFs {
     fn get_quota(&self) -> FsFuture<'_, (u64, Option<u64>)> {
-        blocking(|| {
-            let mut cached = self.0.quota.lock().map_err(|_| FsError::GeneralFailure)?;
-            let valid = cached.as_ref().is_some_and(|sample| {
-                sample.checked.elapsed()
-                    < Duration::from_secs(if sample.value.is_some() { 300 } else { 30 })
-            });
-            if !valid {
-                let usage = self
-                    .0
-                    .backend
-                    .storage_usage(&mut || self.check())
-                    .ok()
-                    .flatten();
-                let value = usage.and_then(|value| value.used.zip(value.total));
-                *cached = Some(QuotaSample {
-                    checked: Instant::now(),
-                    value,
-                });
-            }
-            cached
-                .as_ref()
-                .and_then(|sample| sample.value)
-                .map(|(used, total)| (used, Some(total)))
-                .ok_or(FsError::NotImplemented)
-        })
+        blocking(|| self.quota_snapshot())
     }
     fn open<'a>(
         &'a self,
@@ -659,6 +690,7 @@ pub struct Bridge {
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
     refresh_thread: Option<thread::JoinHandle<()>>,
+    quota_thread: Option<thread::JoinHandle<()>>,
     #[cfg(test)]
     fs: RemoteFs,
 }
@@ -695,12 +727,14 @@ impl Bridge {
             directories.samples.front_mut().unwrap().attempted = checked;
         }
         let (send, receive) = mpsc::sync_channel(1);
+        let (quota_send, quota_receive) = mpsc::sync_channel(1);
         let fs = RemoteFs(Arc::new(Inner {
             backend,
             writer: writer.clone(),
             cache: Mutex::default(),
             downloads: Mutex::default(),
             quota: Mutex::default(),
+            quota_refresh: quota_send,
             directories: Mutex::new(directories),
             directory_ready: Condvar::new(),
             refresh: send,
@@ -725,6 +759,20 @@ impl Bridge {
                 }
             }
         });
+        let quota_fs = fs.clone();
+        let quota_thread = thread::spawn(move || {
+            while !quota_fs.0.stop.load(Ordering::Relaxed) {
+                if quota_receive
+                    .recv_timeout(Duration::from_millis(50))
+                    .is_ok()
+                {
+                    quota_fs.refresh_quota();
+                }
+            }
+        });
+        // Warm asynchronously so the usual first native Statfs can report
+        // capacity, while a slow/unavailable provider never delays mounting.
+        let _ = fs.quota_snapshot();
         #[cfg(test)]
         let test_fs = fs.clone();
         let thread = thread::spawn(move || {
@@ -838,6 +886,7 @@ impl Bridge {
             stop,
             thread: Some(thread),
             refresh_thread: Some(refresh_thread),
+            quota_thread: Some(quota_thread),
             #[cfg(test)]
             fs: test_fs,
         })
@@ -846,6 +895,9 @@ impl Bridge {
 impl Drop for Bridge {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.quota_thread.take() {
+            let _ = thread.join();
+        }
         if let Some(thread) = self.refresh_thread.take() {
             let _ = thread.join();
         }
