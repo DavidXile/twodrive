@@ -333,3 +333,47 @@ fn editable_display_cache_invalidates_after_mutations_and_preserves_external_con
         1
     );
 }
+
+#[test]
+fn snapshot_rename_default_provider_checks_version_and_never_overwrites_a_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = OpaqueProvider::default();
+    let old = p.upload("/source", b"original".to_vec()).unwrap();
+    let target = p.upload("/target", b"keep target".to_vec()).unwrap();
+    let bridge = Bridge::start_writable(
+        Backend::new(p.clone()),
+        dir.path(),
+        &dir.path().join("recovery"),
+    )
+    .unwrap();
+    let c = Client::builder().no_proxy().build().unwrap();
+    let listing = c
+        .request(
+            Method::from_bytes(b"PROPFIND").unwrap(),
+            format!("http://{}/", bridge.address),
+        )
+        .bearer_auth(&bridge.token)
+        .header("Depth", "1")
+        .send()
+        .unwrap();
+    assert_eq!(listing.status(), 207);
+    listing.text().unwrap();
+    let rename = |to: &str| {
+        c.request(
+            Method::from_bytes(b"MOVE").unwrap(),
+            format!("http://{}/source", bridge.address),
+        )
+        .bearer_auth(&bridge.token)
+        .header("Destination", format!("http://{}{to}", bridge.address))
+        .send()
+        .unwrap()
+        .status()
+    };
+    assert_eq!(rename("/target"), 409);
+    assert_eq!(p.download(&target.remote_id).unwrap(), b"keep target");
+    p.upload_with_etag("/source", b"external version".to_vec(), Some(&old.etag))
+        .unwrap();
+    assert_eq!(rename("/new-name"), 409);
+    assert!(p.get_metadata_by_path("/new-name").unwrap().is_none());
+    assert_eq!(p.download(&old.remote_id).unwrap(), b"external version");
+}

@@ -564,6 +564,21 @@ impl Provider for RcloneDrive {
         )?;
         self.entries(path, &values)
     }
+    fn rename_snapshot(
+        &self,
+        path: &str,
+        to: &str,
+        id: &str,
+        version: &str,
+        directory: bool,
+    ) -> anyhow::Result<MetadataEntry> {
+        let observed = Snapshot::decode(id, &self.binding)?;
+        ensure!(
+            observed.path == path && observed.version == version && observed.directory == directory,
+            "源文件版本记录不匹配"
+        );
+        self.rename_manual(id, to)
+    }
     fn upload_controlled(
         &self,
         _: &str,
@@ -1271,3 +1286,7 @@ mod tests {
         assert_eq!(fs::read(file).unwrap(), bytes);
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "rclone_drive/rename_tests.rs"]
+mod rename_tests;

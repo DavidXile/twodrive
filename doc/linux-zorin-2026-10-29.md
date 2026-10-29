@@ -11,6 +11,7 @@ This branch starts at PR47 head `f4e07fe75bfb004e8d4591d1f9f6eff11391c4eb` (prod
 - Linux iCloud metadata uses short-lived private encrypted config views so a directory lookup does not queue behind a whole-file content operation. Auth binding, account identity, nonblocking compare-and-save and cleanup guards preserve the canonical session; metadata isolation also applies to editable Linux connections; actual mutation locking and Windows query behavior remain unchanged.
 - Answer filesystem capacity from a bounded display snapshot, with one separate background worker per bridge. Cold or expired quota never blocks Statfs/GIO classification; successful values refresh after five minutes and expire after thirty minutes, with a thirty-second failure backoff. Native capacity may remain unknown until its next query after the initial background result; account capacity cards are separate and unchanged.
 - Bound directory display snapshots, coalesce refreshes, reject failed listings before successful DAV headers, and keep HEAD metadata-only. File downloads still validate live object/version/size. Editable listings retain the first observed version; every mutation compares it with live metadata. Any mutation response invalidates display snapshots, and an in-flight older listing cannot refill them.
+- Coalesce iCloud rename preflight checks using a fresh parent listing. Same-directory private-bridge rename uses two external metadata queries rather than five; authorization, observed version/type, no-overwrite, confirmation and parent-version guards remain. Real-cloud latency still needs user acceptance.
 - Validate Baidu content digests in both strict hexadecimal and standard Base64 formats; invalid or mismatched digests still fail.
 - Transparent semantic cloud icons, bundled licensed Chinese/Latin fonts, responsive settings transitions, readable noncolliding mount names and Linux metadata-only preflight.
 
@@ -35,7 +36,7 @@ Tests use disposable synthetic accounts. Native mount tests require accessible `
 | Locally executed validation | Result |
 |---|---|
 | Flutter model/widget tests and analyzer | 93 passed |
-| Rust library / engine / editable bridge | 112 / 26 / 7 passed; 7 default ignored excluded |
+| Rust library / engine / editable bridge | 115 / 26 / 8 passed; 7 default ignored excluded |
 | Strict release Clippy and Linux release binaries | Passed |
 | Actual editable bridge FUSE | 1 explicit test passed |
 | Actual read-only FUSE Statfs/GIO with held cloud quota, then capacity recovery | 1 explicit test passed |
@@ -46,7 +47,7 @@ Tests use disposable synthetic accounts. Native mount tests require accessible `
 | Synthetic local QUIC sharing | 7 groups passed |
 | Private GNOME/Xvfb window transitions | Earlier verified; native runner unchanged in this update |
 
-These results do not establish hosted CI success, a Windows rebuild, real-cloud editing acceptance, or full Nautilus preview performance. iCloud/Baidu manual edits retain the documented check-to-publication race and do not gain atomic conditional-upload/backup capability. See incidents TD-20261029-33/34/35/36/37/38.
+These results do not establish hosted CI success, a Windows rebuild, real-cloud editing acceptance, or full Nautilus preview performance. iCloud/Baidu manual edits retain the documented check-to-publication race and do not gain atomic conditional-upload/backup capability. See incidents TD-20261029-33/34/35/36/37/38/39/40.
 
 ## Delivery
 

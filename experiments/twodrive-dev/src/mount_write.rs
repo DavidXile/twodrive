@@ -208,22 +208,30 @@ impl Writer {
         Ok(())
     }
     fn refresh_parents(&self, path: &str) -> anyhow::Result<()> {
-        let mut current = path;
-        for _ in 0..128 {
-            let Some((parent, _)) = current.rsplit_once('/') else {
-                break;
-            };
-            if parent.is_empty() {
-                break;
+        self.refresh_parents_many(&[path])
+    }
+    fn refresh_parents_many(&self, paths: &[&str]) -> anyhow::Result<()> {
+        let mut parents = std::collections::HashSet::new();
+        for path in paths {
+            let mut current = *path;
+            for _ in 0..128 {
+                let Some((parent, _)) = current.rsplit_once('/') else {
+                    break;
+                };
+                if parent.is_empty() {
+                    break;
+                }
+                if parents.insert(parent.to_owned())
+                    && let Some(m) = self.backend.get_metadata_by_path(parent)?
+                {
+                    ensure!(m.is_dir, "父目录类型改变");
+                    self.observed
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("版本记录不可用"))?
+                        .insert(parent.into(), Version::from(&m));
+                }
+                current = parent;
             }
-            if let Some(m) = self.backend.get_metadata_by_path(parent)? {
-                ensure!(m.is_dir, "父目录类型改变");
-                self.observed
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("版本记录不可用"))?
-                    .insert(parent.into(), Version::from(&m));
-            }
-            current = parent;
         }
         self.state
             .save("observed.json", &*self.observed.lock().unwrap())?;
@@ -361,15 +369,25 @@ impl Writer {
             .mutation
             .lock()
             .map_err(|_| anyhow::anyhow!("写入锁不可用"))?;
-        let m = self.expected(path)?.context("源文件不存在")?;
+        valid_path(path)?;
         valid_path(to)?;
-        ensure!(
-            to != "/" && self.backend.get_metadata_by_path(to)?.is_none(),
-            "目标已存在，拒绝覆盖"
-        );
-        let next = self.backend.rename(&m.remote_id, to)?;
-        self.refresh_parents(path)?;
-        self.refresh_parents(to)?;
+        let observed = self
+            .observed
+            .lock()
+            .map_err(|_| anyhow::anyhow!("版本记录不可用"))?
+            .get(path)
+            .cloned()
+            .context("尚未读取源文件版本，拒绝重命名")?;
+        // The adapter checks this exact observed version with fresh metadata.
+        // Do not check the same source/target twice across service layers.
+        let next = self.backend.rename_snapshot(
+            path,
+            to,
+            &observed.id,
+            &observed.etag,
+            observed.directory,
+        )?;
+        self.refresh_parents_many(&[path, to])?;
         let mut seen = self
             .observed
             .lock()

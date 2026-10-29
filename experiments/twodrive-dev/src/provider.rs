@@ -91,6 +91,28 @@ pub trait Provider: CloudBackend {
     ) -> anyhow::Result<MetadataEntry> {
         anyhow::bail!("此网盘未提供手动写入")
     }
+    /// Check the observed source and create-only destination using fresh data.
+    /// Adapters may coalesce lookups, but must not use display caches or weaken
+    /// version/type checks. Manual providers do not gain atomic CAS semantics.
+    fn rename_snapshot(
+        &self,
+        path: &str,
+        to: &str,
+        id: &str,
+        version: &str,
+        directory: bool,
+    ) -> anyhow::Result<MetadataEntry> {
+        let current = self.get_metadata_by_path(path)?.context("源文件不存在")?;
+        ensure!(
+            current.remote_id == id && current.etag == version && current.is_dir == directory,
+            "云端版本已改变，未重命名"
+        );
+        ensure!(
+            self.get_metadata_by_path(to)?.is_none(),
+            "目标已存在，拒绝覆盖"
+        );
+        self.rename(id, to)
+    }
     fn upload_controlled(
         &self,
         path: &str,
@@ -196,6 +218,24 @@ impl Backend {
         valid_path(to)?;
         ensure!(path != "/", "不能重命名共享根目录");
         self.rename(&self.entry(path)?.remote_id, to)
+    }
+    pub fn rename_snapshot(
+        &self,
+        path: &str,
+        to: &str,
+        id: &str,
+        version: &str,
+        directory: bool,
+    ) -> anyhow::Result<MetadataEntry> {
+        self.check_write()?;
+        ensure!(self.capabilities().rename, "此连接不支持重命名");
+        valid_path(path)?;
+        valid_path(to)?;
+        ensure!(
+            path != "/" && to != "/" && path != to && !to.starts_with(&format!("{path}/")),
+            "无效的移动目标"
+        );
+        self.inner.rename_snapshot(path, to, id, version, directory)
     }
     pub fn delete_path(&self, path: &str) -> anyhow::Result<()> {
         ensure!(path != "/", "不能删除共享根目录");

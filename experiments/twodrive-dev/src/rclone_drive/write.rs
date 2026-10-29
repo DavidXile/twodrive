@@ -97,13 +97,38 @@ impl RcloneDrive {
             s.path != "/" && to != "/" && !to.starts_with(&format!("{}/", s.path)),
             "无效的移动目标"
         );
-        let current = self
-            .get_metadata_by_path(&s.path)?
-            .context("源文件不存在")?;
-        ensure!(
-            current.remote_id == id && self.get_metadata_by_path(to)?.is_none(),
-            "文件版本改变或目标已存在"
-        );
+        let parent = |path: &str| {
+            path.rsplit_once('/')
+                .map(|(p, _)| {
+                    if p.is_empty() {
+                        "/".to_owned()
+                    } else {
+                        p.to_owned()
+                    }
+                })
+                .unwrap()
+        };
+        if parent(&s.path) == parent(to) {
+            // Both checks need one fresh shallow listing of the same parent.
+            // Each standalone --stat starts an authenticated component that
+            // resolves that parent again; display snapshots are not consulted.
+            let entries = self.list_directory(&parent(&s.path))?;
+            ensure!(
+                entries
+                    .iter()
+                    .any(|m| m.path == s.path && m.remote_id == id),
+                "源文件不存在或版本已改变"
+            );
+            ensure!(entries.iter().all(|m| m.path != to), "目标已存在，拒绝覆盖");
+        } else {
+            let current = self
+                .get_metadata_by_path(&s.path)?
+                .context("源文件不存在")?;
+            ensure!(
+                current.remote_id == id && self.get_metadata_by_path(to)?.is_none(),
+                "文件版本改变或目标已存在"
+            );
+        }
         let mut cmd = command(&self.exe, &self.state, &self.pass, &self.route);
         cmd.args([
             "moveto",
