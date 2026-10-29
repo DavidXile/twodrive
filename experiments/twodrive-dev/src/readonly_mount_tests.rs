@@ -10,6 +10,9 @@ struct Fixture {
     data: Arc<Mutex<(Vec<u8>, u64)>>,
     downloads: Arc<AtomicUsize>,
     change_during_read: Arc<AtomicBool>,
+    slow_started: Arc<AtomicBool>,
+    release_slow: Arc<AtomicBool>,
+    block_first: bool,
 }
 impl Fixture {
     fn new(bytes: &[u8]) -> Self {
@@ -17,6 +20,9 @@ impl Fixture {
             data: Arc::new(Mutex::new((bytes.to_vec(), 1))),
             downloads: Arc::default(),
             change_during_read: Arc::default(),
+            slow_started: Arc::default(),
+            release_slow: Arc::default(),
+            block_first: false,
         }
     }
     fn meta(&self) -> MetadataEntry {
@@ -34,6 +40,16 @@ impl Fixture {
         data.0 = bytes.to_vec();
         data.1 += 1;
     }
+    fn other_meta(&self) -> MetadataEntry {
+        let data = self.data.lock().unwrap();
+        MetadataEntry::new_file(
+            "other-object",
+            "/other.txt",
+            data.0.len() as u64,
+            1,
+            data.1.to_string(),
+        )
+    }
 }
 impl CloudBackend for Fixture {
     fn is_conflict_error(&self, _: &anyhow::Error) -> bool {
@@ -46,14 +62,20 @@ impl CloudBackend for Fixture {
         panic!("delta not needed")
     }
     fn get_metadata(&self, id: &str) -> anyhow::Result<Option<MetadataEntry>> {
-        ensure!(id == "opaque-id-never-a-path");
-        Ok(Some(self.meta()))
+        ensure!(matches!(id, "opaque-id-never-a-path" | "other-object"));
+        Ok(Some(if id == "other-object" {
+            self.other_meta()
+        } else {
+            self.meta()
+        }))
     }
     fn get_metadata_by_path(&self, path: &str) -> anyhow::Result<Option<MetadataEntry>> {
         Ok(if path == "/" {
             Some(MetadataEntry::new_dir("root", "/", 1, "root"))
         } else if path == format!("/{NAME}") {
             Some(self.meta())
+        } else if path == "/other.txt" {
+            Some(self.other_meta())
         } else {
             None
         })
@@ -67,9 +89,21 @@ impl CloudBackend for Fixture {
         writer: &mut dyn Write,
         progress: &mut dyn FnMut(u64) -> anyhow::Result<()>,
     ) -> anyhow::Result<u64> {
-        ensure!(id == "opaque-id-never-a-path");
+        ensure!(matches!(id, "opaque-id-never-a-path" | "other-object"));
         self.downloads.fetch_add(1, Ordering::SeqCst);
         let data = self.data.lock().unwrap().0.clone();
+        if self.block_first && id == "opaque-id-never-a-path" {
+            self.slow_started.store(true, Ordering::SeqCst);
+            let started = Instant::now();
+            while !self.release_slow.load(Ordering::SeqCst) {
+                ensure!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "synthetic slow read was not released"
+                );
+                progress(0)?;
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
         progress(0)?;
         writer.write_all(&data)?;
         if self.change_during_read.swap(false, Ordering::SeqCst) {
@@ -223,6 +257,102 @@ fn loopback_auth_readonly_methods_depth_and_xml_escaping() {
     assert_eq!(fixture.downloads.load(Ordering::SeqCst), 0);
 }
 #[test]
+fn head_metadata_and_ranges_do_not_hydrate_file_content() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"0123456789");
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let c = client();
+    let head = c
+        .head(file_url(&bridge))
+        .bearer_auth(&bridge.token)
+        .send()
+        .unwrap();
+    assert_eq!(head.status(), 200);
+    assert_eq!(head.headers()["Content-Length"], "10");
+    let etag = head.headers()["ETag"].clone();
+    let range = c
+        .head(file_url(&bridge))
+        .bearer_auth(&bridge.token)
+        .header("Range", "bytes=2-5")
+        .send()
+        .unwrap();
+    assert_eq!(range.status(), 206);
+    assert_eq!(range.headers()["Content-Length"], "4");
+    let unchanged = c
+        .head(file_url(&bridge))
+        .bearer_auth(&bridge.token)
+        .header("If-None-Match", etag)
+        .send()
+        .unwrap();
+    assert_eq!(unchanged.status(), 304);
+    assert_eq!(
+        fixture.downloads.load(Ordering::SeqCst),
+        0,
+        "file information must not download the entire cloud object"
+    );
+}
+
+#[test]
+fn slow_read_does_not_serialize_another_files_read_or_metadata() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture {
+        block_first: true,
+        ..Fixture::new(b"0123456789")
+    };
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let c = client();
+    thread::scope(|scope| {
+        let slow = scope.spawn(|| {
+            c.get(file_url(&bridge))
+                .bearer_auth(&bridge.token)
+                .send()
+                .unwrap()
+                .bytes()
+                .unwrap()
+        });
+        struct Release(Arc<AtomicBool>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let release = Release(fixture.release_slow.clone());
+        let started = Instant::now();
+        while !fixture.slow_started.load(Ordering::SeqCst) {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "slow request never started"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let metadata = c
+            .head(file_url(&bridge))
+            .bearer_auth(&bridge.token)
+            .timeout(Duration::from_secs(1))
+            .send();
+        assert!(
+            metadata.is_ok_and(|r| r.status().is_success()),
+            "metadata waited for a content download"
+        );
+        let fast = c
+            .get(format!("http://{}/other.txt", bridge.address))
+            .bearer_auth(&bridge.token)
+            .timeout(Duration::from_secs(1))
+            .send();
+        assert_eq!(
+            fast.expect("another file waited for the slow cache lock")
+                .bytes()
+                .unwrap()
+                .as_ref(),
+            b"0123456789"
+        );
+        drop(release);
+        assert_eq!(slow.join().unwrap().as_ref(), b"0123456789");
+    });
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 2);
+}
+
+#[test]
 fn independent_range_cursors_cache_versions_and_changed_download_rejection() {
     let root = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(b"0123456789");
@@ -316,7 +446,8 @@ fn equal_paths_remain_scoped_to_their_provider_and_shutdown_closes_listener() {
 fn official_rclone_reads_the_private_provider_bridge() {
     let exe = std::env::var_os("TWODRIVE_TEST_RCLONE").expect("TWODRIVE_TEST_RCLONE required");
     let root = tempfile::tempdir().unwrap();
-    let bridge = Bridge::start(Backend::new(Fixture::new(b"0123456789")), root.path()).unwrap();
+    let fixture = Fixture::new(b"0123456789");
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
     let run = |args: &[&str]| {
         let mut command = std::process::Command::new(&exe);
         for (key, _) in std::env::vars_os() {
@@ -363,6 +494,10 @@ fn official_rclone_reads_the_private_provider_bridge() {
         serde_json::from_slice(&run(&["about", "TWODRIVE:", "--json"])).unwrap();
     assert_eq!(quota["used"], 10);
     assert_eq!(quota["total"], 1000);
+    let stat: serde_json::Value =
+        serde_json::from_slice(&run(&["lsjson", &format!("TWODRIVE:{NAME}"), "--stat"])).unwrap();
+    assert_eq!(stat["Size"], 10);
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 0);
     assert_eq!(
         run(&[
             "cat",
@@ -372,4 +507,5 @@ fn official_rclone_reads_the_private_provider_bridge() {
         ]),
         b"3456"
     );
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 1);
 }

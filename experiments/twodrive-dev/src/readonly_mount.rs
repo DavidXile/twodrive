@@ -21,7 +21,7 @@ use std::{
     net::SocketAddr,
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -34,6 +34,10 @@ struct Cached {
     meta: MetadataEntry,
     file: tempfile::NamedTempFile,
 }
+struct Download {
+    meta: MetadataEntry,
+    lock: Weak<Mutex<()>>,
+}
 struct QuotaSample {
     checked: Instant,
     value: Option<(u64, u64)>,
@@ -42,12 +46,13 @@ struct Inner {
     backend: Backend,
     writer: Option<Arc<crate::mount_write::Writer>>,
     cache: Mutex<VecDeque<Arc<Cached>>>,
+    downloads: Mutex<Vec<Download>>,
     quota: Mutex<Option<QuotaSample>>,
     directory: tempfile::TempDir,
     stop: Arc<AtomicBool>,
 }
 #[derive(Clone)]
-struct RemoteFs(Arc<Inner>);
+struct RemoteFs(Arc<Inner>, bool); // The HEAD view may open metadata, never content.
 #[derive(Clone, Debug)]
 struct Meta(MetadataEntry);
 impl DavMetaData for Meta {
@@ -121,16 +126,53 @@ impl RemoteFs {
         }
         Ok(entry)
     }
-    fn materialize(&self, entry: MetadataEntry) -> anyhow::Result<Arc<Cached>> {
+    fn cached(&self, entry: &MetadataEntry) -> anyhow::Result<Option<Arc<Cached>>> {
         let mut cache = self
             .0
             .cache
             .lock()
             .map_err(|_| anyhow::anyhow!("cache unavailable"))?;
-        self.check()?;
-        if let Some(i) = cache.iter().position(|item| same(&item.meta, &entry)) {
+        if let Some(i) = cache.iter().position(|item| same(&item.meta, entry)) {
             let item = cache.remove(i).unwrap();
             cache.push_front(item.clone());
+            return Ok(Some(item));
+        }
+        Ok(None)
+    }
+    fn materialize(&self, entry: MetadataEntry) -> anyhow::Result<Arc<Cached>> {
+        self.check()?;
+        if let Some(item) = self.cached(&entry)? {
+            return Ok(item);
+        }
+        // Only readers of the same object/version wait together. Never hold
+        // the global cache lock during network I/O for an unrelated file.
+        let lock = {
+            let mut downloads = self
+                .0
+                .downloads
+                .lock()
+                .map_err(|_| anyhow::anyhow!("download coordination unavailable"))?;
+            downloads.retain(|item| item.lock.strong_count() != 0);
+            if let Some(lock) = downloads
+                .iter()
+                .find(|item| same(&item.meta, &entry))
+                .and_then(|item| item.lock.upgrade())
+            {
+                lock
+            } else {
+                let lock = Arc::new(Mutex::new(()));
+                downloads.push(Download {
+                    meta: entry.clone(),
+                    lock: Arc::downgrade(&lock),
+                });
+                lock
+            }
+        };
+        let _download = lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("download unavailable"))?;
+        self.check()?;
+        if let Some(item) = self.cached(&entry)? {
             return Ok(item);
         }
         // The complete temporary file is published only after the provider's
@@ -176,6 +218,11 @@ impl RemoteFs {
             meta: entry,
             file: temp,
         });
+        let mut cache = self
+            .0
+            .cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("cache unavailable"))?;
         cache.push_front(item.clone());
         // Retain at most eight versions / 2 GiB, except one larger currently
         // requested file. Active readers keep their own Arc and file handle.
@@ -191,6 +238,44 @@ impl RemoteFs {
 struct RemoteFile {
     cached: Arc<Cached>,
     file: File,
+}
+#[derive(Debug)]
+struct MetadataFile {
+    meta: MetadataEntry,
+    position: u64,
+}
+impl DavFile for MetadataFile {
+    fn metadata(&mut self) -> FsFuture<'_, Box<dyn DavMetaData>> {
+        Box::pin(std::future::ready(Ok(
+            Box::new(Meta(self.meta.clone())) as _
+        )))
+    }
+    fn read_bytes(&mut self, _: usize) -> FsFuture<'_, Bytes> {
+        Box::pin(std::future::ready(Err(FsError::Forbidden)))
+    }
+    fn seek(&mut self, at: SeekFrom) -> FsFuture<'_, u64> {
+        let position = match at {
+            SeekFrom::Start(n) => Some(n),
+            SeekFrom::Current(n) => self.position.checked_add_signed(n),
+            SeekFrom::End(n) => self.meta.size.checked_add_signed(n),
+        };
+        Box::pin(std::future::ready(match position {
+            Some(n) => {
+                self.position = n;
+                Ok(n)
+            }
+            None => Err(FsError::GeneralFailure),
+        }))
+    }
+    fn write_buf(&mut self, _: Box<dyn Buf + Send>) -> FsFuture<'_, ()> {
+        Box::pin(std::future::ready(Err(FsError::Forbidden)))
+    }
+    fn write_bytes(&mut self, _: Bytes) -> FsFuture<'_, ()> {
+        Box::pin(std::future::ready(Err(FsError::Forbidden)))
+    }
+    fn flush(&mut self) -> FsFuture<'_, ()> {
+        Box::pin(std::future::ready(Ok(())))
+    }
 }
 impl std::fmt::Debug for RemoteFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -273,6 +358,14 @@ impl DavFileSystem for RemoteFs {
             if entry.is_dir {
                 return Err(FsError::Forbidden);
             }
+            if self.1 {
+                // dav-server opens files for HEAD as well as GET. Reuse its
+                // conditional/range handling without fetching any body bytes.
+                return Ok(Box::new(MetadataFile {
+                    meta: entry,
+                    position: 0,
+                }) as _);
+            }
             let cached = self
                 .materialize(entry)
                 .map_err(|_| FsError::GeneralFailure)?;
@@ -352,14 +445,18 @@ impl Bridge {
             .prefix("readonly-mount-")
             .tempdir_in(cache_parent)?;
         let stop = Arc::new(AtomicBool::new(false));
-        let fs = RemoteFs(Arc::new(Inner {
-            backend,
-            writer: writer.clone(),
-            cache: Mutex::default(),
-            quota: Mutex::default(),
-            directory,
-            stop: stop.clone(),
-        }));
+        let fs = RemoteFs(
+            Arc::new(Inner {
+                backend,
+                writer: writer.clone(),
+                cache: Mutex::default(),
+                downloads: Mutex::default(),
+                quota: Mutex::default(),
+                directory,
+                stop: stop.clone(),
+            }),
+            false,
+        );
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         let address = listener.local_addr()?;
         listener.set_nonblocking(true)?;
@@ -375,6 +472,9 @@ impl Bridge {
                 let Ok(listener) = TcpListener::from_std(listener) else {
                     return;
                 };
+                let head_handler = DavHandler::builder()
+                    .filesystem(Box::new(RemoteFs(fs.0.clone(), true)))
+                    .build_handler();
                 let handler = DavHandler::builder()
                     .filesystem(Box::new(fs))
                     .build_handler();
@@ -389,12 +489,17 @@ impl Bridge {
                         continue;
                     };
                     let handler = handler.clone();
+                    let head_handler = head_handler.clone();
                     let auth = auth.clone();
                     let writer = writer.clone();
                     tokio::spawn(async move {
                         let _permit = permit;
                         let service = service_fn(move |request: Request<Incoming>| {
-                            let handler = handler.clone();
+                            let handler = if request.method() == http::Method::HEAD {
+                                head_handler.clone()
+                            } else {
+                                handler.clone()
+                            };
                             let auth = auth.clone();
                             let writer = writer.clone();
                             async move {

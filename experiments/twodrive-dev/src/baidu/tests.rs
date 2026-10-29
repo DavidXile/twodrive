@@ -663,6 +663,23 @@ fn hexadecimal_content_md5_is_checked_before_mount_range_reads() {
             .timeout(Duration::from_secs(5))
             .build()
             .unwrap();
+        let head = c
+            .head(format!(
+                "http://{}/%E4%B8%AD%E6%96%87%20%23%25.txt",
+                bridge.address
+            ))
+            .bearer_auth(&bridge.token)
+            .send()
+            .unwrap();
+        assert_eq!(head.status(), 200);
+        assert!(
+            !f.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|path| path == "/content"),
+            "Baidu mount metadata must not fetch the file body"
+        );
         let response = c
             .get(format!(
                 "http://{}/%E4%B8%AD%E6%96%87%20%23%25.txt",
