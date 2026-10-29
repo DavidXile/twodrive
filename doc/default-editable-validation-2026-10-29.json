@@ -2,7 +2,7 @@
   "scope": "default editable desktop and native mounts; disposable local services only",
   "user_cloud_probes": 0,
   "user_cloud_writes_or_deletes": 0,
-  "deployed": false,
+  "deployed": true,
   "windows_rust": {
     "passed": 143,
     "ignored": 7
@@ -121,5 +121,59 @@
     "Linux release build",
     "hosted CI approval/execution",
     "user acceptance of this preview"
-  ]
+  ],
+  "deployment": {
+    "scope": "local configuration, private VFS status and owned process metadata only; no cloud/file probes or mouse",
+    "verified_at": "2026-10-29T04:46:10.272938+00:00",
+    "bundle": "TwoDrive-0.1.7-default-editable-20261029",
+    "source_commit": "2a3245aa93fd2b6ed4cafffebc29507a2b22af7f",
+    "one_gui_and_main_engine": true,
+    "original_state_used": true,
+    "original_profiles_revisions_bindings_selection_and_D_paths_preserved": true,
+    "all_four_writable_mount_workers_restored": true,
+    "accounts": [
+      {
+        "provider": "onedrive",
+        "original_config_and_session_identity_preserved": true,
+        "mount_path": "D:\\TwoDrive\\OneDrive",
+        "owned_mount_worker_running": true,
+        "owned_native_component_running": true,
+        "fresh_writable_vfs_status_observed": true,
+        "pending": 0,
+        "cache_error": false
+      },
+      {
+        "provider": "icloud",
+        "original_config_and_session_identity_preserved": true,
+        "mount_path": "D:\\TwoDrive\\iCloudDrive",
+        "owned_mount_worker_running": true,
+        "owned_native_component_running": true,
+        "fresh_writable_vfs_status_observed": true,
+        "pending": 0,
+        "cache_error": false
+      },
+      {
+        "provider": "baidu",
+        "original_config_and_session_identity_preserved": true,
+        "mount_path": "D:\\TwoDrive\\Baidu",
+        "owned_mount_worker_running": true,
+        "owned_native_component_running": true,
+        "fresh_writable_vfs_status_observed": true,
+        "pending": 0,
+        "cache_error": false
+      },
+      {
+        "provider": "google",
+        "original_config_and_session_identity_preserved": true,
+        "mount_path": "D:\\TwoDrive\\GoogleDrive",
+        "owned_mount_worker_running": true,
+        "owned_native_component_running": true,
+        "fresh_writable_vfs_status_observed": true,
+        "pending": 0,
+        "cache_error": false
+      }
+    ],
+    "real_cloud_write_delete_acceptance": "pending user test",
+    "passed": true
+  }
 }
