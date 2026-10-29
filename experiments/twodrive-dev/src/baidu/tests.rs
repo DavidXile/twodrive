@@ -310,6 +310,46 @@ fn paginates_without_recursive_inventory_or_url_override() {
     assert!(api.trusted_download(&Url::parse("https://d.pcs.baidu.com/file").unwrap()));
 }
 #[test]
+fn downloads_validate_hexadecimal_content_md5() {
+    for expected in [
+        format!("{:x}", md5::Md5::digest(DATA)),
+        format!("{:X}", md5::Md5::digest(DATA)),
+    ] {
+        let f = Fixture::new(move |u, _| {
+            (u.path() == "/content").then(|| {
+                Response::from_data(DATA.to_vec())
+                    .with_header(Header::from_bytes("Content-MD5", expected.clone()).unwrap())
+            })
+        });
+        let b = f.backend("/");
+        let id = b.list_directory("/").unwrap()[0].remote_id.clone();
+        assert_eq!(b.download(&id).unwrap(), DATA);
+    }
+}
+
+#[test]
+fn malformed_and_incorrect_content_md5_never_publish_success() {
+    for expected in [
+        "00000000000000000000000000000000",
+        "AAAAAAAAAAAAAAAAAAAAAA==",
+        "aW52YWxpZA==",
+        "not-a-digest",
+        "",
+    ] {
+        let f = Fixture::new(move |u, _| {
+            (u.path() == "/content").then(|| {
+                Response::from_data(DATA.to_vec())
+                    .with_header(Header::from_bytes("Content-MD5", expected).unwrap())
+            })
+        });
+        let b = f.backend("/");
+        let id = b.list_directory("/").unwrap()[0].remote_id.clone();
+        assert!(b.download(&id).is_err());
+        assert!(auth::load(&f.state).is_ok());
+    }
+}
+
+#[test]
 fn changed_content_md5_and_metadata_cannot_publish_success() {
     let f = Fixture::new(|u, _| {
         if u.path() == "/content" {
@@ -592,6 +632,53 @@ fn changed_refresh_identity_is_rejected_before_file_access() {
             .iter()
             .any(|v| v.ends_with("/file"))
     );
+}
+
+#[test]
+fn hexadecimal_content_md5_is_checked_before_mount_range_reads() {
+    for valid in [true, false] {
+        let f = Fixture::new(move |u, _| {
+            (u.path() == "/content").then(|| {
+                Response::from_data(DATA.to_vec()).with_header(
+                    Header::from_bytes(
+                        "Content-MD5",
+                        if valid {
+                            format!("{:x}", md5::Md5::digest(DATA))
+                        } else {
+                            "00000000000000000000000000000000".into()
+                        },
+                    )
+                    .unwrap(),
+                )
+            })
+        });
+        let cache = tempfile::tempdir().unwrap();
+        let bridge = crate::readonly_mount::Bridge::start(
+            crate::provider::Backend::new(f.backend("/")),
+            cache.path(),
+        )
+        .unwrap();
+        let c = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let response = c
+            .get(format!(
+                "http://{}/%E4%B8%AD%E6%96%87%20%23%25.txt",
+                bridge.address
+            ))
+            .bearer_auth(&bridge.token)
+            .header("Range", "bytes=2-9")
+            .send()
+            .unwrap();
+        if valid {
+            assert_eq!(response.status(), 206);
+            assert_eq!(&response.bytes().unwrap()[..], &DATA[2..10]);
+        } else {
+            assert!(!response.status().is_success());
+        }
+    }
 }
 
 #[test]
