@@ -131,30 +131,29 @@ void main() {
       c.dispose();
     },
   );
-  testWidgets(
-    'read-only mount card explains behavior and disables absent driver',
-    (tester) async {
-      final c = MountClient(installed: false);
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: SingleChildScrollView(
-              child: MountCard(client: c, onOpen: () {}),
-            ),
+  testWidgets('mount card explains editing and disables absent driver', (
+    tester,
+  ) async {
+    final c = MountClient(installed: false);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: MountCard(client: c, onOpen: () {}),
           ),
         ),
-      );
-      expect(find.text('文件管理器挂载 · 只读'), findsOneWidget);
-      final button = tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, '挂载'),
-      );
-      expect(button.onPressed, isNull);
-      expect(find.textContaining('不能在挂载内修改或删除'), findsOneWidget);
-      expect(find.textContaining('待上传完成'), findsNothing);
-      await tester.pumpWidget(const SizedBox());
-      c.dispose();
-    },
-  );
+      ),
+    );
+    expect(find.text('文件管理器挂载'), findsOneWidget);
+    final button = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, '挂载'),
+    );
+    expect(button.onPressed, isNull);
+    expect(find.textContaining('网盘回收站'), findsOneWidget);
+    expect(find.textContaining('待上传完成'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
   testWidgets(
     'a retained mount can still be unmounted when its connection fails',
     (tester) async {

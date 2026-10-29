@@ -19,6 +19,4 @@ pub mod state;
 pub mod test_agent;
 pub mod webdav;
 
-pub mod write_lock;
-
 pub mod write_recovery;

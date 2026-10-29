@@ -132,7 +132,7 @@ pub fn retain_secrets(p: &mut Profile, previous: Option<&Profile>, clear: bool) 
 }
 pub fn public_profile(p: &Profile) -> Value {
     let mut value = json!({"id":p.id,"revision":p.revision,"name":p.name,"kind":p.kind,
-        "writable":p.writable,"mount_path":p.mount_path,"network_route":p.network_route});
+        "writable":editable(p),"mount_path":p.mount_path,"network_route":p.network_route});
     if let Ok(d) = descriptor(&p.kind) {
         if p.kind == "icloud" {
             value["login_required"] = json!(icloud::login_required(p));
@@ -160,7 +160,7 @@ pub fn public_profile(p: &Profile) -> Value {
             }
         }
         let mut capabilities = d["capabilities"].clone();
-        if !p.writable {
+        if !editable(p) {
             for key in ["upload", "mkdir", "rename", "delete", "backup"] {
                 capabilities[key] = json!(false);
             }
@@ -179,27 +179,23 @@ pub fn connect(
     cancel: &AtomicBool,
     network: Arc<twodrive_dev::network::Diagnostics>,
 ) -> anyhow::Result<Connection> {
-    let (effective, guard) = effective_access(p, &args.state)?;
+    let effective = effective_access(p);
     let mut connection = connect_raw(&effective, args, cancel, network)?;
     connection.backend = connection
         .backend
-        .with_write_access(effective.writable, guard);
+        .with_write_access(effective.writable, None);
     Ok(connection)
 }
-fn effective_access(
-    p: &Profile,
-    root: &Path,
-) -> anyhow::Result<(Profile, Option<(std::path::PathBuf, String)>)> {
-    let state = twodrive_dev::state::State::new(root.to_owned())?;
+/// Cloud accounts edit by default, including legacy profiles saved as read-only.
+/// Paired devices retain the owner's exported grant. Remote authorization and
+/// each adapter's actual capabilities still decide which writes can succeed.
+pub fn editable(p: &Profile) -> bool {
+    p.kind != "peer" || p.writable
+}
+fn effective_access(p: &Profile) -> Profile {
     let mut effective = p.clone();
-    effective.writable = twodrive_dev::write_lock::unlocked(&state, p);
-    let guard = if twodrive_dev::write_lock::configured(&state) {
-        effective.writable = twodrive_dev::write_lock::unlocked(&state, p);
-        Some(twodrive_dev::write_lock::guard(&state, p)?)
-    } else {
-        None
-    };
-    Ok((effective, guard))
+    effective.writable = editable(p);
+    effective
 }
 fn connect_raw(
     p: &Profile,
@@ -224,8 +220,7 @@ pub fn restore(p: &Profile, recipe: &Value, paused: &Path) -> anyhow::Result<Bac
             && recipe["revision"].as_str() == Some(&p.revision),
         "worker session belongs to another profile revision"
     );
-    let (effective, guard) =
-        effective_access(p, paused.parent().context("missing desktop state")?)?;
+    let effective = effective_access(p);
     let p = &effective;
     let backend = match p.kind.as_str() {
         "dav" => dav::restore(p, recipe)?,
@@ -237,7 +232,7 @@ pub fn restore(p: &Profile, recipe: &Value, paused: &Path) -> anyhow::Result<Bac
         _ => anyhow::bail!("unsupported provider"),
     };
     Ok(backend
-        .with_write_access(effective.writable, guard)
+        .with_write_access(effective.writable, None)
         .with_pause_file(paused.to_path_buf()))
 }
 /// Recreate an owned connection using existing credentials only. Unlike worker
@@ -259,7 +254,7 @@ pub fn resume(
         .filter(|v| !v.is_empty())
         .context("缺少已保存的账号身份，请手动连接")?;
     validate(p)?;
-    let (effective, guard) = effective_access(p, &args.state)?;
+    let effective = effective_access(p);
     let p = &effective;
     let mut connection = match p.kind.as_str() {
         "onedrive" => onedrive::resume(p, cancel, network)?,
@@ -282,7 +277,7 @@ pub fn resume(
     );
     connection.backend = connection
         .backend
-        .with_write_access(effective.writable, guard);
+        .with_write_access(effective.writable, None);
     Ok(connection)
 }
 pub fn session(connection: &Connection, p: &Profile) -> Value {
@@ -344,6 +339,31 @@ pub fn sign_out(p: &Profile) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_cloud_profiles_edit_without_rewriting_identity_or_credentials() {
+        for kind in ["dav", "onedrive", "icloud", "baidu", "google"] {
+            let p: Profile = serde_json::from_value(json!({"id":"old-account",
+                "revision":"saved-revision","kind":kind,"writable":false,
+                "mount_path":"D:/TwoDrive/synthetic","private_marker":"preserve"}))
+            .unwrap();
+            let original = serde_json::to_value(&p).unwrap();
+            let effective = effective_access(&p);
+            assert!(effective.writable);
+            assert_eq!(effective.id, p.id);
+            assert_eq!(effective.revision, p.revision);
+            assert_eq!(effective.options, p.options);
+            assert_eq!(effective.mount_path, p.mount_path);
+            assert_eq!(serde_json::to_value(&p).unwrap(), original);
+            let public = public_profile(&p);
+            assert_eq!(public["writable"], true);
+            assert_eq!(public["capabilities"]["upload"], true);
+        }
+        let peer: Profile =
+            serde_json::from_value(json!({"kind":"peer","writable":false})).unwrap();
+        assert!(!effective_access(&peer).writable);
+        assert_eq!(public_profile(&peer)["capabilities"]["upload"], false);
+        assert!(Profile::default().writable);
+    }
     #[test]
     fn baidu_schema_keeps_private_credentials_and_separates_manual_from_conditional_writes() {
         let d = descriptor("baidu").unwrap();

@@ -253,24 +253,23 @@ fn weak_api_recovery_keeps_both_versions_if_confirmation_does_not_match() {
 }
 #[test]
 fn revoking_or_restarting_a_write_permit_blocks_every_mutation_but_allows_reads() {
-    use twodrive_dev::{profile::Profile, state::State, write_lock};
+    use twodrive_dev::state::State;
     let dir = tempfile::tempdir().unwrap();
     let state = State::new(dir.path().join("private")).unwrap();
-    write_lock::begin_run(&state).unwrap();
-    write_lock::set_password(&state, "synthetic-password").unwrap();
-    let profile: Profile =
-        serde_json::from_value(serde_json::json!({"id":"a","revision":"r","writable":true}))
-            .unwrap();
-    write_lock::permit(&state, &profile).unwrap();
+    state.save("write-run.json", &"synthetic-run").unwrap();
+    let lease = state.dir.join("remote-grant.json");
+    let token = "synthetic-run:remote-grant";
+    state.save("remote-grant.json", &token).unwrap();
     let p = OpaqueProvider::default();
-    let backend = Backend::new(p.clone())
-        .with_write_access(true, Some(write_lock::guard(&state, &profile).unwrap()));
+    let backend = Backend::new(p.clone()).with_write_access(true, Some((lease, token.into())));
     let input = dir.path().join("source");
     std::fs::write(&input, b"edit").unwrap();
     let m = backend
         .upload_path("/file", &input, None, Arc::new(|_, _| Ok(())))
         .unwrap();
-    write_lock::begin_run(&state).unwrap();
+    state
+        .save("write-run.json", &"renewed-remote-grant")
+        .unwrap();
     assert!(
         backend
             .upload_path("/file", &input, Some(&m.etag), Arc::new(|_, _| Ok(())))

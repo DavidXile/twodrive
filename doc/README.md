@@ -22,6 +22,7 @@ These are historical investigations/design records, not the current user manual.
 
 | Topic | Record |
 | --- | --- |
+| Default editable desktop accounts and Windows mounts | [2026-10-29 design and validation](default-editable-2026-10-29.md) |
 | Local workspace cleanup and recovery | [2026-10-07](workspace-cleanup-2026-10-07.md) |
 | Development 0.1.5 release and workspace cleanup | [2026-10-15](workspace-cleanup-2026-10-15.md) |
 | Nautilus responsiveness monitor | [2026-09-24](nautilus-hang-monitor-2026-09-24.md) |

@@ -4,7 +4,6 @@ import argparse,importlib.util,json,os,subprocess,tempfile,time
 from pathlib import Path
 spec=importlib.util.spec_from_file_location('desktop',Path(__file__).with_name('test-dav-desktop.py'))
 desktop=importlib.util.module_from_spec(spec);spec.loader.exec_module(desktop)
-PASSWORD='synthetic-test-password-only'
 def wait_for(test,seconds=25):
     until=time.monotonic()+seconds
     while time.monotonic()<until:
@@ -30,12 +29,10 @@ def run(args):
                 engine.call('connect',{'id':name})
             profiles={p['id']:p for p in engine.call('profiles')['profiles']}
             owner=lambda name:{'profile':name,'revision':profiles[name]['revision']}
-            engine.call('set_write_password',{'password':PASSWORD})
-            engine.call('set_access',dict(owner('a'),mode='editable',password='wrong'),failure=True)
-            assert all(not p['writable'] for p in engine.call('profiles')['profiles'])
-            report['checks']['password_required_before_permission_change']=True
+            assert all(p['writable'] and 'write_locked' not in p for p in profiles.values())
+            assert 'write_lock' not in engine.call('status')
+            report['checks']['legacy_readonly_profiles_edit_without_password']=True
             if not engine.call('status')['mount_support']['driver_installed'] and args.allow_missing_driver:
-                engine.call('set_access',dict(owner('a'),mode='editable',password=PASSWORD))
                 profiles={p['id']:p for p in engine.call('profiles')['profiles']}
                 source=root/'gui-fixture.txt';source.write_bytes(b'GUI permission fixture')
                 engine.call('upload',dict(owner('a'),path='/gui.txt',source=str(source)))
@@ -46,14 +43,8 @@ def run(args):
                 engine.close();engine=None
                 Path(args.report).write_text(json.dumps(report,indent=2),encoding='utf-8');print(json.dumps(report));return
             for name in ('a','b'):engine.call('mount',owner(name))
-            try:(root/'mounts'/'a'/'forbidden').write_bytes(b'denied')
-            except OSError:pass
-            else:raise AssertionError('read-only mount accepted a write')
-            assert not (root/'share-a'/'forbidden').exists()
-            engine.call('set_access',dict(owner('a'),mode='editable',password=PASSWORD))
-            profiles={p['id']:p for p in engine.call('profiles')['profiles']}
             engine.active_profile='a';engine.active_revision=profiles['a']['revision']
-            assert engine.call('status')['profile']=='b','changing a parked account must preserve browsing selection'
+            assert engine.call('status')['profile']=='b','mounting a parked account must preserve browsing selection'
             assert {m['profile'] for m in engine.call('status')['mounts']}=={'a','b'}
             mount=root/'mounts'/'a'
             with (mount/'created.txt').open('w+b') as file:
@@ -67,30 +58,23 @@ def run(args):
             wait_for(lambda:(root/'share-a'/'folder'/'renamed.txt').exists())
             (mount/'folder'/'renamed.txt').unlink();(mount/'folder').rmdir()
             wait_for(lambda:not (root/'share-a'/'folder').exists())
-            source=root/'gui-upload.txt';source.write_bytes(b'GUI writes use the same unlocked permission')
+            source=root/'gui-upload.txt';source.write_bytes(b'GUI writes work without a local permission step')
             engine.call('upload',dict(owner('a'),path='/gui.txt',source=str(source)))
             assert (root/'share-a'/'gui.txt').read_bytes()==source.read_bytes()
             report['native_mount_verified']=True
             report['checks']['native_seek_edit_create_rename_delete_and_gui_upload']=True
             report['checks']['other_account_mount_and_content_preserved']=True
             wait_for(lambda:engine.call('status')['overall']['pending']==0)
-            engine.call('set_access',dict(owner('a'),mode='locked'))
-            profiles={p['id']:p for p in engine.call('profiles')['profiles']}
-            engine.call('upload',dict(owner('a'),path='/denied',source=str(source)),failure=True)
-            assert profiles['a']['write_locked'] and profiles['a']['writable']
             engine.close();engine=desktop.Engine(args.engine,args.peer,root)
             for name in ('a','b'):
                 engine.call('resume',{'id':name,'revision':profiles[name]['revision']})
                 engine.call('mount',owner(name))
-            public={p['id']:p for p in engine.call('profiles')['profiles']}
-            assert public['a']['write_locked']
+                assert engine.call('status')['capabilities']['upload']
+                (root/'mounts'/name/'restart-created.txt').write_bytes(b'editable after restart')
+                wait_for(lambda name=name:(root/('share-'+name)/'restart-created.txt').exists())
             assert (root/'mounts'/'a'/'file.txt').read_bytes()==b'changed A!'
-            try:(root/'mounts'/'a'/'restart-denied').write_bytes(b'denied')
-            except OSError:pass
-            else:raise AssertionError('restart restored unlocked write access')
-            report['checks']['relock_and_restart_restore_readable_readonly_mounts']=True
+            report['checks']['both_accounts_restart_editable_without_password']=True
             # Crash recovery must retain the editor's original version claim.
-            engine.call('set_access',dict(owner('a'),mode='editable',password=PASSWORD))
             profiles={p['id']:p for p in engine.call('profiles')['profiles']}
             assert (root/'mounts'/'a'/'file.txt').read_bytes()==b'changed A!'
             (root/'share-a'/'file.txt').write_bytes(b'external change')
@@ -99,7 +83,6 @@ def run(args):
             wait_for(lambda:engine.call('status')['overall']['pending']>0)
             assert (root/'share-a'/'file.txt').read_bytes()==b'external change'
             engine.call('unmount',owner('a'),failure=True)
-            engine.call('set_access',dict(owner('a'),mode='locked'),failure=True)
             engine.call('quit',failure=True)
             assert len(engine.call('status')['connections'])==2
             recovery=engine.call('write_recovery',{'profile':'a'})['directories']
@@ -113,15 +96,15 @@ def run(args):
             assert any(p.read_bytes()==b'my conflicting edit' for d in recovery for p in Path(d).rglob('*.content'))
             assert engine.call('status')['overall']['pending']>0
             report['checks']['conflict_blocks_teardown_and_crash_restart_retains_local_edit_without_overwriting']=True
-            engine.close();engine=desktop.Engine(args.engine,args.peer,root)
+            engine.process.terminate();engine.process.wait(timeout=10);engine.close();engine=None
+            wait_for(lambda:all(not (root/'mounts'/name).exists() for name in ('a','b')))
+            engine=desktop.Engine(args.engine,args.peer,root)
             # An explicit account change must not replay the former account's
             # dirty cache, even when the virtual filename is identical.
             account_b=json.loads((root/'server-b'/'credentials.json').read_text(encoding='utf-8'))
             old_profile=profiles['a']
             engine.call('save_profile',{'id':'a','kind':'dav','name':'Changed generated account','url':profiles['b']['url'],**account_b,'network_route':'system','writable':True,'mount_path':old_profile['mount_path']})
             engine.call('connect',{'id':'a'})
-            profiles={p['id']:p for p in engine.call('profiles')['profiles']}
-            engine.call('set_access',dict(owner('a'),mode='editable',password=PASSWORD))
             profiles={p['id']:p for p in engine.call('profiles')['profiles']}
             engine.call('mount',owner('a'))
             assert (root/'mounts'/'a'/'file.txt').read_bytes()==b'original b'

@@ -22,16 +22,6 @@ pub(super) struct Job {
     handle: thread::JoinHandle<()>,
 }
 pub(super) type Jobs = HashMap<u64, Job>;
-impl Job {
-    pub(super) fn belongs_to(&self, id: &str) -> bool {
-        self.profile == id && !self.handle.is_finished()
-    }
-}
-impl Parked {
-    pub(super) fn is_mounted(&self) -> bool {
-        self.mounted.is_some()
-    }
-}
 
 pub(super) fn aggregate_accounts(accounts: &[Value]) -> Value {
     let mut active = Vec::new();
@@ -200,9 +190,21 @@ impl App {
                 .ok()
                 .and_then(|s| serde_json::from_slice(&s).ok())
                 .unwrap_or(json!({"active":[]}));
+            let writable = if self
+                .connected
+                .as_ref()
+                .is_some_and(|active| active.id == p.id)
+            {
+                self.backend.as_ref()
+            } else {
+                self.inactive
+                    .get(&p.id)
+                    .and_then(|saved| saved.backend.as_ref())
+            }
+            .is_some_and(|backend| backend.manual_upload_supported());
             states.push(json!({"profile":p.id,"revision":p.revision,"name":p.name,
                 "account_name":self.account_name(&p),"connected":connected,"mounted":mounted,
-                "mount_path":p.mount_path,"writable":twodrive_dev::write_lock::unlocked(&self.state,&p),"mount_failed":mount_failed,"backup_failed":backup_failed,
+                "mount_path":p.mount_path,"writable":writable,"mount_failed":mount_failed,"backup_failed":backup_failed,
                 "gateway_failed":gateway_failed,"route_fallback":fallback,
                 "cache":self.cache(&p,false)?,"backup":backup::report(&self.state,&p)?,"mount_activity":activity}));
         }
@@ -347,7 +349,7 @@ impl App {
             } else {
                 self.inactive.get(id).is_some_and(|s| s.mounted.is_some())
             };
-            if mounted && twodrive_dev::write_lock::unlocked(&self.state, &self.profile(id)?) {
+            if mounted && providers::editable(&self.profile(id)?) {
                 ensure!(
                     self.cache(&self.profile(id)?, false)?["pending"] == 0,
                     "挂载仍有未上传或冲突的数据，请先完成同步；缓存已保留"

@@ -108,7 +108,7 @@ flowchart LR
 
 ## 4. 上传入口与数据合同
 
-UI 上传入口必须由实际 `upload && conditional_upload` 能力共同开启；覆盖文件必须明确选择目标和现存版本。`writable=true` 是用户许可，仍需服务端和适配器能力同时允许。不能将“可以调用 PUT”直接等同于“支持安全覆盖/备份/读写挂载”。
+UI 手动上传入口必须由实际 `upload && (conditional_upload || manual_upload)` 能力共同开启；覆盖文件必须明确选择目标和现存版本。云盘默认可编辑，仍需服务端和适配器能力同时允许；成对设备授权由分享方决定。不能将“可以调用 PUT”直接等同于“支持安全覆盖/备份/读写挂载”。当前策略见 [默认可编辑](default-editable-2026-10-29.md)。
 
 | 操作/值 | 必须保证的语义 |
 | --- | --- |
@@ -170,6 +170,8 @@ Ship protocol/auth/contract/UI/recovery regressions and clearly separate mock, i
 
 
 ## 2026-10-28：显式手动写入与本机写入锁
+
+本节的本机密码和重启只读为历史设计，已由 [2026-10-29 默认可编辑策略](default-editable-2026-10-29.md) 替代。手动写入与原子条件上传的区别、恢复副本和缓存隔离约束继续生效。
 
 用户明确要求三家网盘的客户端及 Windows 挂载都可编辑，并要求修改前增加密码/锁。新增 `manual_upload_supported/manual_upload` 明确区分不具备原子 CAS 的手动编辑；原 `upload_controlled`、`upload_path/upload_snapshot` 与自动备份的原子版本合同保持不变。前端仅在实际 `upload && (conditional_upload || manual_upload)` 时允许手动上传，不使用网盘类型分支。iCloud/百度普通写入必须先保存原内容和编辑内容、核对版本、上传后核对内容，并公开不具备原子覆盖的边界；它们不因此获得 backup 能力。
 

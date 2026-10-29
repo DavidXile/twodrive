@@ -27,8 +27,6 @@ use twodrive_dev::{
     state::State,
 };
 
-#[path = "desktop_access.rs"]
-mod access;
 #[path = "desktop_backup.rs"]
 mod backup;
 #[path = "desktop_connections.rs"]
@@ -219,8 +217,6 @@ impl App {
                 public["account_name"] = json!(self.account_name(p));
                 public["connected"] = json!(self.online(&p.id));
                 public["startup_ready"] = json!(self.saved_session(p).is_some());
-                public["write_locked"] =
-                    json!(p.writable && !twodrive_dev::write_lock::unlocked(&self.state, p));
                 public
             })
             .collect();
@@ -312,7 +308,7 @@ impl App {
         {
             if check_pending
                 && let Some(p) = &self.connected
-                && twodrive_dev::write_lock::unlocked(&self.state, p)
+                && providers::editable(p)
             {
                 ensure!(
                     windows_mount::cache_status(self, p)?["pending"] == 0,
@@ -330,7 +326,7 @@ impl App {
                 self.mounted.take();
                 return Ok(());
             }
-            if check_pending && twodrive_dev::write_lock::unlocked(&self.state, p) {
+            if check_pending && providers::editable(p) {
                 ensure!(
                     self.cache(p, false)?["pending"] == 0,
                     "挂载仍有未上传或冲突的数据，请先完成同步；缓存已保留"
@@ -545,11 +541,7 @@ impl App {
         let supported_mount = windows_mount::installed();
         #[cfg(not(windows))]
         let supported_mount = cfg!(all(target_os = "linux", feature = "mount"))
-            && (self
-                .connected
-                .as_ref()
-                .is_none_or(|p| !twodrive_dev::write_lock::unlocked(&self.state, p))
-                || (c.backup() && c.rename && c.delete));
+            && (!c.upload || (c.backup() && c.rename && c.delete));
         value["mount"] = json!(self.backend.is_some() && supported_mount);
         value
     }
@@ -615,7 +607,6 @@ impl App {
             "multi_connection":true,"storage_usage":true,"connections":self.config.profiles.iter().filter(|p|self.online(&p.id)).map(|p|json!({"id":p.id,"revision":p.revision,"account_name":self.account_name(p)})).collect::<Vec<_>>(),
             "mounted":self.mounted.is_some(),"mount_failed":mount_dead,"gateway_failed":gateway_dead,"mount_support":mount_support,
             "accounts":accounts,"overall":overall,"mounts":mounts,
-            "write_lock":{"configured":twodrive_dev::write_lock::configured(&self.state)},
             "cache":cache,"network":network,
             "account_name": self.connected.as_ref().and_then(|p| self.account_name(p)),
             "autostart":self.autostart_path()?.exists()}),
@@ -686,13 +677,9 @@ impl App {
                 }
                 Ok(json!({"directories":directories}))
             }
-            "set_write_password" => {
-                twodrive_dev::write_lock::set_password(&self.state, string(a, "password")?)?;
-                self.status()
-            }
-            "set_access" => self.change_access(a, &cancel),
             "save_profile" => {
                 let mut p: Profile = serde_json::from_value(a.clone())?;
+                p.writable = providers::editable(&p);
                 p.revision = twodrive_dev::state::random_secret();
                 if p.id.is_empty() {
                     p.id = format!(
@@ -946,7 +933,7 @@ pub fn run() -> anyhow::Result<()> {
         let session = app.state.read(&format!("session-{}.json", p.id))?;
         let (backend, binding) =
             providers::restore_session(&p, &session, &app.state.dir.join("paused"))?;
-        let writable = twodrive_dev::write_lock::unlocked(&app.state, &p);
+        let writable = backend.capabilities().upload;
         return mount::mount(
             State::new(app.mount_state(&p))?,
             p.mount_path,
@@ -960,7 +947,6 @@ pub fn run() -> anyhow::Result<()> {
         return windows_mount::worker(&app, &app.profile(id)?);
     }
     let _lock = app.state.run_lock()?;
-    twodrive_dev::write_lock::begin_run(&app.state)?;
     if let Some(root) = &app.args.native_local_fixture_root {
         app.native_fixture = local_files::NativeFixture::start(root)?;
     }
@@ -1118,11 +1104,9 @@ mod tests {
     use test_provider::OpaqueProvider;
     #[cfg(all(target_os = "linux", feature = "mount"))]
     #[test]
-    fn saved_editable_account_remains_mountable_after_restart_relocks_it() {
+    fn remote_readonly_grant_remains_mountable_without_local_permission_controls() {
         let root = tempfile::tempdir().unwrap();
         let state = State::new(root.path().join("private")).unwrap();
-        twodrive_dev::write_lock::begin_run(&state).unwrap();
-        twodrive_dev::write_lock::set_password(&state, "synthetic-linux-permission").unwrap();
         let p = Profile {
             id: "locked-account".into(),
             revision: "saved-revision".into(),
@@ -1159,13 +1143,9 @@ mod tests {
         assert_eq!(
             app.capabilities()["mount"],
             true,
-            "saved writable=true must not reject a locked read-only mount"
+            "remote read-only grants still support browsing mounts"
         );
-        twodrive_dev::write_lock::permit(&app.state, &p).unwrap();
-        app.backend = Some(Backend::new(OpaqueProvider::default()).with_write_access(
-            true,
-            Some(twodrive_dev::write_lock::guard(&app.state, &p).unwrap()),
-        ));
+        app.backend = Some(Backend::new(OpaqueProvider::default()));
         assert_eq!(app.capabilities()["mount"], true);
         assert_eq!(app.capabilities()["upload"], true);
     }
