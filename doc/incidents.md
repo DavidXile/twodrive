@@ -69,7 +69,7 @@
 
 ### 防复发与交付
 
-保留 `editable_navigation_reuses_display_without_weakening_live_reads`、`editable_mutation_epoch_rejects_an_older_inflight_listing` 和可编辑外部冲突回归。继续通过独立 Ready for review 的 Linux PR50 交付，提交哈希待产生后记录；禁止上传本机账号、OAuth JSON、配置、缓存或私有部署报告。
+保留 `editable_navigation_reuses_display_without_weakening_live_reads`、`editable_mutation_epoch_rejects_an_older_inflight_listing` 和可编辑外部冲突回归。已以 DavidXile 身份将[默认可编辑 Linux 合并提交 79a4f26](https://github.com/DavidXile/twodrive/commit/79a4f26e6f5deb728ec7e3a89e49b4d86a65d3e4) 推送至独立 Ready for review 的 [PR50](https://github.com/LumiaBlack51/twodrive/pull/50)；禁止上传本机账号、OAuth JSON、配置、缓存或私有部署报告。
 
 ## TD-20261029-37：Linux iCloud 元数据等待同账号内容操作
 

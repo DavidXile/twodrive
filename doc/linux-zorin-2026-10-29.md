@@ -50,7 +50,7 @@ These results do not establish hosted CI success, a Windows rebuild, real-cloud 
 
 ## Delivery
 
-Published in the separate Linux branch via [PR #50](https://github.com/LumiaBlack51/twodrive/pull/50), ready for review. PR47 through `730a824` is synchronized. The Linux GUI and three backend programs are rebuilt, and the four original mounts restore in read-write mode without changing account profiles or saved identities. Icons, desktop preferences, simultaneous-account switching and earlier metadata fixes remain.
+Published in the separate Linux branch via [PR #50](https://github.com/LumiaBlack51/twodrive/pull/50), ready for review. PR47 through `730a824` is synchronized in [Linux commit 79a4f26](https://github.com/DavidXile/twodrive/commit/79a4f26e6f5deb728ec7e3a89e49b4d86a65d3e4). The Linux GUI and three backend programs are rebuilt, and the four original mounts restore in read-write mode without changing account profiles or saved identities. Icons, desktop preferences, simultaneous-account switching and earlier metadata fixes remain.
 
 The user previously reported slow iCloud navigation despite caching. This update extends the existing directory and encrypted metadata isolation to editable connections, with isolated regression coverage; it does not promise instantaneous cold directories or cloud contents. No private file contents or real-cloud writes were used for deployment validation. See TD-20261029-38 for the cache regression and local recovery/verification boundaries.
 
