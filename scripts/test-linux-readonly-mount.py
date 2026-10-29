@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Actual Linux FUSE with two disposable loopback Providers; no cloud/user state."""
-import argparse,concurrent.futures,hashlib,importlib.util,json,os,re,signal,subprocess,sys,tempfile,time
+import argparse,concurrent.futures,hashlib,importlib.util,json,os,re,shutil,signal,subprocess,sys,tempfile,time
 from pathlib import Path
 spec=importlib.util.spec_from_file_location('desktop',Path(__file__).with_name('test-dav-desktop.py'))
 desktop=importlib.util.module_from_spec(spec);spec.loader.exec_module(desktop)
@@ -64,6 +64,10 @@ def run(args):
             assert (mounts[0]/name).read_bytes()==payloads['a']
             with (mounts[0]/name).open('rb') as file:
                 file.seek(777);assert file.read(4097)==payloads['a'][777:777+4097]
+            copied=root/'copied-from-native-mount.bin'
+            shutil.copyfile(mounts[0]/name,copied)
+            assert copied.read_bytes()==payloads['a']
+            checks['native_copy_to_local_preserves_complete_verified_bytes']=True
             try:(mounts[0]/'forbidden-write').write_bytes(b'must not upload')
             except OSError:pass
             else:raise AssertionError('Read-only FUSE accepted a write')

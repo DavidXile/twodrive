@@ -14,14 +14,15 @@ use hyper::{body::Incoming, service::service_fn};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
+    cell::RefCell,
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     convert::Infallible,
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
     net::SocketAddr,
     path::Path,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -32,6 +33,8 @@ use subtle::ConstantTimeEq;
 use tokio::{net::TcpListener, sync::Semaphore};
 
 type DirectoryEntries = Arc<BTreeMap<String, MetadataEntry>>;
+type DownloadKey = (String, String, String, u64, bool);
+type DownloadGates = HashMap<DownloadKey, Weak<Mutex<()>>>;
 const DIRECTORY_FRESH: Duration = Duration::from_secs(30);
 const DIRECTORY_MAX_AGE: Duration = Duration::from_secs(300);
 const DIRECTORY_RETRY: Duration = Duration::from_secs(10);
@@ -39,6 +42,7 @@ const DIRECTORY_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
 tokio::task_local! {
     static DISPLAY_METADATA_ONLY: bool;
     static PREPARED_DIRECTORY: Option<(String, DirectoryEntries)>;
+    static LIVE_READ_METADATA: RefCell<BTreeMap<String, MetadataEntry>>;
 }
 
 struct Cached {
@@ -64,6 +68,7 @@ struct Inner {
     backend: Backend,
     writer: Option<Arc<crate::mount_write::Writer>>,
     cache: Mutex<VecDeque<Arc<Cached>>>,
+    downloads: Mutex<DownloadGates>,
     quota: Mutex<Option<QuotaSample>>,
     directories: Mutex<DirectoryCache>,
     directory_ready: Condvar,
@@ -156,7 +161,19 @@ impl RemoteFs {
                 .try_with(|value| *value)
                 .unwrap_or(false)
         {
-            return self.entry(path);
+            // dav-server can ask for metadata and then open the same path in
+            // one GET. Reuse only that request's live lookup, never a display
+            // snapshot or another request's validation.
+            if let Ok(Some(entry)) =
+                LIVE_READ_METADATA.try_with(|entries| entries.borrow().get(path).cloned())
+            {
+                return Ok(entry);
+            }
+            let entry = self.entry(path)?;
+            let _ = LIVE_READ_METADATA.try_with(|entries| {
+                entries.borrow_mut().insert(path.into(), entry.clone());
+            });
+            return Ok(entry);
         }
         let parent = path
             .rsplit_once('/')
@@ -298,6 +315,34 @@ impl RemoteFs {
         }
     }
     fn materialize(&self, entry: MetadataEntry) -> anyhow::Result<Arc<Cached>> {
+        // Coalesce one object/version, without holding the shared cache lock
+        // across a remote download. A slow preview must not stall other files.
+        let gate = {
+            let mut downloads = self
+                .0
+                .downloads
+                .lock()
+                .map_err(|_| anyhow::anyhow!("download gates unavailable"))?;
+            downloads.retain(|_, gate| gate.strong_count() > 0);
+            let key = (
+                entry.remote_id.clone(),
+                entry.path.clone(),
+                entry.etag.clone(),
+                entry.size,
+                entry.is_dir,
+            );
+            match downloads.get(&key).and_then(Weak::upgrade) {
+                Some(gate) => gate,
+                None => {
+                    let gate = Arc::new(Mutex::new(()));
+                    downloads.insert(key, Arc::downgrade(&gate));
+                    gate
+                }
+            }
+        };
+        let _flight = gate
+            .lock()
+            .map_err(|_| anyhow::anyhow!("download unavailable"))?;
         let mut cache = self
             .0
             .cache
@@ -309,6 +354,7 @@ impl RemoteFs {
             cache.push_front(item.clone());
             return Ok(item);
         }
+        drop(cache);
         // The complete temporary file is published only after the provider's
         // opaque object/version and byte count are verified. No Vec-sized file.
         let mut temp = tempfile::NamedTempFile::new_in(self.0.directory.path())?;
@@ -352,6 +398,11 @@ impl RemoteFs {
             meta: entry,
             file: temp,
         });
+        let mut cache = self
+            .0
+            .cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("cache unavailable"))?;
         cache.push_front(item.clone());
         // Retain at most eight versions / 2 GiB, except one larger currently
         // requested file. Active readers keep their own Arc and file handle.
@@ -540,57 +591,56 @@ async fn handle_read(
 ) -> Response<Body> {
     let propfind = request.method().as_str() == "PROPFIND";
     let metadata_only = matches!(request.method().as_str(), "HEAD" | "PROPFIND" | "OPTIONS");
-    DISPLAY_METADATA_ONLY
-        .scope(metadata_only, async move {
-            let prepared = if propfind && request.headers().get("Depth").is_some_and(|v| v == "1") {
-                let path = match DavPath::from_uri(request.uri())
-                    .map_err(|_| FsError::Forbidden)
-                    .and_then(|p| resource(&p))
-                {
-                    Ok(path) => path,
-                    Err(_) => return empty_response(StatusCode::BAD_REQUEST),
-                };
-                let meta = match tokio::task::block_in_place(|| fs.metadata_entry(&path)) {
-                    Ok(meta) => meta,
-                    Err(FsError::NotFound) => return empty_response(StatusCode::NOT_FOUND),
+    let response = DISPLAY_METADATA_ONLY.scope(metadata_only, async move {
+        let prepared = if propfind && request.headers().get("Depth").is_some_and(|v| v == "1") {
+            let path = match DavPath::from_uri(request.uri())
+                .map_err(|_| FsError::Forbidden)
+                .and_then(|p| resource(&p))
+            {
+                Ok(path) => path,
+                Err(_) => return empty_response(StatusCode::BAD_REQUEST),
+            };
+            let meta = match tokio::task::block_in_place(|| fs.metadata_entry(&path)) {
+                Ok(meta) => meta,
+                Err(FsError::NotFound) => return empty_response(StatusCode::NOT_FOUND),
+                Err(_) => return empty_response(StatusCode::SERVICE_UNAVAILABLE),
+            };
+            if meta.is_dir {
+                match tokio::task::block_in_place(|| fs.directory_snapshot(&path)) {
+                    Ok(entries) => Some((path, entries)),
                     Err(_) => return empty_response(StatusCode::SERVICE_UNAVAILABLE),
-                };
-                if meta.is_dir {
-                    match tokio::task::block_in_place(|| fs.directory_snapshot(&path)) {
-                        Ok(entries) => Some((path, entries)),
-                        Err(_) => return empty_response(StatusCode::SERVICE_UNAVAILABLE),
-                    }
-                } else {
-                    None
                 }
             } else {
                 None
-            };
-            PREPARED_DIRECTORY
-                .scope(prepared, async move {
-                    let response = handler
-                        .handle(request.map(|body| {
-                            http_body_util::Limited::new(body, 65536)
-                                .map_err(|_| std::io::Error::other("invalid request body"))
-                        }))
-                        .await;
-                    if !propfind {
-                        return response;
-                    }
-                    // dav-server renders PROPFIND lazily, outside handle(). Render under
-                    // the same display context before committing success, with a bound.
-                    let (parts, body) = response.into_parts();
-                    match http_body_util::Limited::new(body, DIRECTORY_RESPONSE_LIMIT)
-                        .collect()
-                        .await
-                    {
-                        Ok(body) => Response::from_parts(parts, Body::from(body.to_bytes())),
-                        Err(_) => empty_response(StatusCode::BAD_GATEWAY),
-                    }
-                })
-                .await
-        })
-        .await
+            }
+        } else {
+            None
+        };
+        PREPARED_DIRECTORY
+            .scope(prepared, async move {
+                let response = handler
+                    .handle(request.map(|body| {
+                        http_body_util::Limited::new(body, 65536)
+                            .map_err(|_| std::io::Error::other("invalid request body"))
+                    }))
+                    .await;
+                if !propfind {
+                    return response;
+                }
+                // dav-server renders PROPFIND lazily, outside handle(). Render under
+                // the same display context before committing success, with a bound.
+                let (parts, body) = response.into_parts();
+                match http_body_util::Limited::new(body, DIRECTORY_RESPONSE_LIMIT)
+                    .collect()
+                    .await
+                {
+                    Ok(body) => Response::from_parts(parts, Body::from(body.to_bytes())),
+                    Err(_) => empty_response(StatusCode::BAD_GATEWAY),
+                }
+            })
+            .await
+    });
+    LIVE_READ_METADATA.scope(RefCell::default(), response).await
 }
 
 pub struct Bridge {
@@ -639,6 +689,7 @@ impl Bridge {
             backend,
             writer: writer.clone(),
             cache: Mutex::default(),
+            downloads: Mutex::default(),
             quota: Mutex::default(),
             directories: Mutex::new(directories),
             directory_ready: Condvar::new(),

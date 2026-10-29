@@ -18,6 +18,8 @@ struct Fixture {
     seed_root: bool,
     metadata_reads: Arc<AtomicUsize>,
     change_during_read: Arc<AtomicBool>,
+    hold_download: Arc<AtomicBool>,
+    download_started: Arc<AtomicBool>,
 }
 impl Fixture {
     fn new(bytes: &[u8]) -> Self {
@@ -33,6 +35,8 @@ impl Fixture {
             seed_root: false,
             metadata_reads: Arc::default(),
             change_during_read: Arc::default(),
+            hold_download: Arc::default(),
+            download_started: Arc::default(),
         }
     }
     fn meta(&self) -> MetadataEntry {
@@ -62,8 +66,14 @@ impl CloudBackend for Fixture {
         panic!("delta not needed")
     }
     fn get_metadata(&self, id: &str) -> anyhow::Result<Option<MetadataEntry>> {
-        ensure!(id == "opaque-id-never-a-path");
-        Ok(Some(self.meta()))
+        ensure!(id == "opaque-id-never-a-path" || id == "slow-object");
+        let mut metadata = self.meta();
+        if id == "slow-object" {
+            metadata.path = "/slow.bin".into();
+            metadata.name = "slow.bin".into();
+            metadata.remote_id = id.into();
+        }
+        Ok(Some(metadata))
     }
     fn get_metadata_by_path(&self, path: &str) -> anyhow::Result<Option<MetadataEntry>> {
         self.metadata_reads.fetch_add(1, Ordering::SeqCst);
@@ -71,6 +81,12 @@ impl CloudBackend for Fixture {
             Some(MetadataEntry::new_dir("root", "/", 1, "root"))
         } else if path == format!("/{NAME}") {
             Some(self.meta())
+        } else if path == "/slow.bin" {
+            let mut metadata = self.meta();
+            metadata.path = path.into();
+            metadata.name = "slow.bin".into();
+            metadata.remote_id = "slow-object".into();
+            Some(metadata)
         } else {
             None
         })
@@ -84,8 +100,15 @@ impl CloudBackend for Fixture {
         writer: &mut dyn Write,
         progress: &mut dyn FnMut(u64) -> anyhow::Result<()>,
     ) -> anyhow::Result<u64> {
-        ensure!(id == "opaque-id-never-a-path");
+        ensure!(id == "opaque-id-never-a-path" || id == "slow-object");
         self.downloads.fetch_add(1, Ordering::SeqCst);
+        if id == "slow-object" {
+            self.download_started.store(true, Ordering::SeqCst);
+            while self.hold_download.load(Ordering::SeqCst) {
+                progress(0)?;
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
         let data = self.data.lock().unwrap().0.clone();
         progress(0)?;
         writer.write_all(&data)?;
@@ -449,6 +472,68 @@ fn independent_range_cursors_cache_versions_and_changed_download_rejection() {
             .as_ref(),
         b"changed while reading"
     );
+}
+#[test]
+fn a_slow_file_cannot_block_an_unrelated_download() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"verified bytes");
+    fixture.hold_download.store(true, Ordering::SeqCst);
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let slow_url = format!("http://{}/slow.bin", bridge.address);
+    let fast_url = file_url(&bridge);
+    let token = bridge.token.clone();
+    let slow = thread::spawn(move || client().get(slow_url).bearer_auth(token).send());
+    wait_until(|| fixture.download_started.load(Ordering::SeqCst));
+    let (send, receive) = mpsc::channel();
+    let token = bridge.token.clone();
+    let fast = thread::spawn(move || {
+        let response = client().get(fast_url).bearer_auth(token).send();
+        send.send(response.and_then(|r| r.error_for_status()?.bytes()))
+            .unwrap();
+    });
+    let result = receive.recv_timeout(Duration::from_secs(2));
+    // Always release and join the synthetic slow request before asserting.
+    fixture.hold_download.store(false, Ordering::SeqCst);
+    assert_eq!(
+        slow.join().unwrap().unwrap().bytes().unwrap(),
+        b"verified bytes"[..]
+    );
+    fast.join().unwrap();
+    assert_eq!(
+        result
+            .expect("unrelated GET waited behind another file download")
+            .unwrap(),
+        b"verified bytes"[..]
+    );
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn cached_get_uses_one_live_metadata_lookup_per_http_request() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(b"verified bytes");
+    let bridge = Bridge::start(Backend::new(fixture.clone()), root.path()).unwrap();
+    let c = client();
+    let get = || {
+        c.get(file_url(&bridge))
+            .bearer_auth(&bridge.token)
+            .send()
+            .unwrap()
+            .bytes()
+            .unwrap()
+    };
+    assert_eq!(get(), b"verified bytes"[..]);
+    fixture.metadata_reads.store(0, Ordering::SeqCst);
+    assert_eq!(get(), b"verified bytes"[..]);
+    assert_eq!(
+        fixture.metadata_reads.load(Ordering::SeqCst),
+        1,
+        "one GET must not repeat remote path lookups before reusing verified bytes"
+    );
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 1);
+    fixture.change(b"new remote version");
+    assert_eq!(get(), b"new remote version"[..]);
+    assert_eq!(fixture.downloads.load(Ordering::SeqCst), 2);
 }
 #[test]
 fn equal_paths_remain_scoped_to_their_provider_and_shutdown_closes_listener() {
