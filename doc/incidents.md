@@ -68,7 +68,7 @@
 
 ### 防复发与交付
 
-保留 `mounted_same_directory_rename_uses_one_fresh_preflight_and_one_confirmation`、权限/冲突与跨目录回归，以及通用适配器版本保护回归。继续独立 Linux PR50；新增提交待产生，不上传真实文件名、账号或私有日志。
+保留 `mounted_same_directory_rename_uses_one_fresh_preflight_and_one_confirmation`、权限/冲突与跨目录回归，以及通用适配器版本保护回归。已通过 DavidXile 的独立 Ready for review [Linux PR50](https://github.com/LumiaBlack51/twodrive/pull/50) 上传[改名优化提交 e82793a](https://github.com/DavidXile/twodrive/commit/e82793aae765daaa4fb2fedc8a649637d9a4166d)；不上传真实文件名、账号或私有日志。
 
 ## TD-20261029-39：iCloud 导航曾慢，重新切换和打开后恢复快速
 
