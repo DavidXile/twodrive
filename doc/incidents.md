@@ -45,6 +45,37 @@
 ```
 
 
+## TD-20261110-01：按需刷新 PR 的 Windows 和 Debian 自动检查失败
+
+- 日期：2026-11-10
+- 状态：已修复测试与打包校验，待最终托管 CI 验证。
+- 影响版本与环境：PR #2 原 head `837f7f2` 的 Windows 与 Debian CI。同一 head 的 Linux 桌面任务通过。
+- 关联历史故障：[TD-20261106-01 桌面空闲时反复扫描挂载状态](incidents/TD-20261106-01.md)。本条记录的是交付验证故障。
+
+### 症状与复现
+
+Windows peer 任务的 Office 锁回归在最后一个 DELETE 的 400 毫秒上限断言失败。Windows 桌面任务等待测试子进程退出超过 12 秒，后续构建产物也因此缺失。Debian 构建、依赖和归档清单检查通过，历史运行文件对比在 Nautilus 扩展失败。
+
+### 根因与证据
+
+锁文件测试用本机 HTTP 与磁盘操作耗时推断云端操作是否阻塞请求，原日志仅证实耗时超过门槛。子进程测试以 PowerShell 控制台读取模拟 Rust worker 的重定向标准输入，测试进程未按预期退出，PowerShell 挂起的具体原因未确认。Debian 校验要求 Nautilus 扩展与 0.2.14-1 包相同，而父分支 `1a8e180` 已有预期的 DAV 图标和状态变更。
+
+### 解决办法与恢复操作
+
+锁文件测试在合成提供者内显式暂停云端上传和删除，先验证本地请求返回，再放行云端操作并核对最终状态。进程回归改用当前 Rust 测试二进制作为受控 worker，检查完整的卸载消息与成功退出。Debian 校验对指定的 Nautilus 扩展核对当前源码字节和旧包权限，保留原来的 Python shebang 归一化及其余运行文件对比。
+
+### 验证结果与边界
+
+本机 Linux 的锁队列 5 项与桌面引擎 36 项通过，另有 3 项环境测试默认忽略。Linux 进程回归覆盖标准输入管道与退出，Windows Job Object 路径由托管 CI 验证。用同一份失败 CI 生成的 Debian 包验证，原校验拒绝扩展，新校验核对 11 个运行文件后通过，给新校验传入改动过的扩展源码仍会失败。测试使用合成数据，未对真实账号执行文件操作。
+
+### 防复发措施与后续
+
+保留阻塞云端时的本地响应、普通文件的同步写入、子进程收到卸载消息并退出，以及包内扩展内容和权限检查。等待新 head 的 Windows 与 Debian 结果。
+
+### 交付记录
+
+原始失败：[Windows 锁队列](https://github.com/DavidXile/twodrive/actions/runs/42350664770/job/128337892026)、[Windows 桌面](https://github.com/DavidXile/twodrive/actions/runs/42350664681/job/128337891876)、[Debian 包](https://github.com/DavidXile/twodrive/actions/runs/42350664622/job/128337932834)。修复目标为 [PR #2](https://github.com/DavidXile/twodrive/pull/2)。
+
 2026-11-04 分支交付：用户在本机测试后授权上传 GitHub 分支。下列条目中的“未提交、推送或上传”保留各阶段验收时的事实；本批最终保留范围、验证结果和边界见 [Linux 桌面修复交付记录](linux-desktop-fixes-2026-11-04.md)。云端回收站功能已撤回，不包含在最终源码改动中。
 
 ## TD-20261104-08：重新开机后备份进入远端版本冲突保护

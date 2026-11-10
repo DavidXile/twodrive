@@ -728,18 +728,35 @@ mod tests {
         assert!(target.parent().unwrap().is_dir() && !target.exists());
     }
     #[test]
-    #[cfg(windows)]
     fn owned_worker_receives_unmount_and_is_reaped() {
-        let mut command = Command::new("powershell.exe");
-        command.args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "if ([Console]::ReadLine() -eq 'unmount') { exit 0 } else { exit 2 }",
-        ]);
+        use std::io::Read;
+
+        const CHILD: &str = "TWODRIVE_TEST_UNMOUNT_WORKER";
+        if std::env::var_os(CHILD).is_some() {
+            let mut command = String::new();
+            std::io::stdin().read_line(&mut command).unwrap();
+            assert_eq!(command, "unmount\n");
+            return;
+        }
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "desktop::native_mount::tests::owned_worker_receives_unmount_and_is_reaped",
+            ])
+            .env(CHILD, "1");
         let mut process = spawn_with_input(command, true).unwrap();
         stop(&mut process).unwrap();
         assert!(process.0.try_wait().unwrap().unwrap().success());
+        let mut output = String::new();
+        process
+            .0
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut output)
+            .unwrap();
+        assert!(output.contains("1 passed"), "{output}");
     }
     #[test]
     #[ignore = "requires the pinned official Rclone executable; no driver or cloud account"]
