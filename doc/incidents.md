@@ -76,6 +76,10 @@ Windows peer 任务的 Office 锁回归在最后一个 DELETE 的 400 毫秒上�
 
 原始失败：[Windows 锁队列](https://github.com/DavidXile/twodrive/actions/runs/42350664770/job/128337892026)、[Windows 桌面](https://github.com/DavidXile/twodrive/actions/runs/42350664681/job/128337891876)、[Debian 包](https://github.com/DavidXile/twodrive/actions/runs/42350664622/job/128337932834)。修复目标为 [PR #2](https://github.com/DavidXile/twodrive/pull/2)。
 
+### 首轮复验
+
+`ef6801b` 的 Windows 锁队列通过，桌面引擎的卸载子进程测试也通过。随后的 Windows Flutter 测试发现两条既有断言把 Linux 的连接后自动挂载当作跨平台行为。测试现在按平台核对挂载调用及连接结果，自动挂载失败分支仍在 Linux 测试。Debian 下载步骤长时间未返回，改用上游 [PR #62](https://github.com/LumiaBlack51/twodrive/pull/62) 已验证的历史资产 API、有限重试和固定 SHA-256，依赖回归及后续校验保留。
+
 2026-11-04 分支交付：用户在本机测试后授权上传 GitHub 分支。下列条目中的“未提交、推送或上传”保留各阶段验收时的事实；本批最终保留范围、验证结果和边界见 [Linux 桌面修复交付记录](linux-desktop-fixes-2026-11-04.md)。云端回收站功能已撤回，不包含在最终源码改动中。
 
 ## TD-20261104-08：重新开机后备份进入远端版本冲突保护
