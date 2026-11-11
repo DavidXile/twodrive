@@ -358,6 +358,18 @@ impl App {
         }
         result
     }
+    #[cfg(target_os = "linux")]
+    pub(super) fn mounted_profiles(&self) -> impl Iterator<Item = &Profile> {
+        self.connected
+            .iter()
+            .filter(|_| self.mounted.is_some())
+            .chain(
+                self.inactive
+                    .values()
+                    .filter_map(|parked| parked.mounted.as_ref().map(|_| &parked.profile)),
+            )
+    }
+
     pub(super) fn disconnect_all(&mut self) -> anyhow::Result<()> {
         self.finish_quota_jobs(None);
         ensure!(

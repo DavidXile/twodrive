@@ -41,6 +41,9 @@ mod mount_paths;
 #[cfg(any(windows, all(target_os = "linux", feature = "mount")))]
 #[path = "desktop_readonly_mount.rs"]
 mod native_mount;
+#[cfg(target_os = "linux")]
+#[path = "desktop_quit_mounts.rs"]
+mod quit_mounts;
 #[path = "desktop_sharing.rs"]
 mod sharing;
 #[cfg(all(target_os = "linux", feature = "mount"))]
@@ -96,6 +99,7 @@ fn valid_id(id: &str) -> bool {
 }
 #[cfg(target_os = "linux")]
 fn linux_mount_info(path: &Path) -> anyhow::Result<Option<(String, String, String)>> {
+    let mut found = None;
     for line in fs::read_to_string("/proc/self/mountinfo")?.lines() {
         let Some((left, right)) = line.split_once(" - ") else {
             continue;
@@ -110,15 +114,27 @@ fn linux_mount_info(path: &Path) -> anyhow::Result<Option<(String, String, Strin
             .replace("\\012", "\n")
             .replace("\\134", "\\");
         if Path::new(&target) == path {
+            ensure!(found.is_none(), "同一目录存在多层挂载，无法确认挂载归属");
             let mut parts = right.split_whitespace();
-            return Ok(Some((
+            found = Some((
                 fields[0].into(),
                 parts.next().context("missing mount type")?.into(),
                 parts.next().context("missing mount source")?.into(),
-            )));
+            ));
         }
     }
-    Ok(None)
+    Ok(found)
+}
+#[cfg(target_os = "linux")]
+fn linux_twodrive_fuse_mount_id(path: &Path) -> anyhow::Result<Option<String>> {
+    Ok(linux_mount_info(path)?
+        .filter(|(_, kind, source)| linux_twodrive_fuse_source(kind, source))
+        .map(|(id, _, _)| id))
+}
+#[cfg(target_os = "linux")]
+fn linux_twodrive_fuse_source(kind: &str, source: &str) -> bool {
+    matches!((kind, source), ("fuse", "twodrive" | "twodrive-dev"))
+        || (kind == "fuse.rclone" && source.starts_with("twodrive-ro-"))
 }
 #[cfg(target_os = "linux")]
 fn is_mount(path: &Path) -> anyhow::Result<bool> {
@@ -383,7 +399,13 @@ impl App {
                 self.mounted.take();
                 return Ok(());
             }
-            if !is_mount(&p.mount_path)? {
+            #[cfg(target_os = "linux")]
+            let mount_id = linux_twodrive_fuse_mount_id(&p.mount_path)?;
+            #[cfg(target_os = "linux")]
+            let mounted = mount_id.is_some();
+            #[cfg(not(target_os = "linux"))]
+            let mounted = is_mount(&p.mount_path)?;
+            if !mounted {
                 self.mounted.take();
                 return Ok(());
             }
@@ -393,14 +415,35 @@ impl App {
                     "挂载仍有未上传或冲突的数据，请先完成同步；缓存已保留"
                 );
             }
-            let result = Command::new("fusermount3")
-                .arg("-u")
-                .arg(&p.mount_path)
-                .output()?;
+            #[cfg(target_os = "linux")]
             ensure!(
-                result.status.success(),
-                "挂载仍被占用，请关闭使用该目录的程序后重试"
+                linux_twodrive_fuse_mount_id(&p.mount_path)? == mount_id,
+                "挂载已变化，请重试"
             );
+            let result = Command::new("fusermount3")
+                .env("LC_ALL", "C")
+                .args(["-u", "--"])
+                .arg(&p.mount_path)
+                .output()
+                .context("无法启动 FUSE 卸载组件")?;
+            if !result.status.success() && is_mount(&p.mount_path)? {
+                #[cfg(target_os = "linux")]
+                if String::from_utf8_lossy(&result.stderr)
+                    .trim_end()
+                    .ends_with(": Device or resource busy")
+                {
+                    return Err(quit_mounts::BusyMount {
+                        name: p.name.clone(),
+                        path: p.mount_path.clone(),
+                    }
+                    .into());
+                }
+                anyhow::bail!(
+                    "无法卸载「{}」（{}），请检查 FUSE 挂载状态",
+                    p.name,
+                    p.mount_path.display()
+                );
+            }
             self.mounted.take();
             Ok(())
         }
@@ -561,7 +604,11 @@ impl App {
         {
             return Ok(());
         }
-        backup::reset_report(&self.state, p)?;
+        let session = self.saved_session(p);
+        let binding = session
+            .as_ref()
+            .and_then(|session| session["binding"].as_str());
+        backup::reset_report(&self.state, p, binding)?;
         let mut cmd = Command::new(std::env::current_exe()?);
         cmd.arg("--state")
             .arg(&self.state.dir)
@@ -869,7 +916,24 @@ impl App {
                 Ok(json!({}))
             }
             "quit" => {
-                self.disconnect_all()?;
+                #[cfg(target_os = "linux")]
+                if a["mount_confirmation"] == true
+                    && let Some(blocked) = quit_mounts::preflight(self, a)?
+                {
+                    return Ok(blocked);
+                }
+                let disconnected = self.disconnect_all();
+                #[cfg(target_os = "linux")]
+                if a["mount_confirmation"] == true
+                    && let Err(error) = &disconnected
+                    && let Some(blockers) =
+                        quit_mounts::blockers_after_failed_disconnect(error, || {
+                            quit_mounts::preflight(self, &Value::Null)
+                        })?
+                {
+                    return Ok(blockers);
+                }
+                disconnected?;
                 self.hosting.stop();
                 Ok(json!({}))
             }
@@ -1137,7 +1201,10 @@ pub fn run() -> anyhow::Result<()> {
                     "status":app.status().ok(),"configuration":app.public_profiles()}),
                 );
             }
-            let quit = req.op == "quit" && result.is_ok();
+            let quit = req.op == "quit"
+                && result
+                    .as_ref()
+                    .is_ok_and(|reply| reply["quit_blockers"].is_null());
             let value = match result {
                 Ok(value) => json!({"id":req.id,"ok":true,"result":value}),
                 Err(error) => json!({"id":req.id,"ok":false,"error":error.to_string()}),

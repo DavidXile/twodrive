@@ -8,6 +8,14 @@ import 'package:twodrive_dav/profile_dialog.dart';
 import 'package:twodrive_dav/tray_panel.dart';
 import 'package:twodrive_dav/connection_card.dart';
 
+class _ListingClient extends StorageClient {
+  @override
+  Future<Json> request(String op, [Json args = const {}, int? requestId]) =>
+      op == 'list'
+      ? Future.value({'entries': []})
+      : super.request(op, args, requestId);
+}
+
 void main() {
   testWidgets(
     'connected account can open add dialog and edit inactive accounts',
@@ -208,7 +216,7 @@ void main() {
         messenger.setMockMethodCallHandler(tray, null);
         messenger.setMockMethodCallHandler(window, null);
       });
-      final c = StorageClient()..available = true;
+      final c = _ListingClient()..available = true;
       c.status = {
         'connected': true,
         'route_fallback': true,
