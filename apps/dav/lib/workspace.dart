@@ -39,6 +39,29 @@ String parentPath(String path) {
 
 bool trayReady = false;
 
+const _transferInset = Color(0xffeaeefb);
+const _transferAccent = Color(0xff236ed5);
+const _transferMuted = Color(0xff707987);
+const _transferSuccess = Color(0xff328352);
+
+enum _TransferSection {
+  upload('上传'),
+  backup('备份'),
+  download('下载'),
+  mount('挂载同步');
+
+  const _TransferSection(this.label);
+  final String label;
+
+  static _TransferSection forRow(TransferRow row) {
+    if (row.info['source'] == 'nautilus') return download;
+    if (row.manual != null) {
+      return row.info['kind'] == 'download' ? download : upload;
+    }
+    return row.info['source'] == 'backup' ? backup : mount;
+  }
+}
+
 class Workspace extends StatefulWidget {
   const Workspace({super.key, required this.client, required this.desktop});
   final StorageClient client;
@@ -53,6 +76,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
   bool panel = false;
   bool presenting = false;
   int page = 0;
+  _TransferSection? transferSection;
   String filter = '';
   String _traySignature = '';
   Future<void> _trayWork = Future.value();
@@ -105,6 +129,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
     c.setView(
       visible: true,
       files: !panel && page == WorkspacePage.files.index,
+      transfers: !panel && page == WorkspacePage.transfers.index,
       quota: panel || page == WorkspacePage.connections.index,
     );
     unawaited(c.refreshView(forceDirectory: forceDirectory));
@@ -373,6 +398,8 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
 
   Future<void> fileAction(String action, Json file) async {
     switch (action) {
+      case 'view':
+        await c.viewCloudFile(file);
       case 'download':
         await download(file);
       case 'rename':
@@ -822,16 +849,21 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                             ? null
                             : directory
                             ? () => c.browse(file['path'] as String)
-                            : () => download(file),
+                            : () => c.viewCloudFile(file),
                         trailing: PopupMenuButton<String>(
                           enabled: !c.busy,
                           onSelected: (action) => fileAction(action, file),
                           itemBuilder: (_) => [
-                            if (!directory)
+                            if (!directory) ...[
+                              const PopupMenuItem(
+                                value: 'view',
+                                child: Text('查看'),
+                              ),
                               const PopupMenuItem(
                                 value: 'download',
                                 child: Text('下载'),
                               ),
+                            ],
                             if (c.canRename)
                               const PopupMenuItem(
                                 value: 'rename',
@@ -868,79 +900,321 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
     );
   }
 
-  Widget transfersPage() => c.transfers.isEmpty
-      ? empty(Icons.swap_vert, '暂无传输', '上传和下载的进度、结果与重试会显示在这里。')
-      : ListView.builder(
-          itemCount: c.transfers.length,
-          itemBuilder: (context, index) {
-            final task = c.transfers[index];
-            return Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          task.operation == 'upload'
-                              ? Icons.upload
-                              : Icons.download,
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(child: Text(task.name)),
-                        Text(task.state),
-                        if (task.state == '传输中')
-                          IconButton(
-                            tooltip: '取消传输',
-                            onPressed: () => c.cancelTransfer(task.id),
-                            icon: const Icon(Icons.close),
-                          ),
-                        if (task.state == '未完成')
-                          TextButton(
-                            onPressed:
-                                c.busy ||
-                                    !c.isProfileConnected(
-                                      task.args['profile'] as String,
-                                    )
-                                ? null
-                                : () => c.transfer(task.operation, task.args),
-                            child: const Text('重试'),
-                          ),
-                      ],
+  Widget transfersPage() {
+    final grouped = {
+      for (final section in _TransferSection.values) section: <TransferRow>[],
+    };
+    for (final row in c.transferRows) {
+      grouped[_TransferSection.forRow(row)]!.add(row);
+    }
+    final selected = transferSection ?? _TransferSection.upload;
+    final sections = _TransferSection.values
+        .where(
+          (section) =>
+              section == _TransferSection.upload ||
+              section == _TransferSection.backup ||
+              section == _TransferSection.download ||
+              section == selected ||
+              grouped[section]!.isNotEmpty,
+        )
+        .toList();
+    final rows = grouped[selected]!;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: sections.length * 132),
+          child: SegmentedButton<_TransferSection>(
+            segments: [
+              for (final section in sections)
+                ButtonSegment(value: section, label: Text(section.label)),
+            ],
+            showSelectedIcon: false,
+            selected: {selected},
+            onSelectionChanged: (selection) => setState(() {
+              transferSection = selection.single;
+            }),
+          ),
+        ),
+        const SizedBox(height: 14),
+        if (c.transferHistoryError case final String message
+            when selected == _TransferSection.upload ||
+                selected == _TransferSection.download)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(
+              message,
+              style: const TextStyle(color: Colors.deepOrange),
+            ),
+          ),
+        Expanded(
+          child: rows.isEmpty
+              ? empty(Icons.swap_vert, '暂无${selected.label}记录', '')
+              : transferList(selected, rows),
+        ),
+      ],
+    );
+  }
+
+  Widget transferList(_TransferSection section, List<TransferRow> rows) =>
+      Align(
+        alignment: Alignment.topCenter,
+        child: Card(
+          margin: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Material(
+            type: MaterialType.transparency,
+            child: ListView.separated(
+              key: PageStorageKey(section),
+              shrinkWrap: true,
+              padding: EdgeInsets.zero,
+              itemCount: rows.length,
+              separatorBuilder: (_, _) => const Divider(
+                height: 1,
+                indent: 16,
+                endIndent: 16,
+                color: _transferInset,
+              ),
+              itemBuilder: (_, index) => transferRow(rows[index]),
+            ),
+          ),
+        ),
+      );
+
+  Widget transferRow(TransferRow row) {
+    final info = row.info;
+    final task = row.manual;
+    final download = info['kind'] == 'download';
+    final hasLocalPath = info['local_path'] is String;
+    final canReveal = hasLocalPath || c.mountedTransferPath(info) != null;
+    final name = info['name']?.toString() ?? '传输任务';
+    final state = c.transferState(info);
+    final done = info['bytes_done'] as num? ?? 0;
+    final total = info['bytes_total'] as num? ?? 0;
+    final active = state == '正在备份' || state == '传输中';
+    final statusWidth = MediaQuery.textScalerOf(
+      context,
+    ).scale(112).clamp(112.0, 210.0).toDouble();
+    final color = switch (state) {
+      '已备份' || '已完成' || '已打开' => _transferSuccess,
+      '未完成' || '需要处理' || '结果未确认' => const Color(0xffa74721),
+      _ => active ? _transferAccent : _transferMuted,
+    };
+    return InkWell(
+      onTap: () => showTransferDetails(row, name, download: download),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: _transferInset,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                download ? Icons.south_rounded : Icons.north_rounded,
+                size: 18,
+                color: active ? _transferAccent : _transferMuted,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    c.transferLabel(info),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12, color: _transferMuted),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            if (task != null && task.state == '传输中')
+              IconButton(
+                tooltip: '取消传输',
+                onPressed: () => c.cancelTransfer(task.id),
+                icon: const Icon(Icons.close, size: 18),
+              ),
+            if (task != null && task.state == '未完成' && !task.view)
+              IconButton(
+                tooltip: '重试传输',
+                onPressed: c.canRetryTransfer(task)
+                    ? () => c.transfer(task.operation, task.args)
+                    : null,
+                icon: const Icon(Icons.refresh, size: 18),
+              ),
+            SizedBox(
+              width: statusWidth,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    state,
+                    textAlign: TextAlign.right,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: color,
+                      fontWeight: FontWeight.w600,
                     ),
-                    const SizedBox(height: 10),
-                    LinearProgressIndicator(
-                      value: task.state == '已完成'
-                          ? 1
-                          : task.total == 0
-                          ? null
-                          : task.done / task.total,
-                    ),
-                    const SizedBox(height: 8),
+                  ),
+                  if (total > 0 || done > 0)
                     Text(
-                      c.profiles
-                                  .where((p) => p['id'] == task.args['profile'])
-                                  .firstOrNull?['name']
-                              as String? ??
-                          '原连接',
+                      active && total > 0 && done < total
+                          ? '${bytes(done)} / ${bytes(total)}'
+                          : bytes(total > 0 ? total : done),
+                      textAlign: TextAlign.right,
                       style: const TextStyle(
-                        fontSize: 12,
-                        color: Colors.blueGrey,
+                        fontSize: 11,
+                        color: _transferMuted,
                       ),
                     ),
-                    Text('${bytes(task.done)} / ${bytes(task.total)}'),
-                    if (task.error != null)
-                      SelectableText(
-                        task.error!,
-                        style: const TextStyle(color: Colors.deepOrange),
+                  if (active && (total == 0 || done < total)) ...[
+                    const SizedBox(height: 4),
+                    SizedBox(
+                      width: 84,
+                      child: LinearProgressIndicator(
+                        minHeight: 3,
+                        borderRadius: BorderRadius.circular(3),
+                        backgroundColor: _transferInset,
+                        color: _transferAccent,
+                        value: total == 0
+                            ? null
+                            : (done / total).clamp(0, 1).toDouble(),
                       ),
+                    ),
                   ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+            SizedBox(
+              width: 40,
+              child: canReveal
+                  ? IconButton(
+                      tooltip: '打开所在位置',
+                      onPressed: () =>
+                          revealTransferLocation(info, cloud: !hasLocalPath),
+                      icon: const Icon(Icons.folder_open_outlined, size: 18),
+                    )
+                  : null,
+            ),
+            const Tooltip(
+              message: '查看传输详情',
+              child: Icon(Icons.chevron_right, size: 18, color: _transferMuted),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> revealTransferLocation(Json info, {required bool cloud}) async {
+    final path = cloud ? c.mountedTransferPath(info) : info['local_path'];
+    String? message;
+    try {
+      if (path is! String) {
+        message = '该文件所在位置暂不可用';
+      } else if (!await c.revealTransferFile(path)) {
+        message = '已打开所在文件夹，当前文件管理器无法自动选中文件';
+      }
+    } catch (_) {
+      message = '无法定位文件。文件可能已移动或所在位置暂不可用';
+    }
+    if (mounted && message != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    }
+  }
+
+  Future<void> showTransferDetails(
+    TransferRow row,
+    String name, {
+    required bool download,
+  }) => showDialog<void>(
+    context: context,
+    builder: (context) {
+      final info = row.info;
+      final paths = [
+        if (info['local_path'] case final String path)
+          (download ? '本地目标' : '本地来源', path, false),
+        if (info['path'] case final String path)
+          (download ? '云端来源' : '云端目标', path, true),
+      ];
+      return AlertDialog(
+        constraints: const BoxConstraints(maxWidth: 600),
+        scrollable: true,
+        title: SelectableText(name),
+        content: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              c.transferLabel(info),
+              style: const TextStyle(color: _transferMuted),
+            ),
+            for (final (label, path, cloud) in paths) ...[
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  if (!cloud || c.mountedTransferPath(info) != null)
+                    IconButton(
+                      tooltip: cloud ? '在挂载目录中定位文件' : '定位本地文件',
+                      onPressed: () =>
+                          revealTransferLocation(info, cloud: cloud),
+                      icon: const Icon(Icons.folder_open_outlined, size: 18),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 5),
+              SelectableText(
+                path,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontFamily: DesktopTypography.monospace,
                 ),
               ),
-            );
-          },
-        );
+            ],
+            if (row.manual?.error case final String error) ...[
+              const SizedBox(height: 18),
+              SelectableText(
+                error,
+                style: const TextStyle(color: Colors.deepOrange),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+        ],
+      );
+    },
+  );
+
   Widget connectionsPage() => ListView(
     children: [
       if (c.connected)

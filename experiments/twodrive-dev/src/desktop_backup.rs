@@ -335,10 +335,14 @@ pub fn run(
                         let mut active_status = status.clone();
                         active_status["recent"] = json!(recent);
                         let last = std::sync::Mutex::new(Instant::now() - Duration::from_secs(1));
-                        let display = name.clone();
+                        let transfer = json!({
+                            "name":name,"kind":"upload","source":"backup",
+                            "revision":p.revision,"path":dest,"local_path":source,
+                        });
+                        let active_transfer = transfer.clone();
                         active_status["state"] = json!("uploading");
-                        let progress: twodrive_dev::provider::Progress = Arc::new(
-                            move |done, total| {
+                        let progress: twodrive_dev::provider::Progress =
+                            Arc::new(move |done, total| {
                                 ensure!(!pause_path.exists(), "同步已暂停");
                                 let mut last = last.lock().unwrap();
                                 if done == 0
@@ -346,14 +350,16 @@ pub fn run(
                                     || last.elapsed() > Duration::from_millis(200)
                                 {
                                     let mut report = active_status.clone();
-                                    report["active"] = json!([{"name":display,"kind":"upload","bytes_done":done,"bytes_total":total}]);
+                                    let mut item = active_transfer.clone();
+                                    item["bytes_done"] = json!(done);
+                                    item["bytes_total"] = json!(total);
+                                    report["active"] = json!([item]);
                                     State::new(report_path.clone())?
                                         .save("report.json", &report)?;
                                     *last = Instant::now();
                                 }
                                 Ok(())
-                            },
-                        );
+                            });
                         let mut uploaded = resume_matching_create(record, &hash, || {
                             backend.resume_create_upload(&dest, &spool, progress.clone())
                         })?;
@@ -376,7 +382,11 @@ pub fn run(
                             record.hash = hash;
                             record.etag = Some(uploaded.etag);
                             record.intent = None;
-                            recent.insert(0, json!({"name":name,"kind":"upload","state":"已备份","bytes_done":uploaded.size,"bytes_total":uploaded.size}));
+                            let mut item = transfer;
+                            item["state"] = json!("已备份");
+                            item["bytes_done"] = json!(uploaded.size);
+                            item["bytes_total"] = json!(uploaded.size);
+                            recent.insert(0, item);
                             recent.truncate(20);
                         }
                         manifest.files.get_mut(&dest).unwrap().fingerprint = fingerprint;

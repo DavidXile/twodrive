@@ -6,19 +6,26 @@ import 'updates.dart';
 import 'desktop_preferences.dart';
 import 'file_manager.dart';
 
+part 'client_transfer_history.dart';
+
 typedef Json = Map<String, dynamic>;
 
 class Transfer {
-  Transfer(this.id, this.operation, this.args);
+  Transfer(this.id, this.operation, this.args, {this.account});
   final int id;
   final String operation;
   final Json args;
+  final String? account;
   int done = 0;
   int total = 0;
   String state = '传输中';
   String? error;
   String get name => (args['path'] as String).split('/').last;
+  bool get upload => operation == 'upload';
+  bool get view => operation == 'view';
 }
+
+typedef TransferRow = ({Json info, Transfer? manual});
 
 class StorageClient extends ChangeNotifier {
   StorageClient() {
@@ -39,6 +46,9 @@ class StorageClient extends ChangeNotifier {
   Process? _process;
   final Map<int, Completer<Json>> _pending = {};
   final List<Transfer> transfers = [];
+  final _TransferHistory _transferHistory = _TransferHistory();
+  Directory? _stateDirectory;
+  String? transferHistoryError;
   List<Json> profiles = [];
   List<Json> providers = [];
   List<Json> entries = [];
@@ -81,15 +91,26 @@ class StorageClient extends ChangeNotifier {
   int? activeId;
   bool _showFiles = false;
   bool _showQuota = false;
+  Timer? _transferRefresh;
   int _statusVersion = 0;
 
   void setView({
     required bool visible,
     bool files = false,
     bool quota = false,
+    bool transfers = false,
   }) {
     _showFiles = visible && files;
     _showQuota = visible && quota;
+    if (visible && transfers) {
+      _transferRefresh ??= Timer.periodic(
+        const Duration(seconds: 3),
+        (_) => unawaited(refreshView()),
+      );
+    } else {
+      _transferRefresh?.cancel();
+      _transferRefresh = null;
+    }
   }
 
   Future<void> refreshView({bool forceDirectory = false}) async {
@@ -125,10 +146,76 @@ class StorageClient extends ChangeNotifier {
     if (status['overall'] is Map)
       ...((status['overall']?['active'] as List?) ?? [])
     else ...[
-      ...((status['backup']?['active'] as List?) ?? []),
+      for (final item
+          in ((status['backup']?['active'] as List?) ?? []).whereType<Map>())
+        {...item, 'source': 'backup', 'profile': selected},
       ...((status['mount_activity']?['active'] as List?) ?? []),
     ],
-  ].map((v) => Map<String, dynamic>.from(v as Map)).toList();
+  ].whereType<Map>().map((v) => Map<String, dynamic>.from(v)).toList();
+  Json transferInfo(Transfer task) => {
+    'id': task.id,
+    'profile': task.args['profile'],
+    'revision': task.args['revision'],
+    'name': task.name,
+    'kind': task.upload ? 'upload' : 'download',
+    'view': task.view,
+    'source': 'manual',
+    'state': task.state,
+    'path': task.args['path'],
+    'local_path': task.args[task.upload ? 'source' : 'output'],
+    'bytes_done': task.done,
+    'bytes_total': task.total,
+    'account':
+        task.account ??
+        profiles
+            .where(
+              (p) =>
+                  p['id'] == task.args['profile'] &&
+                  p['revision'] == task.args['revision'],
+            )
+            .firstOrNull?['name'] ??
+        '原连接',
+  };
+  List<TransferRow> get transferRows => [
+    for (final task in transfers.where((task) => task.state == '传输中'))
+      (info: transferInfo(task), manual: task),
+    for (final item in syncActivity) (info: item, manual: null),
+    for (final item
+        in ((status['opened_files'] as List?) ?? []).whereType<Json>())
+      (info: item, manual: null),
+    for (final task in transfers.where((task) => task.state != '传输中'))
+      (info: transferInfo(task), manual: task),
+    for (final item
+        in ((status['overall']?['recent'] as List?) ??
+                (status['backup']?['recent'] as List?) ??
+                [])
+            .whereType<Map>())
+      (
+        info: {'source': 'backup', ...Map<String, dynamic>.from(item)},
+        manual: null,
+      ),
+  ];
+
+  String transferState(Json item) =>
+      item['state']?.toString() ??
+      (paused
+          ? '已暂停'
+          : item['source'] == 'backup'
+          ? '正在备份'
+          : '传输中');
+
+  String transferLabel(Json item) {
+    final source = switch (item['source']) {
+      'backup' => '备份',
+      'nautilus' => 'Nautilus 打开',
+      'manual' when item['view'] == true => '查看',
+      'manual' => item['kind'] == 'download' ? '下载' : '上传',
+      _ => '后台同步',
+    };
+    final account = item['account']?.toString();
+    return account == null || account.isEmpty ? source : '$source · $account';
+  }
+
   bool get syncing =>
       status['overall']?['syncing'] == true ||
       busy ||
@@ -312,6 +399,21 @@ class StorageClient extends ChangeNotifier {
     String launcher, {
     String? nativeFixtureRoot,
   }) async {
+    _stateDirectory = Directory(state);
+    try {
+      final saved = await _transferHistory.load(
+        File('$state/transfer-history.json'),
+      );
+      if (_disposed) return;
+      transfers.addAll(saved);
+      for (final task in saved) {
+        if (task.id > _id) _id = task.id;
+      }
+    } catch (_) {
+      transferHistoryError = '无法读取本机传输记录';
+    }
+    if (_disposed) return;
+    notifyListeners();
     try {
       await preferences.load(File('$state/desktop-settings.json'));
       final p = await Process.start(engine, [
@@ -419,7 +521,7 @@ class StorageClient extends ChangeNotifier {
     }
     if (message['event'] == 'progress') {
       final task = transfers.where((t) => t.id == id).firstOrNull;
-      if (task != null) {
+      if (task != null && task.state == '传输中') {
         task.done = message['done'] as int;
         task.total = message['total'] as int;
         notifyListeners();
@@ -920,7 +1022,7 @@ class StorageClient extends ChangeNotifier {
     await readDirectory(path);
   });
   Future<void> transfer(String op, Json args) async {
-    if (busy) return;
+    if (busy || quitting || _disposed) return;
     try {
       requireProfile(args);
     } catch (e) {
@@ -928,30 +1030,130 @@ class StorageClient extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    args = {...target, ...args};
+    final profile = args['profile'] ?? selected;
+    final owner = profiles.where((p) => p['id'] == profile).firstOrNull;
+    args = {
+      ...args,
+      'profile': profile,
+      'revision': args['revision'] ?? owner?['revision'] ?? '',
+    };
     final id = ++_id;
-    final task = Transfer(id, op, args);
+    final task = Transfer(id, op, args, account: owner?['name'] as String?);
     transfers.insert(0, task);
-    if (transfers.length > 100) {
-      final old = transfers.last;
-      if (old.state != '传输中') transfers.removeLast();
-    }
+    _pruneTransfers(task.upload);
+    final started = _saveTransferHistory();
     notifyListeners();
+    await started;
     try {
-      await request(op, args, id);
+      requireProfile(args);
+      final result = await request(task.view ? 'download' : op, args, id);
+      if ((result['size'] ?? result['bytes']) case final int size) {
+        task.total = size;
+      }
+      if (task.view) await openViewedFile(args['output'] as String);
       task.state = '已完成';
       task.done = task.total;
-      if (op == 'upload' && selected == args['profile'] && connected) {
-        await readDirectory(path);
-      }
     } catch (e) {
-      task.state = '未完成';
+      task.state = available ? '未完成' : '结果未确认';
       task.error = '$e'.replaceFirst('Bad state: ', '');
       if (selected == args['profile']) error = task.error;
     } finally {
+      _pruneTransfers(task.upload);
+      await _saveTransferHistory();
       if (!_disposed) notifyListeners();
     }
+    if (task.upload &&
+        task.state == '已完成' &&
+        selected == args['profile'] &&
+        connected &&
+        !_disposed &&
+        !quitting) {
+      try {
+        await readDirectory(path);
+      } catch (_) {
+        _directoryStale = true;
+        if (!_disposed && !quitting && selected == args['profile']) {
+          _pollError = '上传已完成，目录刷新失败';
+          notifyListeners();
+        }
+      }
+    }
   }
+
+  void _pruneTransfers(bool upload) {
+    var count = 0;
+    transfers.removeWhere(
+      (task) =>
+          task.upload == upload &&
+          ++count > _TransferHistory.limit &&
+          task.state != '传输中',
+    );
+  }
+
+  Future<void> _saveTransferHistory() async {
+    if (!_transferHistory.ready) return;
+    try {
+      await _transferHistory.save(transfers);
+      transferHistoryError = null;
+    } catch (_) {
+      transferHistoryError = '无法保存本机传输记录';
+    }
+  }
+
+  bool canRetryTransfer(Transfer task) {
+    final profile = task.args['profile'];
+    return !busy &&
+        !quitting &&
+        profile is String &&
+        isProfileConnected(profile) &&
+        profiles.any(
+          (p) => p['id'] == profile && p['revision'] == task.args['revision'],
+        );
+  }
+
+  Future<void> viewCloudFile(Json file) async {
+    if (busy || quitting || _disposed) return;
+    Directory? folder;
+    try {
+      requireProfile(file);
+      final name = file['name'] as String;
+      if (name.isEmpty ||
+          name == '.' ||
+          name == '..' ||
+          name.contains(RegExp(r'[/\\\x00]')) ||
+          (Platform.isWindows && name.contains(RegExp(r'[:*?"<>|]')))) {
+        throw StateError('该文件名无法用于本机查看');
+      }
+      final state = _stateDirectory;
+      if (state == null) throw StateError('本机查看目录暂不可用');
+      final views = Directory('${state.absolute.path}/viewed-files');
+      await views.create(recursive: true);
+      folder = await views.createTemp('file-');
+      await transfer('view', {
+        'profile': file['profile'],
+        'revision': file['revision'],
+        'path': file['path'],
+        'size': file['size'],
+        'output': '${folder.path}${Platform.pathSeparator}$name',
+      });
+    } catch (e) {
+      if (!_disposed) {
+        error = '$e'.replaceFirst('Bad state: ', '');
+        notifyListeners();
+      }
+    } finally {
+      if (folder != null) {
+        try {
+          if (await folder.list().isEmpty) await folder.delete();
+        } on FileSystemException {
+          // The user may have moved the copy while it was open.
+        }
+      }
+    }
+  }
+
+  @protected
+  Future<void> openViewedFile(String path) => openLocalFile(path);
 
   Future<void> cancelTransfer(int id) =>
       request('cancel', {'id': id}).then((_) {});
@@ -987,6 +1189,66 @@ class StorageClient extends ChangeNotifier {
     }
     await (openDirectory ?? openLocalDirectory)(mount['path'] as String);
   });
+
+  String? mountedTransferPath(Json info) {
+    final profile = info['profile'];
+    final revision = info['revision'];
+    final remote = info['path'];
+    if (profile is! String ||
+        revision is! String ||
+        remote is! String ||
+        !remote.startsWith('/') ||
+        remote.contains('\\') ||
+        remote.contains('\u0000')) {
+      return null;
+    }
+    final mount = mountForProfile(profile);
+    final root = mount?['path'];
+    if (root is! String ||
+        root.isEmpty ||
+        mount?['failed'] == true ||
+        mount?['revision'] != revision) {
+      return null;
+    }
+    final parts = remote.substring(1).split('/');
+    if (parts.any((part) => part.isEmpty || part == '.' || part == '..')) {
+      return null;
+    }
+    if (root.startsWith('dav://')) {
+      final uri = Uri.tryParse(root);
+      if (uri == null ||
+          uri.host != '127.0.0.1' ||
+          !uri.hasPort ||
+          uri.path != '/' ||
+          uri.hasQuery ||
+          uri.hasFragment ||
+          !RegExp(r'^iCloud-[a-zA-Z0-9_-]{8}$').hasMatch(uri.userInfo)) {
+        return null;
+      }
+      return uri.replace(pathSegments: parts).toString();
+    }
+    try {
+      return Directory(
+        root,
+      ).uri.resolveUri(Uri(pathSegments: parts)).toFilePath();
+    } on UnsupportedError {
+      return null;
+    }
+  }
+
+  Future<bool> revealTransferFile(String path) async {
+    if (Platform.isLinux && path.startsWith('dav://')) {
+      return revealGnomeFile(Uri.parse(path));
+    }
+    final type = await FileSystemEntity.type(path, followLinks: false).timeout(
+      const Duration(seconds: 5),
+      onTimeout: () => FileSystemEntityType.notFound,
+    );
+    if (type == FileSystemEntityType.notFound) {
+      throw StateError('文件已移动或该位置暂不可用');
+    }
+    return revealLocalFile(path);
+  }
 
   Future<String?> save(Json profile) async {
     String? id;
@@ -1056,6 +1318,7 @@ class StorageClient extends ChangeNotifier {
     activity = '正在退出，正在收尾连接…';
     notifyListeners();
     try {
+      if (_transferHistory.flushed case final writes?) await writes;
       if (available) {
         if (_restoringStartup && activeId != null) {
           await request('cancel', {'id': activeId});
@@ -1082,6 +1345,7 @@ class StorageClient extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _transferRefresh?.cancel();
     if (!quitting) updates.dispose();
     super.dispose();
   }
