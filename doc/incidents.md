@@ -1,5 +1,14 @@
 # TwoDrive 故障记录
 
+## TD-20261111-14：fork #1 Windows 编译重新引入未使用的挂载 helper
+
+- 日期：2026-11-11；状态：编译条件修复与本机 Clippy 通过，后续共享平台测试已一并修正。起点 f274c51。
+- 症状：Windows job 130348276885 在严格 Clippy 中拒绝 mount_supported、uses_readonly_bridge 两个未使用函数。
+- 关联：TD-20261104-04 及 3febefd；需按实际调用点恢复 cfg(not(windows))，不能降低警告等级或改变 Linux 挂载行为。
+- 修复：两个 helper 增加与实际调用范围一致的 cfg(not(windows))，复用 3febefd 的平台编译方案，保留 -D warnings。
+- 实际验证：本机 Windows 全 target 严格 Clippy 通过；原始 hosted 日志证明两项 dead_code 失败。Linux 调用不变，未在本 Windows 主机执行 Linux 编译；新 head hosted 检查待补充。没有操作真实账号或挂载。
+- 后续共享测试：本分支还保留与 #50 相同的 Linux 自动挂载断言和旧托盘窗口标题，继续 Windows CI 时仍会遇到这两项已确认问题。复用 9ea337b 的平台断言和 a41cd0b 的独立测试标题；完整 Flutter 104 项通过、1 项 Linux 专用跳过。另同步 MSIX 窗口目标夹具的编译/退出分段预算与 PSModulePath 隔离，保持错误线程断言；其共享正反例已在本机验证。仅改变测试；生产挂载策略和 GUI 不变。托盘脚本的本地验证边界同 TD-20261111-15，最终本分支制品仍由当前 head CI 验证。
+
 从 2026-09-15 起持续维护。每次故障新增条目，最近的条目放在前面；复发也单独记录并关联历史条目。维护流程见 [AGENTS.md](../AGENTS.md)。更早的调查保留在[文档索引](README.md#engineering-notes)，不追溯标记为已按本流程验证。
 
 ## 记录模板
@@ -46,6 +55,29 @@
 
 
 2026-11-04 分支交付：用户在本机测试后授权上传 GitHub 分支。下列条目中的“未提交、推送或上传”保留各阶段验收时的事实；本批最终保留范围、验证结果和边界见 [Linux 桌面修复交付记录](linux-desktop-fixes-2026-11-04.md)。云端回收站功能已撤回，不包含在最终源码改动中。
+
+## TD-20261111-09：目录刷新 PR 的 Linux 测试和 Debian 校验失败
+
+- 日期：2026-11-11
+- 状态：已合入修复，等待此分支的托管 CI。
+- 影响版本与环境：fork PR #1 的 `b162e91`。
+- 关联历史故障：[目录索引](incidents/TD-20261105-01.md)与 fork PR #2 的同类修复。
+
+### 症状与触发条件
+
+Linux 桌面和 WebDAV/QUIC 两条任务都在 `queue_rejects_paths_outside_the_narrow_office_lock_namespace` 失败。Debian 包构建完成后，历史运行文件对比拒绝预期变更的 Nautilus 扩展。
+
+### 根因与证据
+
+锁队列回归把临时目录本身当作私有状态，CI 中该目录未满足 `0700` 要求，测试在检查非法路径前退出。Debian 历史包对比将旧版扩展字节作为期望值，而此分支已调整扩展实现。
+
+### 解决办法与防复发
+
+复用后续分支已通过 CI 的修复。锁队列测试让 `State::new` 创建私有子目录，继续验证越界拒绝。Debian 使用校验和固定的历史包，比较现有源码与打包的 Nautilus 扩展，并保留权限及其余运行文件的历史比较。
+
+### 验证范围与交付
+
+原始失败见 [Linux Rust](https://github.com/DavidXile/twodrive/actions/runs/41892522818/job/126793395003) 和 [Debian](https://github.com/DavidXile/twodrive/actions/runs/41892523062/job/126793746745)。同一修复已在后续 PR #2 的 Linux 和 Debian 托管任务通过。本机在 umask 022 下通过 135 项 Rust 库测试，6 项默认忽略。原 CI 构建的 Debian 包按新规则通过 11 个运行文件的内容和权限比较。当前修复交付到 [PR #1](https://github.com/DavidXile/twodrive/pull/1)。
 
 ## TD-20261104-08：重新开机后备份进入远端版本冲突保护
 
