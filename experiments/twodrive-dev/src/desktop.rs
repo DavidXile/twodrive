@@ -41,6 +41,9 @@ mod mount_paths;
 #[cfg(any(windows, all(target_os = "linux", feature = "mount")))]
 #[path = "desktop_readonly_mount.rs"]
 mod native_mount;
+#[cfg(target_os = "linux")]
+#[path = "desktop_quit_mounts.rs"]
+mod quit_mounts;
 #[path = "desktop_sharing.rs"]
 mod sharing;
 #[cfg(all(target_os = "linux", feature = "mount"))]
@@ -394,13 +397,29 @@ impl App {
                 );
             }
             let result = Command::new("fusermount3")
-                .arg("-u")
+                .env("LC_ALL", "C")
+                .args(["-u", "--"])
                 .arg(&p.mount_path)
-                .output()?;
-            ensure!(
-                result.status.success(),
-                "挂载仍被占用，请关闭使用该目录的程序后重试"
-            );
+                .output()
+                .context("无法启动 FUSE 卸载组件")?;
+            if !result.status.success() && is_mount(&p.mount_path)? {
+                #[cfg(target_os = "linux")]
+                if String::from_utf8_lossy(&result.stderr)
+                    .trim_end()
+                    .ends_with(": Device or resource busy")
+                {
+                    return Err(quit_mounts::BusyMount {
+                        name: p.name.clone(),
+                        path: p.mount_path.clone(),
+                    }
+                    .into());
+                }
+                anyhow::bail!(
+                    "无法卸载「{}」（{}），请检查 FUSE 挂载状态",
+                    p.name,
+                    p.mount_path.display()
+                );
+            }
             self.mounted.take();
             Ok(())
         }
@@ -561,7 +580,11 @@ impl App {
         {
             return Ok(());
         }
-        backup::reset_report(&self.state, p)?;
+        let session = self.saved_session(p);
+        let binding = session
+            .as_ref()
+            .and_then(|session| session["binding"].as_str());
+        backup::reset_report(&self.state, p, binding)?;
         let mut cmd = Command::new(std::env::current_exe()?);
         cmd.arg("--state")
             .arg(&self.state.dir)
@@ -869,7 +892,23 @@ impl App {
                 Ok(json!({}))
             }
             "quit" => {
-                self.disconnect_all()?;
+                #[cfg(target_os = "linux")]
+                if a["mount_confirmation"] == true
+                    && let Some(blocked) = quit_mounts::preflight(self, a)?
+                {
+                    return Ok(blocked);
+                }
+                let disconnected = self.disconnect_all();
+                #[cfg(target_os = "linux")]
+                if a["mount_confirmation"] == true
+                    && let Err(error) = &disconnected
+                    && let Some(busy) = error.downcast_ref::<quit_mounts::BusyMount>()
+                {
+                    return Ok(
+                        quit_mounts::preflight(self, &Value::Null)?.unwrap_or_else(|| busy.reply())
+                    );
+                }
+                disconnected?;
                 self.hosting.stop();
                 Ok(json!({}))
             }
@@ -1137,7 +1176,10 @@ pub fn run() -> anyhow::Result<()> {
                     "status":app.status().ok(),"configuration":app.public_profiles()}),
                 );
             }
-            let quit = req.op == "quit" && result.is_ok();
+            let quit = req.op == "quit"
+                && result
+                    .as_ref()
+                    .is_ok_and(|reply| reply["quit_blockers"].is_null());
             let value = match result {
                 Ok(value) => json!({"id":req.id,"ok":true,"result":value}),
                 Err(error) => json!({"id":req.id,"ok":false,"error":error.to_string()}),

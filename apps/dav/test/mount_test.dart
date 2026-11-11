@@ -71,7 +71,11 @@ class MountClient extends StorageClient {
         'mounted': rows.any((m) => m['profile'] == status['profile']),
       };
     }
-    return op == 'status' ? status : {};
+    return op == 'status'
+        ? status
+        : op == 'list'
+        ? {'entries': []}
+        : {};
   }
 }
 
@@ -153,6 +157,7 @@ void main() {
       await tester.pumpWidget(DavApp(client: c));
       await tester.tap(find.text('连接').first);
       await tester.pumpAndSettle();
+      c.calls.clear();
       await tester.ensureVisible(find.widgetWithText(OutlinedButton, '挂载'));
       await tester.tap(find.widgetWithText(OutlinedButton, '挂载'));
       await tester.pumpAndSettle();

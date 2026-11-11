@@ -54,7 +54,6 @@ enum _TransferSection {
   final String label;
 
   static _TransferSection forRow(TransferRow row) {
-    if (row.info['source'] == 'nautilus') return download;
     if (row.manual != null) {
       return row.info['kind'] == 'download' ? download : upload;
     }
@@ -75,6 +74,8 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
   final tray = StatusTray();
   bool panel = false;
   bool presenting = false;
+  bool _windowHidden = false;
+  bool _directoryReadQueued = false;
   int page = 0;
   _TransferSection? transferSection;
   String filter = '';
@@ -126,6 +127,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
   }
 
   void refreshWorkspace({bool forceDirectory = false}) {
+    _windowHidden = false;
     c.setView(
       visible: true,
       files: !panel && page == WorkspacePage.files.index,
@@ -146,18 +148,25 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
   }
 
   @override
-  void onWindowMinimize() => c.setView(visible: false);
+  void onWindowMinimize() => hideWorkspace();
+
+  void hideWorkspace() {
+    _windowHidden = true;
+    c.setView(visible: false);
+  }
 
   @override
   void onWindowClose() {
     if (c.quitting) return;
-    c.setView(visible: false);
+    hideWorkspace();
     unawaited(windowManager.hide());
   }
 
   @override
   void onWindowBlur() {
-    c.setView(visible: false);
+    // A visible Files window may lose focus during account selection. The
+    // selection still needs to load its directory; hiding is handled separately.
+    if (panel || page != WorkspacePage.files.index) c.setView(visible: false);
     if (!Platform.isLinux && !Platform.isWindows && panel && !presenting) {
       unawaited(windowManager.hide());
     }
@@ -166,12 +175,12 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
   Future<void> showPanel(Offset position) async {
     if (presenting) return;
     if (panel && await windowManager.isVisible()) {
-      c.setView(visible: false);
+      hideWorkspace();
       await windowManager.hide();
       return;
     }
     presenting = true;
-    c.setView(visible: false);
+    hideWorkspace();
     await windowManager.hide();
     setState(() => panel = true);
     await windowManager.setFullScreen(false);
@@ -197,7 +206,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
   Future<void> showManagement([int destination = 0]) async {
     if (presenting) return;
     presenting = true;
-    c.setView(visible: false);
+    hideWorkspace();
     final fromPanel = panel;
     var veiled = false;
     try {
@@ -207,8 +216,10 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
       if (!mounted) return;
       setState(() {
         panel = false;
+        _windowHidden = false;
         page = destination;
       });
+      loadVisibleDirectory();
       await windowManager.setAlwaysOnTop(false);
       await windowManager.setSkipTaskbar(false);
       await tray.panel(false);
@@ -255,35 +266,88 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
 
   Future<void> _quitOnce() async {
     try {
-      if (widget.desktop) {
-        // Keep the visible window independent of mount/pipe cleanup latency.
-        // A refused shutdown must restore it instead of hiding unsaved writes.
-        c.setView(visible: false);
-        try {
-          await windowManager.hide();
-        } catch (_) {}
-      }
-      if (await c.shutdown()) {
-        if (trayReady) {
-          await _trayWork;
-          await tray.destroy();
-          trayReady = false;
-        }
+      final requested = <(Object?, Object?)>{};
+      List<Json> closeProcesses = [];
+      while (mounted) {
         if (widget.desktop) {
-          await windowManager.setPreventClose(false);
-          await windowManager.destroy();
-        } else {
-          await SystemNavigator.pop();
+          hideWorkspace();
+          try {
+            await windowManager.hide();
+          } catch (_) {}
         }
-      } else if (widget.desktop) {
-        // Preserve the current page, window size and panel mode on refusal.
-        await windowManager.show();
-        await windowManager.focus();
+        if (await c.shutdown(closeMountProcesses: closeProcesses)) break;
+        if (widget.desktop) {
+          await windowManager.show();
+          _windowHidden = false;
+          await windowManager.focus();
+        }
+        if (!mounted || c.quitBlockers.isEmpty) return;
+        final processes = <(Object?, Object?)>{
+          for (final blocker in c.quitBlockers)
+            for (final program in (blocker['programs'] as List).cast<Json>())
+              (program['pid'], program['start_time']),
+        }.difference(requested);
+        if (!await _confirmQuitWithOpenMounts(processes.isNotEmpty)) return;
+        requested.addAll(processes);
+        closeProcesses = [
+          for (final (pid, startTime) in processes)
+            {'pid': pid, 'start_time': startTime},
+        ];
+      }
+      if (!mounted) return;
+      if (trayReady) {
+        await _trayWork;
+        await tray.destroy();
+        trayReady = false;
+      }
+      if (widget.desktop) {
+        await windowManager.setPreventClose(false);
+        await windowManager.destroy();
+      } else {
+        await SystemNavigator.pop();
       }
     } finally {
       _quitWork = null;
     }
   }
+
+  Future<bool> _confirmQuitWithOpenMounts(bool canClosePrograms) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          scrollable: true,
+          title: const Text('挂载目录正在使用'),
+          content: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                canClosePrograms
+                    ? '请先保存下列程序中的工作。确认后 TwoDrive 会请求这些程序退出，再卸载并关闭。未保存的内容可能丢失。'
+                    : '请关闭仍在使用这些目录的文件、窗口或终端，再重试退出。',
+              ),
+              for (final blocker in c.quitBlockers) ...[
+                const SizedBox(height: 12),
+                Text(blocker['name'] as String),
+                Text(blocker['path'] as String),
+                for (final program
+                    in (blocker['programs'] as List).cast<Json>())
+                  Text('${program['name']}（PID ${program['pid']}）'),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(canClosePrograms ? '关闭程序并退出' : '重试退出'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
 
   @override
   void dispose() {
@@ -745,6 +809,13 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
         ),
       );
   Widget filesPage() {
+    if (!_windowHidden && c.needsDirectoryRead && !_directoryReadQueued) {
+      _directoryReadQueued = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _directoryReadQueued = false;
+        if (mounted) loadVisibleDirectory();
+      });
+    }
     if (!c.connected) {
       return empty(
         Icons.cloud_outlined,
@@ -763,6 +834,8 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
           ),
         )
         .toList();
+    final canActOnFiles = !c.busy && c.directoryReady;
+    final directoryError = c.directoryError;
     return Column(
       children: [
         Row(
@@ -777,14 +850,16 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
             Expanded(child: SelectableText(c.path, maxLines: 2)),
             IconButton(
               tooltip: '刷新',
-              onPressed: c.busy ? null : () => c.browse(c.path),
+              onPressed: c.busy || c.directoryLoading
+                  ? null
+                  : () => c.browse(c.path),
               icon: const Icon(Icons.refresh),
             ),
             if (c.canMkdir || c.canUpload) ...[
               if (c.canMkdir)
                 IconButton(
                   tooltip: '新建文件夹',
-                  onPressed: c.busy
+                  onPressed: !canActOnFiles
                       ? null
                       : () async {
                           final identity = c.target;
@@ -801,7 +876,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                 ),
               if (c.canUpload)
                 FilledButton.icon(
-                  onPressed: c.busy ? null : upload,
+                  onPressed: canActOnFiles ? upload : null,
                   icon: const Icon(Icons.upload_outlined),
                   label: const Text('上传'),
                 ),
@@ -818,11 +893,26 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
         ),
         const SizedBox(height: 12),
         Expanded(
-          child: entries.isEmpty
+          child: !c.directoryLoaded
+              ? directoryError != null
+                    ? empty(Icons.error_outline, '无法读取目录', directoryError)
+                    : Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (c.directoryLoading) ...[
+                              const CircularProgressIndicator(),
+                              const SizedBox(height: 16),
+                            ],
+                            const Text('正在加载目录'),
+                          ],
+                        ),
+                      )
+              : entries.isEmpty
               ? empty(
                   Icons.folder_open,
-                  '当前目录为空',
-                  filter.isEmpty ? '上传文件或新建文件夹即可开始。' : '没有匹配的文件。',
+                  c.entries.isEmpty ? '当前目录为空' : '没有匹配的文件',
+                  c.entries.isNotEmpty ? '请调整筛选条件。' : '',
                 )
               : Card(
                   margin: EdgeInsets.zero,
@@ -834,6 +924,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                     itemBuilder: (context, index) {
                       final file = entries[index];
                       final directory = file['directory'] == true;
+                      final size = file['size'];
                       return ListTile(
                         leading: Icon(
                           directory ? Icons.folder : Icons.description_outlined,
@@ -843,15 +934,21 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                         ),
                         title: Text(file['name'] as String),
                         subtitle: Text(
-                          directory ? '文件夹' : bytes(file['size'] as int),
+                          directory
+                              ? '文件夹'
+                              : size is int
+                              ? bytes(size)
+                              : '文件',
                         ),
                         onTap: c.busy
                             ? null
                             : directory
                             ? () => c.browse(file['path'] as String)
-                            : () => c.viewCloudFile(file),
+                            : canActOnFiles
+                            ? () => c.viewCloudFile(file)
+                            : null,
                         trailing: PopupMenuButton<String>(
-                          enabled: !c.busy,
+                          enabled: canActOnFiles,
                           onSelected: (action) => fileAction(action, file),
                           itemBuilder: (_) => [
                             if (!directory) ...[
@@ -888,16 +985,35 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                   ),
                 ),
         ),
-        const SizedBox(height: 8),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Text(
-            '${entries.length} 项',
-            style: const TextStyle(color: Colors.blueGrey),
+        if (c.directoryLoaded) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              directoryError != null
+                  ? c.directoryFromMount
+                        ? '刷新失败，正在显示挂载目录。$directoryError'
+                        : '刷新失败，正在显示上次读取的目录。$directoryError'
+                  : c.directoryLoading
+                  ? '${entries.length} 项 · 正在刷新'
+                  : '${entries.length} 项',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.blueGrey),
+            ),
           ),
-        ),
+        ],
       ],
     );
+  }
+
+  void loadVisibleDirectory() {
+    if (!_windowHidden &&
+        !panel &&
+        page == WorkspacePage.files.index &&
+        c.needsDirectoryRead) {
+      unawaited(c.browse(c.path));
+    }
   }
 
   Widget transfersPage() {
@@ -999,7 +1115,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
       context,
     ).scale(112).clamp(112.0, 210.0).toDouble();
     final color = switch (state) {
-      '已备份' || '已完成' || '已打开' => _transferSuccess,
+      '已备份' || '已完成' => _transferSuccess,
       '未完成' || '需要处理' || '结果未确认' => const Color(0xffa74721),
       _ => active ? _transferAccent : _transferMuted,
     };
@@ -1083,7 +1199,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                         color: _transferMuted,
                       ),
                     ),
-                  if (active && (total == 0 || done < total)) ...[
+                  if (c.transferShowsProgress(info)) ...[
                     const SizedBox(height: 4),
                     SizedBox(
                       width: 84,
@@ -1092,7 +1208,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                         borderRadius: BorderRadius.circular(3),
                         backgroundColor: _transferInset,
                         color: _transferAccent,
-                        value: total == 0
+                        value: total <= 0
                             ? null
                             : (done / total).clamp(0, 1).toDouble(),
                       ),
@@ -1518,7 +1634,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
       await c.connect(profile['id'] as String);
     }
     if (mounted && c.connected && c.status['profile'] == profile['id']) {
-      setState(() => page = 0);
+      navigateTo(WorkspacePage.files.index);
     }
   }
 

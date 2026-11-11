@@ -9,18 +9,6 @@ import 'package:twodrive_dav/tray_panel.dart';
 import 'package:twodrive_dav/profile_dialog.dart';
 import 'package:twodrive_dav/updates.dart';
 
-class RevealClient extends FakeClient {
-  final locations = <String>[];
-
-  @override
-  Future<bool> revealTransferFile(String path) async {
-    locations.add(path);
-    return true;
-  }
-
-  void refreshFixture() => notifyListeners();
-}
-
 const testProviders = <Json>[
   {
     'id': 'dav',
@@ -387,13 +375,12 @@ void main() {
     c.dispose();
   });
 
-  testWidgets('download history locates Nautilus files through the new mount', (
-    tester,
-  ) async {
-    final client = RevealClient()
+  test('mounted file locations resolve against the current iCloud export', () {
+    final client = StorageClient()
       ..profiles = [
         {'id': 'icloud', 'revision': 'r-icloud', 'name': 'iCloud Drive'},
       ];
+    addTearDown(client.dispose);
     const name = '文档 #%.docx';
     final mount = <String, dynamic>{
       'profile': 'icloud',
@@ -402,46 +389,17 @@ void main() {
     };
     client.status = {
       'mounts': [mount],
-      'opened_files': [
-        {
-          'profile': 'icloud',
-          'revision': 'r-icloud',
-          'account': 'iCloud Drive',
-          'path': '/目录/$name',
-          'name': name,
-          'kind': 'download',
-          'source': 'nautilus',
-          'state': '已打开',
-        },
-      ],
-      'overall': {
-        'active': [
-          {'name': 'backup.txt', 'source': 'backup', 'kind': 'upload'},
-        ],
-      },
     };
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(DavApp(client: client));
-    await tester.tap(find.text('传输'));
-    await tester.pump();
-    await tester.tap(find.text('下载'));
-    await tester.pump();
-    expect(find.text(name), findsOneWidget);
-    expect(find.text('已打开'), findsOneWidget);
-    expect(find.text('backup.txt'), findsNothing);
     mount['path'] = 'dav://iCloud-ijklmnop@127.0.0.1:31001/';
-    client.refreshFixture();
-    await tester.pump();
-    await tester.tap(find.byTooltip('打开所在位置'));
-    await tester.pump();
-    final uri = Uri.parse(client.locations.single);
+    final uri = Uri.parse(
+      client.mountedTransferPath({
+        'profile': 'icloud',
+        'revision': 'r-icloud',
+        'path': '/目录/$name',
+      })!,
+    );
     expect(uri.port, 31001);
     expect(uri.userInfo, 'iCloud-ijklmnop');
     expect(uri.pathSegments, ['目录', name]);
-    await tester.pumpWidget(const SizedBox());
-    client.dispose();
   });
 }

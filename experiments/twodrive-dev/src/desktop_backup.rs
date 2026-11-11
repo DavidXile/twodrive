@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -14,6 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 use twodrive_dev::{model::CloudBackend, provider::Backend};
+
+const RECENT_LIMIT: usize = 20;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Folder {
@@ -33,6 +35,8 @@ struct Record {
 struct Manifest {
     binding: String,
     files: BTreeMap<String, Record>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recent: Vec<String>,
 }
 fn directory(state: &State, p: &Profile) -> anyhow::Result<State> {
     State::new(state.dir.join(format!("backup-{}", p.id)))
@@ -48,12 +52,103 @@ pub fn folders(state: &State, p: &Profile) -> anyhow::Result<Vec<Folder>> {
 pub fn save_folders(state: &State, p: &Profile, folders: &[Folder]) -> anyhow::Result<()> {
     directory(state, p)?.save("folders.json", &folders)
 }
-pub fn reset_report(state: &State, p: &Profile) -> anyhow::Result<()> {
-    let count = folders(state, p)?.iter().filter(|f| f.enabled).count();
-    directory(state, p)?.save(
+pub fn reset_report(state: &State, p: &Profile, binding: Option<&str>) -> anyhow::Result<()> {
+    let folders = folders(state, p)?;
+    let count = folders.iter().filter(|f| f.enabled).count();
+    let s = directory(state, p)?;
+    let manifest = s
+        .read::<Manifest>("manifest.json")
+        .ok()
+        .filter(|m| !m.binding.is_empty() && binding == Some(m.binding.as_str()));
+    let recent = manifest
+        .as_ref()
+        .map(|m| restore_recent(&s, m, &folders))
+        .unwrap_or_default();
+    let confirmed_files = manifest
+        .as_ref()
+        .map(|m| {
+            m.files
+                .values()
+                .filter(|record| !record.hash.is_empty())
+                .count()
+        })
+        .unwrap_or(0);
+    s.save(
         "report.json",
-        &json!({"state":"starting","active":[],"recent":[],"folders":count,"completed_scan":false}),
+        &json!({"state":"starting","active":[],"recent":recent,"folders":count,
+            "completed_scan":false,"confirmed_files":confirmed_files}),
     )
+}
+
+fn confirmed_item(path: &str, record: &Record, folders: &[Folder]) -> Option<Value> {
+    if record.hash.is_empty()
+        || record.intent.is_some()
+        || path == "/"
+        || twodrive_dev::provider::valid_path(path).is_err()
+    {
+        return None;
+    }
+    let name = path.rsplit('/').next()?;
+    let mut item = json!({"name":name,"path":path,"kind":"upload","state":"已备份"});
+    if let Some((size, _)) = record.fingerprint.split_once(':')
+        && let Ok(size) = size.parse::<u64>()
+    {
+        item["bytes_done"] = json!(size);
+        item["bytes_total"] = json!(size);
+    }
+    if let Some((folder, relative)) = folders
+        .iter()
+        .filter_map(|folder| {
+            let suffix = path.strip_prefix(&folder.remote)?.strip_prefix('/')?;
+            let relative = Path::new(suffix);
+            relative
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+                .then_some((folder, relative))
+        })
+        .max_by_key(|(folder, _)| folder.remote.len())
+    {
+        item["local_path"] = json!(folder.local.join(relative));
+    }
+    Some(item)
+}
+
+fn restore_recent(s: &State, manifest: &Manifest, folders: &[Folder]) -> Vec<Value> {
+    let report = s.read::<Value>("report.json").unwrap_or_default();
+    let reported = report["recent"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item["path"].as_str());
+    let mut seen = BTreeSet::new();
+    let history: Vec<_> = manifest
+        .recent
+        .iter()
+        .map(String::as_str)
+        .chain(reported)
+        .filter(|path| seen.insert(*path))
+        .filter_map(|path| confirmed_item(path, manifest.files.get(path)?, folders))
+        .take(RECENT_LIMIT)
+        .collect();
+    if !history.is_empty() {
+        return history;
+    }
+    // Older manifests have confirmations but no completion order. Show a
+    // bounded sample without inventing upload times.
+    manifest
+        .files
+        .iter()
+        .filter_map(|(path, record)| confirmed_item(path, record, folders))
+        .take(RECENT_LIMIT)
+        .collect()
+}
+
+fn recent_paths(items: &[Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|item| item["path"].as_str())
+        .map(str::to_owned)
+        .collect()
 }
 pub fn cleanup_spool(state: &State, p: &Profile) -> anyhow::Result<()> {
     let file = directory(state, p)?.dir.join("snapshot");
@@ -275,12 +370,18 @@ pub fn run(
         "备份记录属于另一个服务器，不能重用"
     );
     manifest.binding = binding;
-    let mut recent: Vec<Value> = vec![];
+    let mut recent = restore_recent(&s, &manifest, &folders(state, p)?);
+    manifest.recent = recent_paths(&recent);
+    let mut confirmed_files = manifest
+        .files
+        .values()
+        .filter(|record| !record.hash.is_empty())
+        .count();
     let mut scanned = false;
     loop {
         let selected = folders(state, p)?;
         let count = selected.iter().filter(|f| f.enabled).count();
-        let mut status = json!({"state":"scanning","active":[],"recent":recent,"folders":count,"completed_scan":scanned});
+        let mut status = json!({"state":"scanning","active":[],"recent":recent,"folders":count,"completed_scan":scanned,"confirmed_files":confirmed_files});
         let result = (|| -> anyhow::Result<()> {
             if paused.exists() {
                 status["state"] = json!("paused");
@@ -329,6 +430,10 @@ pub fn run(
                         }
                         let spool = s.dir.join("snapshot");
                         let hash = snapshot(&source, &spool, &paused)?;
+                        let was_confirmed = manifest
+                            .files
+                            .get(&dest)
+                            .is_some_and(|record| !record.hash.is_empty());
                         let record = manifest.files.entry(dest.clone()).or_default();
                         let report_path = s.dir.clone();
                         let pause_path = paused.clone();
@@ -386,10 +491,16 @@ pub fn run(
                             item["state"] = json!("已备份");
                             item["bytes_done"] = json!(uploaded.size);
                             item["bytes_total"] = json!(uploaded.size);
+                            recent.retain(|item| item["path"].as_str() != Some(dest.as_str()));
                             recent.insert(0, item);
-                            recent.truncate(20);
+                            recent.truncate(RECENT_LIMIT);
+                            manifest.recent = recent_paths(&recent);
                         }
                         manifest.files.get_mut(&dest).unwrap().fingerprint = fingerprint;
+                        if !was_confirmed && !manifest.files[&dest].hash.is_empty() {
+                            confirmed_files += 1;
+                        }
+                        status["confirmed_files"] = json!(confirmed_files);
                         s.save("manifest.json", &manifest)?;
                         fs::remove_file(spool)?;
                     }
@@ -420,6 +531,78 @@ pub fn run(
 mod tests {
     use super::super::test_provider::OpaqueProvider;
     use super::*;
+
+    #[test]
+    fn reset_preserves_confirmed_recent_order_for_the_bound_account() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = State::new(temp.path().join("state")).unwrap();
+        let profile = Profile {
+            id: "synthetic".into(),
+            ..Default::default()
+        };
+        let dir = directory(&state, &profile).unwrap();
+        let local = temp.path().join("source");
+        save_folders(
+            &state,
+            &profile,
+            &[Folder {
+                local: local.clone(),
+                remote: "/backup".into(),
+                enabled: true,
+            }],
+        )
+        .unwrap();
+        dir.save(
+            "manifest.json",
+            &json!({"binding":"bound","recent":["/backup/last.txt","/backup/older.txt"],
+                "files":{"/backup/older.txt":{"hash":"confirmed","etag":"v1","intent":null},
+                    "/backup/last.txt":{"hash":"confirmed","etag":"v2","intent":null,"fingerprint":"4:local"}}}),
+        )
+        .unwrap();
+        dir.save(
+            "report.json",
+            &json!({"active":[{"name":"stopped upload"}],"recent":[]}),
+        )
+        .unwrap();
+        reset_report(&state, &profile, Some("bound")).unwrap();
+        let started = report(&state, &profile).unwrap();
+        assert_eq!(started["confirmed_files"], 2);
+        assert_eq!(started["active"], json!([]));
+        assert_eq!(
+            recent_paths(started["recent"].as_array().unwrap()),
+            ["/backup/last.txt", "/backup/older.txt"],
+        );
+        assert_eq!(started["recent"][0]["bytes_total"], 4);
+        assert_eq!(
+            started["recent"][0]["local_path"],
+            json!(local.join("last.txt"))
+        );
+
+        reset_report(&state, &profile, Some("other")).unwrap();
+        let different = report(&state, &profile).unwrap();
+        assert_eq!(different["confirmed_files"], 0);
+        assert_eq!(different["recent"], json!([]));
+    }
+
+    #[test]
+    fn legacy_manifest_recovers_confirmed_items_without_claiming_pending_uploads() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = State::new(temp.path().join("state")).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "binding":"bound",
+            "files":{
+                "/backup/complete.txt":{"hash":"confirmed","etag":"v1","intent":null},
+                "/backup/pending.txt":{"hash":"","etag":null,"intent":"planned"},
+            }
+        }))
+        .unwrap();
+        let restored = restore_recent(&dir, &manifest, &[]);
+        assert_eq!(recent_paths(&restored), ["/backup/complete.txt"]);
+        assert_eq!(restored[0]["state"], "已备份");
+        assert!(restored[0].get("completed_at").is_none());
+        assert!(restored[0].get("local_path").is_none());
+    }
+
     #[test]
     fn only_unchanged_create_intents_can_resume_the_owned_session() {
         let record = Record {

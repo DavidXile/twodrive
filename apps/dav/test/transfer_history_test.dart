@@ -61,6 +61,36 @@ Future<File> stubEngine(Directory directory) async {
 }
 
 void main() {
+  test('file-manager opens stay outside actual transfer history', () {
+    final c = StorageClient()
+      ..status = {
+        'opened_files': [
+          {
+            'name': 'viewed.docx',
+            'source': 'nautilus',
+            'kind': 'download',
+            'state': '已打开',
+          },
+        ],
+        'overall': {
+          'recent': [
+            {'name': 'backup.txt', 'kind': 'upload', 'state': '已备份'},
+          ],
+        },
+      };
+    addTearDown(c.dispose);
+    final download = Transfer(10, 'download', {'path': '/saved.docx'})
+      ..state = '已完成';
+    c.transfers.add(download);
+    expect(c.transferRows.map((row) => row.info['name']), [
+      'saved.docx',
+      'backup.txt',
+    ]);
+    expect(c.transferShowsProgress(c.transferInfo(download)), isFalse);
+    download.state = '传输中';
+    expect(c.transferShowsProgress(c.transferInfo(download)), isTrue);
+  });
+
   test(
     'upload, download, and view survive restart with exact paths',
     () async {
