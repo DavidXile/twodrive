@@ -1,5 +1,13 @@
 # TwoDrive 故障记录
 
+## TD-20261111-14：fork #1 Windows 编译重新引入未使用的挂载 helper
+
+- 日期：2026-11-11；状态：调查中，编译条件待修复。起点 f274c51。
+- 症状：Windows job 130348276885 在严格 Clippy 中拒绝 mount_supported、uses_readonly_bridge 两个未使用函数。
+- 关联：TD-20261104-04 及 3febefd；需按实际调用点恢复 cfg(not(windows))，不能降低警告等级或改变 Linux 挂载行为。
+- 修复：两个 helper 增加与实际调用范围一致的 cfg(not(windows))，复用 3febefd 的平台编译方案，保留 -D warnings。
+- 实际验证：本机 Windows 全 target 严格 Clippy 通过；原始 hosted 日志证明两项 dead_code 失败。Linux 调用不变，未在本 Windows 主机执行 Linux 编译；新 head hosted 检查待补充。没有操作真实账号或挂载。
+
 从 2026-09-15 起持续维护。每次故障新增条目，最近的条目放在前面；复发也单独记录并关联历史条目。维护流程见 [AGENTS.md](../AGENTS.md)。更早的调查保留在[文档索引](README.md#engineering-notes)，不追溯标记为已按本流程验证。
 
 ## 记录模板
