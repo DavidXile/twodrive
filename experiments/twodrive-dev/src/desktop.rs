@@ -632,12 +632,24 @@ impl App {
         self.refresh_inactive();
         let accounts = self.account_states()?;
         let overall = connections::aggregate_accounts(&accounts);
+        #[cfg(all(target_os = "linux", feature = "mount"))]
+        let opened_files = native_mount::gvfs::opened_files(self);
+        #[cfg(not(all(target_os = "linux", feature = "mount")))]
+        let opened_files: Vec<Value> = Vec::new();
         let mounts: Vec<_> = accounts
             .iter()
             .filter(|a| a["mounted"] == true)
             .map(|a| {
+                #[allow(unused_mut)]
+                let mut path = a["mount_path"].clone();
+                #[cfg(all(target_os = "linux", feature = "mount"))]
+                if a["mount_failed"] != true
+                    && let Some(uri) = a["profile"].as_str().and_then(|id| native_mount::gvfs::browse_uri(self, id))
+                {
+                    path = json!(uri);
+                }
                 json!({"profile":a["profile"],"revision":a["revision"],"name":a["name"],
-                "path":a["mount_path"],"writable":a["writable"],"readonly":a["mount_readonly"],"failed":a["mount_failed"]})
+                "path":path,"writable":a["writable"],"readonly":a["mount_readonly"],"failed":a["mount_failed"]})
             })
             .collect();
         let gateway_dead = self
@@ -702,7 +714,7 @@ impl App {
             "connected":self.backend.is_some(),"profile":self.connected.as_ref().map(|p|&p.id),
             "multi_connection":true,"storage_usage":true,"connections":self.config.profiles.iter().filter(|p|self.online(&p.id)).map(|p|json!({"id":p.id,"revision":p.revision,"account_name":self.account_name(p)})).collect::<Vec<_>>(),
             "mounted":self.mounted.is_some(),"mount_failed":mount_dead,"gateway_failed":gateway_dead,"mount_support":mount_support,
-            "accounts":accounts,"overall":overall,"mounts":mounts,
+            "accounts":accounts,"overall":overall,"mounts":mounts,"opened_files":opened_files,
             "cache":cache,"network":network,
             "account_name": self.connected.as_ref().and_then(|p| self.account_name(p)),
             "autostart":self.autostart_path()?.exists()}),
