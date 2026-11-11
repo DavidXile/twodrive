@@ -519,8 +519,16 @@ class StorageClient extends ChangeNotifier {
     if (id > _id) _id = id;
     if (message['event'] == 'operation') {
       if (message['op'] == 'upload' || message['op'] == 'download') {
-        if (message['op'] == 'upload' && message['running'] != true) {
-          _invalidateDirectories(message['profile'] as String?);
+        // Tracked uploads refresh on their reply. The completion event can
+        // precede that reply, so starting both reads cancels useful work.
+        if (message['op'] == 'upload' &&
+            message['running'] != true &&
+            !transfers.any((task) => task.id == id)) {
+          final profile = message['profile'] as String?;
+          _invalidateDirectories(profile);
+          if (_showFiles && (profile == null || profile == selected)) {
+            unawaited(refreshView());
+          }
         }
         notifyListeners();
         return;

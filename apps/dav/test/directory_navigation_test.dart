@@ -328,6 +328,39 @@ void main() {
   );
 
   test(
+    'background upload completion refreshes only the visible account',
+    () async {
+      final c = DirectoryClient()..setView(visible: true, files: true);
+      final initial = c.browse('/');
+      c.finishList(0, name: 'original.txt');
+      await initial;
+
+      void completeUpload(int id, String profile) => c.accept({
+        'id': id,
+        'event': 'operation',
+        'op': 'upload',
+        'profile': profile,
+        'running': false,
+      });
+
+      completeUpload(10, 'b');
+      await Future<void>.delayed(Duration.zero);
+      expect(c.lists, hasLength(1));
+      expect(c.directoryReady, isTrue);
+
+      completeUpload(11, 'a');
+      await Future<void>.delayed(Duration.zero);
+      expect(c.lists, hasLength(2));
+      expect(c.lists.last.args['profile'], 'a');
+      c.finishList(1, name: 'uploaded.txt');
+      await Future<void>.delayed(Duration.zero);
+      expect(c.entries.single['name'], 'uploaded.txt');
+      expect(c.directoryReady, isTrue);
+      c.dispose();
+    },
+  );
+
+  test(
     'a rename invalidates the previous contents of affected folders',
     () async {
       final c = DirectoryClient();

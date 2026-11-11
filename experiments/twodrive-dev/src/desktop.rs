@@ -99,6 +99,7 @@ fn valid_id(id: &str) -> bool {
 }
 #[cfg(target_os = "linux")]
 fn linux_mount_info(path: &Path) -> anyhow::Result<Option<(String, String, String)>> {
+    let mut found = None;
     for line in fs::read_to_string("/proc/self/mountinfo")?.lines() {
         let Some((left, right)) = line.split_once(" - ") else {
             continue;
@@ -113,15 +114,27 @@ fn linux_mount_info(path: &Path) -> anyhow::Result<Option<(String, String, Strin
             .replace("\\012", "\n")
             .replace("\\134", "\\");
         if Path::new(&target) == path {
+            ensure!(found.is_none(), "同一目录存在多层挂载，无法确认挂载归属");
             let mut parts = right.split_whitespace();
-            return Ok(Some((
+            found = Some((
                 fields[0].into(),
                 parts.next().context("missing mount type")?.into(),
                 parts.next().context("missing mount source")?.into(),
-            )));
+            ));
         }
     }
-    Ok(None)
+    Ok(found)
+}
+#[cfg(target_os = "linux")]
+fn linux_twodrive_fuse_mount_id(path: &Path) -> anyhow::Result<Option<String>> {
+    Ok(linux_mount_info(path)?
+        .filter(|(_, kind, source)| linux_twodrive_fuse_source(kind, source))
+        .map(|(id, _, _)| id))
+}
+#[cfg(target_os = "linux")]
+fn linux_twodrive_fuse_source(kind: &str, source: &str) -> bool {
+    matches!((kind, source), ("fuse", "twodrive" | "twodrive-dev"))
+        || (kind == "fuse.rclone" && source.starts_with("twodrive-ro-"))
 }
 #[cfg(target_os = "linux")]
 fn is_mount(path: &Path) -> anyhow::Result<bool> {
@@ -386,7 +399,13 @@ impl App {
                 self.mounted.take();
                 return Ok(());
             }
-            if !is_mount(&p.mount_path)? {
+            #[cfg(target_os = "linux")]
+            let mount_id = linux_twodrive_fuse_mount_id(&p.mount_path)?;
+            #[cfg(target_os = "linux")]
+            let mounted = mount_id.is_some();
+            #[cfg(not(target_os = "linux"))]
+            let mounted = is_mount(&p.mount_path)?;
+            if !mounted {
                 self.mounted.take();
                 return Ok(());
             }
@@ -396,6 +415,11 @@ impl App {
                     "挂载仍有未上传或冲突的数据，请先完成同步；缓存已保留"
                 );
             }
+            #[cfg(target_os = "linux")]
+            ensure!(
+                linux_twodrive_fuse_mount_id(&p.mount_path)? == mount_id,
+                "挂载已变化，请重试"
+            );
             let result = Command::new("fusermount3")
                 .env("LC_ALL", "C")
                 .args(["-u", "--"])

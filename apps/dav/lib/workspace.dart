@@ -285,9 +285,10 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
         final processes = <(Object?, Object?)>{
           for (final blocker in c.quitBlockers)
             for (final program in (blocker['programs'] as List).cast<Json>())
-              (program['pid'], program['start_time']),
+              if (program['can_close'] != false)
+                (program['pid'], program['start_time']),
         }.difference(requested);
-        if (!await _confirmQuitWithOpenMounts(processes.isNotEmpty)) return;
+        if (!await _confirmQuitWithOpenMounts(processes)) return;
         requested.addAll(processes);
         closeProcesses = [
           for (final (pid, startTime) in processes)
@@ -311,7 +312,9 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
     }
   }
 
-  Future<bool> _confirmQuitWithOpenMounts(bool canClosePrograms) async =>
+  Future<bool> _confirmQuitWithOpenMounts(
+    Set<(Object?, Object?)> closePrograms,
+  ) async =>
       await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
@@ -321,8 +324,8 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                canClosePrograms
-                    ? '请先保存下列程序中的工作。确认后 TwoDrive 会请求这些程序退出，再卸载并关闭。未保存的内容可能丢失。'
+                closePrograms.isNotEmpty
+                    ? '请先保存工作并处理标记为手动关闭的程序。确认后 TwoDrive 会请求其余列出的程序退出。未保存的内容可能丢失。'
                     : '请关闭仍在使用这些目录的文件、窗口或终端，再重试退出。',
               ),
               for (final blocker in c.quitBlockers) ...[
@@ -331,7 +334,10 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
                 Text(blocker['path'] as String),
                 for (final program
                     in (blocker['programs'] as List).cast<Json>())
-                  Text('${program['name']}（PID ${program['pid']}）'),
+                  Text(
+                    '${program['name']}（PID ${program['pid']}）'
+                    '${closePrograms.contains((program['pid'], program['start_time'])) ? '' : ' · 请手动关闭或离开挂载目录'}',
+                  ),
               ],
             ],
           ),
@@ -342,7 +348,7 @@ class _WorkspaceState extends State<Workspace> with WindowListener {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: Text(canClosePrograms ? '关闭程序并退出' : '重试退出'),
+              child: Text(closePrograms.isNotEmpty ? '关闭程序并退出' : '重试退出'),
             ),
           ],
         ),

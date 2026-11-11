@@ -19,6 +19,13 @@ struct ProcessInfo {
     name: String,
 }
 
+struct Holder {
+    name: String,
+    can_close: bool,
+}
+
+type Holders = BTreeMap<Identity, Holder>;
+
 struct Mount {
     name: String,
     path: PathBuf,
@@ -29,8 +36,8 @@ struct Mount {
 impl Mount {
     fn still_mounted(&self) -> bool {
         if let Some(id) = &self.id {
-            return linux_mount_info(&self.path)
-                .is_ok_and(|current| current.is_some_and(|current| &current.0 == id));
+            return linux_twodrive_fuse_mount_id(&self.path)
+                .is_ok_and(|current| current.as_ref() == Some(id));
         }
         self.root == self.path || fs::read_link(&self.path).is_ok_and(|path| path == self.root)
     }
@@ -53,10 +60,8 @@ fn mounted_roots(app: &App) -> Vec<Mount> {
     app.mounted_profiles()
         .filter_map(|profile| {
             let path = profile.mount_path.clone();
-            let (root, id) = match linux_mount_info(&path).ok().flatten() {
-                Some((id, kind, _)) if kind == "fuse" || kind.starts_with("fuse.") => {
-                    (path.clone(), Some(id))
-                }
+            let (root, id) = match linux_twodrive_fuse_mount_id(&path).ok()? {
+                Some(id) => (path.clone(), Some(id)),
                 _ => (gvfs_export(app, profile)?, None),
             };
             Some(Mount {
@@ -171,8 +176,8 @@ fn matching_mounts(proc: &Path, mounts: &[Mount]) -> HashSet<usize> {
     matched
 }
 
-fn find_holders(mounts: &[Mount], engine: u32) -> Vec<BTreeMap<Identity, String>> {
-    let mut holders = vec![BTreeMap::new(); mounts.len()];
+fn find_holders(mounts: &[Mount], engine: u32) -> Vec<Holders> {
+    let mut holders: Vec<_> = mounts.iter().map(|_| Holders::new()).collect();
     let Ok(namespace) = fs::read_link("/proc/self/ns/mnt") else {
         return holders;
     };
@@ -188,7 +193,6 @@ fn find_holders(mounts: &[Mount], engine: u32) -> Vec<BTreeMap<Identity, String>
         .collect();
     for (pid, process) in &processes {
         if in_process_tree(*pid, engine, &processes)
-            || in_process_tree(engine, *pid, &processes)
             || matches!(
                 process.name.as_str(),
                 "systemd"
@@ -203,12 +207,19 @@ fn find_holders(mounts: &[Mount], engine: u32) -> Vec<BTreeMap<Identity, String>
         {
             continue;
         }
+        let can_close = !in_process_tree(engine, *pid, &processes);
         let path = PathBuf::from(format!("/proc/{pid}"));
         if !fs::read_link(path.join("ns/mnt")).is_ok_and(|current| current == namespace) {
             continue;
         }
         for index in matching_mounts(&path, mounts) {
-            holders[index].insert(process.identity, process.name.clone());
+            holders[index].insert(
+                process.identity,
+                Holder {
+                    name: process.name.clone(),
+                    can_close,
+                },
+            );
         }
     }
     holders
@@ -238,20 +249,19 @@ fn request_close(process: Identity) -> bool {
 
 fn close_approved(
     mounts: &[Mount],
-    holders: &[BTreeMap<Identity, String>],
+    holders: &[Holders],
     approved: &HashSet<Identity>,
 ) -> HashSet<Identity> {
     let mut checked = HashSet::new();
     let mut closing = HashSet::new();
     for (index, processes) in holders.iter().enumerate() {
-        if !mounts[index].still_mounted() {
-            continue;
-        }
-        for process in processes.keys().copied() {
-            if approved.contains(&process)
+        for (&process, holder) in processes {
+            if holder.can_close
+                && approved.contains(&process)
                 && !checked.contains(&process)
                 && matching_mounts(Path::new(&format!("/proc/{}", process.pid)), mounts)
                     .contains(&index)
+                && mounts[index].still_mounted()
             {
                 checked.insert(process);
                 if request_close(process) {
@@ -294,7 +304,10 @@ pub(super) fn preflight(app: &App, args: &Value) -> anyhow::Result<Option<Value>
         .map(|(mount, processes)| {
             let programs: Vec<_> = processes
                 .into_iter()
-                .map(|(p, name)| json!({"pid":p.pid,"start_time":p.start_time,"name":name}))
+                .map(|(p, holder)| {
+                    json!({"pid":p.pid,"start_time":p.start_time,
+                    "name":holder.name,"can_close":holder.can_close})
+                })
                 .collect();
             json!({"name":mount.name,"path":mount.path,"programs":programs})
         })
@@ -313,6 +326,44 @@ mod tests {
             let _ = self.0.kill();
             let _ = self.0.wait();
         }
+    }
+
+    #[test]
+    fn only_supported_fuse_type_and_source_pairs_are_owned() {
+        for (kind, source) in [
+            ("fuse", "twodrive"),
+            ("fuse", "twodrive-dev"),
+            ("fuse.rclone", "twodrive-ro-fixture"),
+        ] {
+            assert!(linux_twodrive_fuse_source(kind, source));
+        }
+        for (kind, source) in [
+            ("fuse", "unrelated"),
+            ("fuse.sshfs", "twodrive"),
+            ("fuse.rclone", "unrelated"),
+            ("fuse.gvfsd-fuse", "gvfsd-fuse"),
+        ] {
+            assert!(!linux_twodrive_fuse_source(kind, source));
+        }
+    }
+
+    #[test]
+    fn a_holding_ancestor_is_reported_but_never_signalled() {
+        let temp = tempfile::tempdir().unwrap();
+        let mount_path = temp.path().join("mount");
+        fs::create_dir(&mount_path).unwrap();
+        let _reference = fs::File::open(&mount_path).unwrap();
+        let engine = ChildGuard(Command::new("sleep").arg("30").spawn().unwrap());
+        let identity = process_info(std::process::id()).unwrap().identity;
+        let mounts = [Mount {
+            name: "Fixture".into(),
+            path: mount_path.clone(),
+            root: mount_path,
+            id: None,
+        }];
+        let holders = find_holders(&mounts, engine.0.id());
+        assert!(!holders[0][&identity].can_close);
+        assert!(close_approved(&mounts, &holders, &HashSet::from([identity])).is_empty());
     }
 
     #[test]
@@ -399,7 +450,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         let id = loop {
             assert!(worker.0.try_wait().unwrap().is_none());
-            if let Some((id, _, _)) = linux_mount_info(&path).unwrap() {
+            if let Some(id) = linux_twodrive_fuse_mount_id(&path).unwrap() {
                 break id;
             }
             assert!(

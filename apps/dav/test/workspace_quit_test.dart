@@ -203,6 +203,51 @@ void main() {
   }
 
   testWidgets(
+    'a protected mount holder is displayed and excluded from confirmation',
+    (tester) async {
+      final client = WindowQuitClient(events)
+        ..quitResults = [
+          {
+            'quit_blockers': [
+              {
+                'name': 'OneDrive',
+                'path': '/synthetic/mount',
+                'programs': [
+                  {'pid': 1234, 'start_time': 98765, 'name': 'writer'},
+                  {
+                    'pid': 5678,
+                    'start_time': 43210,
+                    'name': 'launch-shell',
+                    'can_close': false,
+                  },
+                ],
+              },
+            ],
+          },
+          {},
+        ];
+      client.transport.complete();
+      await tester.pumpWidget(DavApp(client: client, desktop: true));
+      await tester.pump();
+      final dynamic state = tester.state(find.byType(Workspace));
+      final Future<void> done = state.quit();
+      await tester.pumpAndSettle();
+      expect(
+        find.text('launch-shell（PID 5678） · 请手动关闭或离开挂载目录'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('关闭程序并退出'));
+      await tester.pump(const Duration(seconds: 1));
+      await done;
+      expect(client.quitArguments.last['close_mount_processes'], [
+        {'pid': 1234, 'start_time': 98765},
+      ]);
+      await tester.pumpWidget(const SizedBox());
+      client.dispose();
+    },
+  );
+
+  testWidgets(
     'an unidentified mount holder can be retried without closing apps',
     (tester) async {
       final client = WindowQuitClient(events)
