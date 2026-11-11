@@ -7,6 +7,13 @@
 - 修复：两分支 main.dart 均已有 --window-title 参数；移植 a41cd0b 的相同测试修正，使用每次私有夹具的唯一标题，同时保留 PID、run.lock 和 TwoDrive.TrayReady 联合检查，并报告三者分别是否就绪。不延长初始化预算。
 - 实际验证：两个脚本分别运行于已验证支持同一参数的 Windows f223fadc 客户端，托盘开关、后台隐藏、位置稳定、外部失焦关闭及 Escape 关闭五项均通过。该客户端的窗口标题/原生托盘机制与两分支相同，但不是两分支重建的制品；最终对应 head 的制品由 hosted CI 复验，不能将本机结果冒充该 CI。仅私有空状态，不操作真实账号或现用窗口。
 - 防复发：保留每次唯一标题及 PID/引擎/托盘完整就绪守卫，不通过单独放宽超时掩盖启动失败。
+## TD-20261111-14：fork #1 Windows 编译重新引入未使用的挂载 helper
+
+- 日期：2026-11-11；状态：调查中，编译条件待修复。起点 f274c51。
+- 症状：Windows job 130348276885 在严格 Clippy 中拒绝 mount_supported、uses_readonly_bridge 两个未使用函数。
+- 关联：TD-20261104-04 及 3febefd；需按实际调用点恢复 cfg(not(windows))，不能降低警告等级或改变 Linux 挂载行为。
+- 修复：两个 helper 增加与实际调用范围一致的 cfg(not(windows))，复用 3febefd 的平台编译方案，保留 -D warnings。
+- 实际验证：本机 Windows 全 target 严格 Clippy 通过；原始 hosted 日志证明两项 dead_code 失败。Linux 调用不变，未在本 Windows 主机执行 Linux 编译；新 head hosted 检查待补充。没有操作真实账号或挂载。
 
 从 2026-09-15 起持续维护。每次故障新增条目，最近的条目放在前面；复发也单独记录并关联历史条目。维护流程见 [AGENTS.md](../AGENTS.md)。更早的调查保留在[文档索引](README.md#engineering-notes)，不追溯标记为已按本流程验证。
 
@@ -89,6 +96,29 @@ Windows peer 任务的 Office 锁回归在最后一个 DELETE 的 400 毫秒上�
 `ef6801b` 的 Windows 锁队列通过，桌面引擎的卸载子进程测试也通过。随后的 Windows Flutter 测试发现两条既有断言把 Linux 的连接后自动挂载当作跨平台行为。测试现在按平台核对挂载调用及连接结果，自动挂载失败分支仍在 Linux 测试。Debian 下载步骤长时间未返回，改用上游 [PR #62](https://github.com/LumiaBlack51/twodrive/pull/62) 已验证的历史资产 API、有限重试和固定 SHA-256，依赖回归及后续校验保留。
 
 2026-11-04 分支交付：用户在本机测试后授权上传 GitHub 分支。下列条目中的“未提交、推送或上传”保留各阶段验收时的事实；本批最终保留范围、验证结果和边界见 [Linux 桌面修复交付记录](linux-desktop-fixes-2026-11-04.md)。云端回收站功能已撤回，不包含在最终源码改动中。
+
+## TD-20261111-09：目录刷新 PR 的 Linux 测试和 Debian 校验失败
+
+- 日期：2026-11-11
+- 状态：已合入修复，等待此分支的托管 CI。
+- 影响版本与环境：fork PR #1 的 `b162e91`。
+- 关联历史故障：[目录索引](incidents/TD-20261105-01.md)与 fork PR #2 的同类修复。
+
+### 症状与触发条件
+
+Linux 桌面和 WebDAV/QUIC 两条任务都在 `queue_rejects_paths_outside_the_narrow_office_lock_namespace` 失败。Debian 包构建完成后，历史运行文件对比拒绝预期变更的 Nautilus 扩展。
+
+### 根因与证据
+
+锁队列回归把临时目录本身当作私有状态，CI 中该目录未满足 `0700` 要求，测试在检查非法路径前退出。Debian 历史包对比将旧版扩展字节作为期望值，而此分支已调整扩展实现。
+
+### 解决办法与防复发
+
+复用后续分支已通过 CI 的修复。锁队列测试让 `State::new` 创建私有子目录，继续验证越界拒绝。Debian 使用校验和固定的历史包，比较现有源码与打包的 Nautilus 扩展，并保留权限及其余运行文件的历史比较。
+
+### 验证范围与交付
+
+原始失败见 [Linux Rust](https://github.com/DavidXile/twodrive/actions/runs/41892522818/job/126793395003) 和 [Debian](https://github.com/DavidXile/twodrive/actions/runs/41892523062/job/126793746745)。同一修复已在后续 PR #2 的 Linux 和 Debian 托管任务通过。本机在 umask 022 下通过 135 项 Rust 库测试，6 项默认忽略。原 CI 构建的 Debian 包按新规则通过 11 个运行文件的内容和权限比较。当前修复交付到 [PR #1](https://github.com/DavidXile/twodrive/pull/1)。
 
 ## TD-20261104-08：重新开机后备份进入远端版本冲突保护
 
