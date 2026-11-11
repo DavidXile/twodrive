@@ -14,7 +14,7 @@
 - 关联：TD-20261104-04 及 3febefd；需按实际调用点恢复 cfg(not(windows))，不能降低警告等级或改变 Linux 挂载行为。
 - 修复：两个 helper 增加与实际调用范围一致的 cfg(not(windows))，复用 3febefd 的平台编译方案，保留 -D warnings。
 - 实际验证：本机 Windows 全 target 严格 Clippy 通过；原始 hosted 日志证明两项 dead_code 失败。Linux 调用不变，未在本 Windows 主机执行 Linux 编译；新 head hosted 检查待补充。没有操作真实账号或挂载。
-- 后续共享测试：本分支还保留与 #50 相同的 Linux 自动挂载断言和旧托盘窗口标题，继续 Windows CI 时仍会遇到这两项已确认问题。复用 9ea337b 的平台断言和 a41cd0b 的独立测试标题；完整 Flutter 104 项通过、1 项 Linux 专用跳过。仅改变测试；生产挂载策略和 GUI 不变。托盘脚本的本地验证边界同 TD-20261111-15，最终本分支制品仍由当前 head CI 验证。
+- 后续共享测试：本分支还保留与 #50 相同的 Linux 自动挂载断言和旧托盘窗口标题，继续 Windows CI 时仍会遇到这两项已确认问题。复用 9ea337b 的平台断言和 a41cd0b 的独立测试标题；完整 Flutter 104 项通过、1 项 Linux 专用跳过。另同步 MSIX 窗口目标夹具的编译/退出分段预算与 PSModulePath 隔离，保持错误线程断言；其共享正反例已在本机验证。仅改变测试；生产挂载策略和 GUI 不变。托盘脚本的本地验证边界同 TD-20261111-15，最终本分支制品仍由当前 head CI 验证。
 
 从 2026-09-15 起持续维护。每次故障新增条目，最近的条目放在前面；复发也单独记录并关联历史条目。维护流程见 [AGENTS.md](../AGENTS.md)。更早的调查保留在[文档索引](README.md#engineering-notes)，不追溯标记为已按本流程验证。
 
