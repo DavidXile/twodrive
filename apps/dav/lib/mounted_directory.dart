@@ -77,14 +77,13 @@ Future<({String id, String root})?> _mountedRoot(
   final rows = await File(_mountInfo).readAsLines();
   if (mountedPath == configuredRoot) {
     final mount = _mountAt(rows, mountedPath);
-    if (mount == null ||
-        !mount.type.startsWith('fuse') ||
-        !(mount.source == 'twodrive' ||
-            mount.source == 'twodrive-dev' ||
-            mount.source.startsWith('twodrive-native-') ||
-            mount.source.startsWith('twodrive-ro-'))) {
-      return null;
-    }
+    if (mount == null) return null;
+    final owned = switch (mount.type) {
+      'fuse' => mount.source == 'twodrive' || mount.source == 'twodrive-dev',
+      'fuse.rclone' => mount.source.startsWith('twodrive-ro-'),
+      _ => false,
+    };
+    if (!owned) return null;
     return (id: mount.id, root: mountedPath);
   }
 

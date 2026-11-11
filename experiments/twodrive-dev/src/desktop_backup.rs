@@ -31,12 +31,25 @@ struct Record {
     #[serde(default)]
     fingerprint: String,
 }
+impl Record {
+    fn is_confirmed(&self) -> bool {
+        !self.hash.is_empty() && self.intent.is_none()
+    }
+}
 #[derive(Default, Serialize, Deserialize)]
 struct Manifest {
     binding: String,
     files: BTreeMap<String, Record>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     recent: Vec<String>,
+}
+impl Manifest {
+    fn confirmed_files(&self) -> usize {
+        self.files
+            .values()
+            .filter(|record| record.is_confirmed())
+            .count()
+    }
 }
 fn directory(state: &State, p: &Profile) -> anyhow::Result<State> {
     State::new(state.dir.join(format!("backup-{}", p.id)))
@@ -66,12 +79,7 @@ pub fn reset_report(state: &State, p: &Profile, binding: Option<&str>) -> anyhow
         .unwrap_or_default();
     let confirmed_files = manifest
         .as_ref()
-        .map(|m| {
-            m.files
-                .values()
-                .filter(|record| !record.hash.is_empty())
-                .count()
-        })
+        .map(Manifest::confirmed_files)
         .unwrap_or(0);
     s.save(
         "report.json",
@@ -81,11 +89,7 @@ pub fn reset_report(state: &State, p: &Profile, binding: Option<&str>) -> anyhow
 }
 
 fn confirmed_item(path: &str, record: &Record, folders: &[Folder]) -> Option<Value> {
-    if record.hash.is_empty()
-        || record.intent.is_some()
-        || path == "/"
-        || twodrive_dev::provider::valid_path(path).is_err()
-    {
+    if !record.is_confirmed() || path == "/" || twodrive_dev::provider::valid_path(path).is_err() {
         return None;
     }
     let name = path.rsplit('/').next()?;
@@ -372,11 +376,7 @@ pub fn run(
     manifest.binding = binding;
     let mut recent = restore_recent(&s, &manifest, &folders(state, p)?);
     manifest.recent = recent_paths(&recent);
-    let mut confirmed_files = manifest
-        .files
-        .values()
-        .filter(|record| !record.hash.is_empty())
-        .count();
+    let mut confirmed_files = manifest.confirmed_files();
     let mut scanned = false;
     loop {
         let selected = folders(state, p)?;
@@ -430,15 +430,19 @@ pub fn run(
                         }
                         let spool = s.dir.join("snapshot");
                         let hash = snapshot(&source, &spool, &paused)?;
-                        let was_confirmed = manifest
-                            .files
-                            .get(&dest)
-                            .is_some_and(|record| !record.hash.is_empty());
                         let record = manifest.files.entry(dest.clone()).or_default();
+                        let mut was_confirmed = record.is_confirmed();
                         let report_path = s.dir.clone();
                         let pause_path = paused.clone();
                         let mut active_status = status.clone();
-                        active_status["recent"] = json!(recent);
+                        active_status["recent"] = json!(
+                            recent
+                                .iter()
+                                .filter(|item| item["path"].as_str() != Some(dest.as_str()))
+                                .collect::<Vec<_>>()
+                        );
+                        active_status["confirmed_files"] =
+                            json!(confirmed_files - usize::from(was_confirmed));
                         let last = std::sync::Mutex::new(Instant::now() - Duration::from_secs(1));
                         let transfer = json!({
                             "name":name,"kind":"upload","source":"backup",
@@ -473,6 +477,14 @@ pub fn run(
                             if record.hash != hash {
                                 let etag = record.etag.clone();
                                 record.intent = Some(hash.clone());
+                                if was_confirmed {
+                                    confirmed_files -= 1;
+                                    was_confirmed = false;
+                                    recent.retain(|item| {
+                                        item["path"].as_str() != Some(dest.as_str())
+                                    });
+                                    manifest.recent = recent_paths(&recent);
+                                }
                                 s.save("manifest.json", &manifest)?;
                                 uploaded = Some(backend.upload_path(
                                     &dest,
@@ -482,25 +494,30 @@ pub fn run(
                                 )?);
                             }
                         }
-                        if let Some(uploaded) = uploaded {
-                            let record = manifest.files.get_mut(&dest).unwrap();
+                        let record = manifest.files.get_mut(&dest).unwrap();
+                        let uploaded_size = uploaded.map(|uploaded| {
                             record.hash = hash;
                             record.etag = Some(uploaded.etag);
                             record.intent = None;
+                            uploaded.size
+                        });
+                        record.fingerprint = fingerprint;
+                        let newly_confirmed = !was_confirmed && record.is_confirmed();
+                        if newly_confirmed {
+                            confirmed_files += 1;
+                        }
+                        if let Some(size) =
+                            uploaded_size.or_else(|| newly_confirmed.then_some(info.len()))
+                        {
                             let mut item = transfer;
                             item["state"] = json!("已备份");
-                            item["bytes_done"] = json!(uploaded.size);
-                            item["bytes_total"] = json!(uploaded.size);
+                            item["bytes_done"] = json!(size);
+                            item["bytes_total"] = json!(size);
                             recent.retain(|item| item["path"].as_str() != Some(dest.as_str()));
                             recent.insert(0, item);
                             recent.truncate(RECENT_LIMIT);
                             manifest.recent = recent_paths(&recent);
                         }
-                        manifest.files.get_mut(&dest).unwrap().fingerprint = fingerprint;
-                        if !was_confirmed && !manifest.files[&dest].hash.is_empty() {
-                            confirmed_files += 1;
-                        }
-                        status["confirmed_files"] = json!(confirmed_files);
                         s.save("manifest.json", &manifest)?;
                         fs::remove_file(spool)?;
                     }
@@ -512,6 +529,7 @@ pub fn run(
         })();
         status["active"] = json!([]);
         status["recent"] = json!(recent);
+        status["confirmed_files"] = json!(confirmed_files);
         status["completed_scan"] = json!(scanned);
         if let Err(error) = result {
             status["state"] = json!(if paused.exists() { "paused" } else { "error" });
@@ -585,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_manifest_recovers_confirmed_items_without_claiming_pending_uploads() {
+    fn legacy_manifest_recovers_only_confirmed_backups() {
         let temp = tempfile::tempdir().unwrap();
         let dir = State::new(temp.path().join("state")).unwrap();
         let manifest: Manifest = serde_json::from_value(json!({
@@ -593,10 +611,17 @@ mod tests {
             "files":{
                 "/backup/complete.txt":{"hash":"confirmed","etag":"v1","intent":null},
                 "/backup/pending.txt":{"hash":"","etag":null,"intent":"planned"},
+                "/backup/replacing.txt":{"hash":"old-version","etag":"v1","intent":"replacement"},
             }
         }))
         .unwrap();
+        dir.save(
+            "report.json",
+            &json!({"recent":[{"path":"/backup/replacing.txt"}]}),
+        )
+        .unwrap();
         let restored = restore_recent(&dir, &manifest, &[]);
+        assert_eq!(manifest.confirmed_files(), 1);
         assert_eq!(recent_paths(&restored), ["/backup/complete.txt"]);
         assert_eq!(restored[0]["state"], "已备份");
         assert!(restored[0].get("completed_at").is_none());

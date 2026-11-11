@@ -51,9 +51,16 @@ pub(super) struct BusyMount {
 }
 
 impl BusyMount {
-    pub(super) fn reply(&self) -> Value {
+    fn reply(&self) -> Value {
         json!({"quit_blockers":[{"name":self.name,"path":self.path,"programs":[]}]})
     }
+}
+
+pub(super) fn blockers_after_failed_disconnect(
+    error: &anyhow::Error,
+    inspect: impl FnOnce() -> anyhow::Result<Option<Value>>,
+) -> anyhow::Result<Option<Value>> {
+    Ok(inspect()?.or_else(|| error.downcast_ref::<BusyMount>().map(BusyMount::reply)))
 }
 
 fn mounted_roots(app: &App) -> Vec<Mount> {
@@ -326,6 +333,31 @@ mod tests {
             let _ = self.0.kill();
             let _ = self.0.wait();
         }
+    }
+
+    #[test]
+    fn a_bridge_disconnect_error_can_report_new_mount_holders() {
+        let generic = anyhow::anyhow!("bridge worker could not stop");
+        let blockers = json!({"quit_blockers":[{"name":"Bridge","path":"/fixture",
+            "programs":[{"pid":123,"name":"editor"}]}]});
+        assert_eq!(
+            blockers_after_failed_disconnect(&generic, || Ok(Some(blockers.clone()))).unwrap(),
+            Some(blockers)
+        );
+        assert!(
+            blockers_after_failed_disconnect(&generic, || Ok(None))
+                .unwrap()
+                .is_none()
+        );
+        let busy = BusyMount {
+            name: "Direct".into(),
+            path: "/fixture".into(),
+        };
+        let fallback = busy.reply();
+        assert_eq!(
+            blockers_after_failed_disconnect(&busy.into(), || Ok(None)).unwrap(),
+            Some(fallback)
+        );
     }
 
     #[test]

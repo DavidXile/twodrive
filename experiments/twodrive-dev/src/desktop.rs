@@ -926,11 +926,12 @@ impl App {
                 #[cfg(target_os = "linux")]
                 if a["mount_confirmation"] == true
                     && let Err(error) = &disconnected
-                    && let Some(busy) = error.downcast_ref::<quit_mounts::BusyMount>()
+                    && let Some(blockers) =
+                        quit_mounts::blockers_after_failed_disconnect(error, || {
+                            quit_mounts::preflight(self, &Value::Null)
+                        })?
                 {
-                    return Ok(
-                        quit_mounts::preflight(self, &Value::Null)?.unwrap_or_else(|| busy.reply())
-                    );
+                    return Ok(blockers);
                 }
                 disconnected?;
                 self.hosting.stop();
