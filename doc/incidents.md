@@ -47,6 +47,29 @@
 
 2026-11-04 分支交付：用户在本机测试后授权上传 GitHub 分支。下列条目中的“未提交、推送或上传”保留各阶段验收时的事实；本批最终保留范围、验证结果和边界见 [Linux 桌面修复交付记录](linux-desktop-fixes-2026-11-04.md)。云端回收站功能已撤回，不包含在最终源码改动中。
 
+## TD-20261111-09：目录刷新 PR 的 Linux 测试和 Debian 校验失败
+
+- 日期：2026-11-11
+- 状态：已合入修复，等待此分支的托管 CI。
+- 影响版本与环境：fork PR #1 的 `b162e91`。
+- 关联历史故障：[目录索引](incidents/TD-20261105-01.md)与 fork PR #2 的同类修复。
+
+### 症状与触发条件
+
+Linux 桌面和 WebDAV/QUIC 两条任务都在 `queue_rejects_paths_outside_the_narrow_office_lock_namespace` 失败。Debian 包构建完成后，历史运行文件对比拒绝预期变更的 Nautilus 扩展。
+
+### 根因与证据
+
+锁队列回归把临时目录本身当作私有状态，CI 中该目录未满足 `0700` 要求，测试在检查非法路径前退出。Debian 历史包对比将旧版扩展字节作为期望值，而此分支已调整扩展实现。
+
+### 解决办法与防复发
+
+复用后续分支已通过 CI 的修复。锁队列测试让 `State::new` 创建私有子目录，继续验证越界拒绝。Debian 使用校验和固定的历史包，比较现有源码与打包的 Nautilus 扩展，并保留权限及其余运行文件的历史比较。
+
+### 验证范围与交付
+
+原始失败见 [Linux Rust](https://github.com/DavidXile/twodrive/actions/runs/41892522818/job/126793395003) 和 [Debian](https://github.com/DavidXile/twodrive/actions/runs/41892523062/job/126793746745)。同一修复已在后续 PR #2 的 Linux 和 Debian 托管任务通过。本机在 umask 022 下通过 135 项 Rust 库测试，6 项默认忽略。原 CI 构建的 Debian 包按新规则通过 11 个运行文件的内容和权限比较。当前修复交付到 [PR #1](https://github.com/DavidXile/twodrive/pull/1)。
+
 ## TD-20261104-08：重新开机后备份进入远端版本冲突保护
 
 - 日期：2026-11-04；状态：已修复、部署，用户原会话续传已观察；整份首次备份仍未完成。
