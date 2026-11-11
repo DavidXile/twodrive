@@ -22,6 +22,7 @@ pub struct OpaqueProvider {
     pub directory_lookups: Arc<Mutex<Vec<String>>>,
     pub upload_delay: std::time::Duration,
     pub delete_delay: std::time::Duration,
+    pub before_mutation: Option<Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>>,
 }
 impl Default for OpaqueProvider {
     fn default() -> Self {
@@ -32,6 +33,7 @@ impl Default for OpaqueProvider {
             directory_lookups: Arc::default(),
             upload_delay: std::time::Duration::ZERO,
             delete_delay: std::time::Duration::ZERO,
+            before_mutation: None,
             caps: Capabilities {
                 upload: true,
                 mkdir: true,
@@ -193,6 +195,9 @@ impl CloudBackend for OpaqueProvider {
         Ok(m)
     }
     fn delete(&self, id: &str) -> anyhow::Result<()> {
+        if let Some(before_mutation) = &self.before_mutation {
+            before_mutation()?;
+        }
         std::thread::sleep(self.delete_delay);
         self.by_id(id)?;
         self.files.lock().unwrap().remove(id);
@@ -219,6 +224,9 @@ impl Provider for OpaqueProvider {
         version: Option<&str>,
         progress: Progress,
     ) -> anyhow::Result<MetadataEntry> {
+        if let Some(before_mutation) = &self.before_mutation {
+            before_mutation()?;
+        }
         std::thread::sleep(self.upload_delay);
         self.upload_file_with_version(path, source, id, version, &mut |done, total| {
             progress(done, total)

@@ -2,6 +2,7 @@
 mod opaque;
 use opaque::OpaqueProvider;
 use reqwest::{Method, blocking::Client};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use twodrive_dev::{model::CloudBackend, provider::Backend, readonly_mount::Bridge};
 
@@ -154,34 +155,36 @@ fn editor_close_and_same_name_reopen_do_not_wait_for_slow_cloud_mutations() {
     let root = tempfile::tempdir().unwrap();
     let mut p = OpaqueProvider::default();
     p.upload_delay = Duration::from_millis(600);
-    p.delete_delay = Duration::from_millis(600);
     p.upload("/book.xlsx", b"original workbook".to_vec())
         .unwrap();
+    let (entered, mutations) = mpsc::channel();
+    p.before_mutation = Some(Arc::new(move || {
+        let (release, gate) = mpsc::channel();
+        entered.send(release)?;
+        gate.recv_timeout(Duration::from_secs(30))?;
+        Ok(())
+    }));
+    let next_mutation = || {
+        mutations
+            .recv_timeout(Duration::from_secs(10))
+            .expect("cloud mutation did not start")
+    };
     let spool = root.path().join("recovery");
     let bridge =
         Bridge::start_writable_editor_locks(Backend::new(p.clone()), root.path(), &spool).unwrap();
     let c = Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
     let lock = "/.~lock.book.xlsx%23";
-    let started = Instant::now();
     assert_eq!(
         call(&c, &bridge, Method::PUT, lock, "first editor lock").status(),
         201
     );
-    assert!(started.elapsed() < Duration::from_millis(400));
-    wait(|| {
-        let jobs: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(spool.join("editor-locks/queue.json")).unwrap())
-                .unwrap();
-        jobs.as_array()
-            .unwrap()
-            .iter()
-            .any(|j| j["phase"] == "Uploading")
-    });
-    let started = Instant::now();
+    let first_upload = next_mutation();
+    // The provider cannot complete the first upload until these local
+    // requests have all returned.
     assert_eq!(
         call(&c, &bridge, Method::GET, lock, "").text().unwrap(),
         "first editor lock"
@@ -196,18 +199,22 @@ fn editor_close_and_same_name_reopen_do_not_wait_for_slow_cloud_mutations() {
         call(&c, &bridge, Method::GET, lock, "").text().unwrap(),
         "second editor lock"
     );
-    assert!(
-        started.elapsed() < Duration::from_millis(400),
-        "close/read/reopen waited for the cloud"
-    );
+    first_upload.send(()).unwrap();
+    next_mutation().send(()).unwrap(); // Retire the first cloud lock.
+    next_mutation().send(()).unwrap(); // Publish the second cloud lock.
     wait(|| {
         p.get_metadata_by_path("/.~lock.book.xlsx#")
             .unwrap()
             .is_some_and(|m| p.download(&m.remote_id).unwrap() == b"second editor lock")
     });
-    let started = Instant::now();
     assert_eq!(call(&c, &bridge, Method::DELETE, lock, "").status(), 204);
-    assert!(started.elapsed() < Duration::from_millis(400));
+    let second_delete = next_mutation();
+    assert!(
+        p.get_metadata_by_path("/.~lock.book.xlsx#")
+            .unwrap()
+            .is_some()
+    );
+    second_delete.send(()).unwrap();
     wait(|| twodrive_dev::mount_write::recovery_status(&spool).unwrap()["editor_pending"] == 0);
     assert!(
         p.get_metadata_by_path("/.~lock.book.xlsx#")
@@ -226,12 +233,18 @@ fn editor_close_and_same_name_reopen_do_not_wait_for_slow_cloud_mutations() {
         b"original workbook"
     );
     // Ordinary contents retain synchronous confirmation and their version guard.
-    let started = Instant::now();
-    assert_eq!(
-        call(&c, &bridge, Method::PUT, "/ordinary.txt", "ordinary data").status(),
-        201
-    );
-    assert!(started.elapsed() >= Duration::from_millis(600));
+    std::thread::scope(|scope| {
+        let ordinary = scope.spawn(|| {
+            let started = Instant::now();
+            assert_eq!(
+                call(&c, &bridge, Method::PUT, "/ordinary.txt", "ordinary data").status(),
+                201
+            );
+            assert!(started.elapsed() >= Duration::from_millis(600));
+        });
+        next_mutation().send(()).unwrap();
+        ordinary.join().unwrap();
+    });
 }
 #[test]
 fn existing_cloud_locks_and_large_lookalikes_are_not_adopted() {
