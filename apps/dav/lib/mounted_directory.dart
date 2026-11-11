@@ -80,6 +80,7 @@ Future<({String id, String root})?> _mountedRoot(
     if (mount == null ||
         !mount.type.startsWith('fuse') ||
         !(mount.source == 'twodrive' ||
+            mount.source == 'twodrive-dev' ||
             mount.source.startsWith('twodrive-native-') ||
             mount.source.startsWith('twodrive-ro-'))) {
       return null;
