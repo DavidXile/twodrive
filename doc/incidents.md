@@ -1,5 +1,30 @@
 # TwoDrive 故障记录
 
+## TD-20261111-21：DAV 桌面 CI 缺少 Debian 隐式构建依赖
+
+- 日期：2026-11-11
+- 状态：依赖配置已修正，隔离回归通过；修复提交的完整托管打包待复验。
+- 影响版本与环境：fork PR #4 的 `e54460d`，Ubuntu 24.04 TwoDrive desktop Linux job。
+- 关联历史故障：TD-20261110-01 的 Debian 历史包校验失败发生在构建后；本次是新增 DAV 打包步骤的前置依赖缺失，机制不同。
+
+### 症状、根因与证据
+
+[Linux job 130533199658](https://github.com/DavidXile/twodrive/actions/runs/43023773450/job/130533199658) 于 12:58:53 UTC 在 `Package DAV desktop for Debian-based test systems` 报 `dpkg-checkbuilddeps: error: Unmet build dependencies: build-essential:native`，随后以状态 3 退出。此前 Rust、FUSE、Flutter、Linux portable 组装与上传均通过；同一 run 的 Windows job 通过。失败只确认该 DAV Debian 制品没有生成，不代表已经通过的便携包或 Windows 构建失败。
+
+工作流安装了 clang、cmake 和 debhelper，但没有安装 `build-essential` 元包。即使 DAV profile 使用已编译的 bundle，`dpkg-buildpackage` 的正常依赖检查仍隐式要求此元包；有编译器不等于满足 dpkg 的包状态要求。以隔离 dpkg status 仅提供 debhelper 时复现同一错误，加入 build-essential 的已安装状态后，同一 profile 检查返回 0。
+
+### 修复与防复发
+
+Linux prerequisites 显式安装 build-essential，并立即执行 `dpkg-checkbuilddeps -Ppkg.twodrive.dav`，在长时间编译之前发现缺失依赖。保留 dpkg-buildpackage、debhelper 和全部原打包验证，不使用 `-d` 或跳过测试。Debian policy 校验新增 DAV 工作流的依赖与前置检查守卫。
+
+### 实际验证与边界
+
+隔离源码快照中，新增 policy 校验拒绝原 prerequisites，修正后通过；隔离 dpkg status 的缺依赖/满足依赖两组检查分别失败/成功。Python 编译、工作流 YAML 解析及 Linux run 段的 bash 语法检查通过。本环境没有重新编译客户端或生成真实 .deb，完整制品与托管检查仍须在修复 head 验证。未改动用户本机工作目录、账户、挂载或云端内容。
+
+### 交付记录
+
+修复提交待记录；未合并或发布 Release。
+
 ## TD-20261111-16：文件页漏读、挂载占用退出及备份记录重启后不可见
 
 - 日期：2026-11-11
