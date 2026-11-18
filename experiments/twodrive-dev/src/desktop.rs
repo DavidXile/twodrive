@@ -599,8 +599,7 @@ impl App {
             .backend
             .as_ref()
             .context("请先连接")?
-            .capabilities()
-            .backup()
+            .backup_supported()
         {
             return Ok(());
         }
@@ -609,6 +608,12 @@ impl App {
             .as_ref()
             .and_then(|session| session["binding"].as_str());
         backup::reset_report(&self.state, p, binding)?;
+        if !backup::folders(&self.state, p)?
+            .iter()
+            .any(|folder| folder.enabled)
+        {
+            return Ok(());
+        }
         let mut cmd = Command::new(std::env::current_exe()?);
         cmd.arg("--state")
             .arg(&self.state.dir)
@@ -652,7 +657,9 @@ impl App {
             .map(|b| b.capabilities())
             .unwrap_or_default();
         let mut value = serde_json::to_value(c).unwrap();
-        value["backup"] = json!(c.backup());
+        value["backup"] = json!(self.backend.as_ref().is_some_and(Backend::backup_supported));
+        value["versioned_backup"] =
+            json!(self.backend.as_ref().is_some_and(Backend::versioned_backup));
         value["manual_upload"] = json!(
             self.backend
                 .as_ref()

@@ -582,6 +582,17 @@ impl Provider for RcloneDrive {
     fn manual_upload_supported(&self) -> bool {
         self.writable
     }
+    fn versioned_backup(&self) -> bool {
+        self.writable
+    }
+    fn upload_backup_version(
+        &self,
+        path: &str,
+        source: &Path,
+        progress: Progress,
+    ) -> anyhow::Result<()> {
+        self.put_backup_version(path, source, progress)
+    }
     fn manual_upload(
         &self,
         path: &str,
@@ -670,6 +681,18 @@ impl CloudBackend for RcloneDrive {
         }
         let remote = format!("twodrive:{}", &path[1..]);
         match self.query(&["lsjson", &remote, "--stat", "--no-mimetype"]) {
+            // Rclone can represent a directory passed as the remote root by a
+            // synthetic stat row with no object ID. Read the real parent entry.
+            Ok(value)
+                if value["IsDir"] == true && value["ID"].as_str().is_none_or(str::is_empty) =>
+            {
+                let (parent, _) = path.rsplit_once('/').unwrap();
+                let parent = if parent.is_empty() { "/" } else { parent };
+                Ok(self
+                    .list_directory(parent)?
+                    .into_iter()
+                    .find(|entry| entry.path == path))
+            }
             Ok(value) => self.entry(path, &value).map(Some),
             Err(e)
                 if e.downcast_ref::<RemoteError>()
