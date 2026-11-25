@@ -142,7 +142,7 @@ void main() {
     expect(events.where((v) => v == 'engine:quit'), hasLength(1));
     if (Platform.isLinux) {
       expect(events, isNot(contains('tray:destroy')));
-      expect(events, isNot(contains(nativeExit)));
+      expect(events, isNot(contains('window:destroy')));
     } else {
       expect(events.where((v) => v == 'tray:destroy'), hasLength(1));
     }
