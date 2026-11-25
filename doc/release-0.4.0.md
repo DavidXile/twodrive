@@ -1,5 +1,7 @@
 # TwoDrive 0.4.0 — DavidXile fork
 
+This release delivers the Linux desktop. Windows mounted-original opening remains deferred at the user's request pending a native Windows session; the review finding in upstream #96 is not claimed resolved. No Windows package is published as verified 0.4.0 here.
+
 This release combines the recovered Connections/Files interface with the current Dashboard, including aligned transfer/backup previews. Manual transfer history survives restart; directory display loads independently of aggregate status and rejects stale account/revision/path results.
 
 Linux iCloud and Baidu now use existing TwoDriveFS metadata, content cache and pending-write protections. Complete shallow listings refresh independently of content reads. Cold speculative GIO probes avoid hydration; fully cached content remains available to MIME detection. Migration refuses old unsynchronized VFS/editor recovery content and leaves it intact. Rclone remains the iCloud protocol adapter; no additional filesystem is introduced.
