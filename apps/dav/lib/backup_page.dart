@@ -19,6 +19,7 @@ class _BackupPageState extends State<BackupPage> {
   String? ownerId;
   String? ownerRevision;
   StorageClient get c => widget.client;
+  bool get versioned => c.profile?['capabilities']?['versioned_backup'] == true;
   bool get currentOwner =>
       ownerId != null &&
       c.selected == ownerId &&
@@ -119,7 +120,11 @@ class _BackupPageState extends State<BackupPage> {
       if (local == null || !mounted || !currentOwner) return;
       final remote = await showDialog<String>(
         context: context,
-        builder: (_) => _BackupDestinationDialog(local: local, target: target),
+        builder: (_) => _BackupDestinationDialog(
+          local: local,
+          target: target,
+          versioned: versioned,
+        ),
       );
       if (remote != null && mounted && currentOwner) {
         await save([
@@ -175,6 +180,18 @@ class _BackupPageState extends State<BackupPage> {
         ),
       ),
       const SizedBox(height: 8),
+      const Text(
+        '备份任务按网盘分别保存。切换网盘不会迁移已有任务。',
+        style: TextStyle(color: Colors.blueGrey, fontSize: 12),
+      ),
+      if (versioned)
+        const Padding(
+          padding: EdgeInsets.only(top: 6),
+          child: Text(
+            '每次修改另存为带版本标记的文件，云端已有副本会保留。',
+            style: TextStyle(color: Colors.blueGrey, fontSize: 12),
+          ),
+        ),
       if (c.profiles.isEmpty)
         Padding(
           padding: EdgeInsets.only(top: 12),
@@ -252,9 +269,14 @@ class _BackupPageState extends State<BackupPage> {
 }
 
 class _BackupDestinationDialog extends StatefulWidget {
-  const _BackupDestinationDialog({required this.local, required this.target});
+  const _BackupDestinationDialog({
+    required this.local,
+    required this.target,
+    required this.versioned,
+  });
   final String local;
   final String target;
+  final bool versioned;
   @override
   State<_BackupDestinationDialog> createState() =>
       _BackupDestinationDialogState();
@@ -295,8 +317,10 @@ class _BackupDestinationDialogState extends State<_BackupDestinationDialog> {
             ),
             const SizedBox(height: 12),
             Text(
-              tr('自动上传新建和修改的文件。停止备份或删除本地文件，不会删除网盘副本。'),
-              style: TextStyle(fontSize: 12, color: Colors.blueGrey),
+              widget.versioned
+                  ? '每个新版本单独保存，保留云端已有文件和旧版本。停止备份或删除本地文件后，网盘副本仍保留。'
+                  : '自动上传新建和修改的文件。停止备份或删除本地文件，不会删除网盘副本。',
+              style: const TextStyle(fontSize: 12, color: Colors.blueGrey),
             ),
           ],
         ),
