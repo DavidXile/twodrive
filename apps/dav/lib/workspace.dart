@@ -371,8 +371,6 @@ class _WorkspaceState extends State<Workspace>
 
   Future<void> _quitOnce() async {
     try {
-      final requested = <(Object?, Object?)>{};
-      List<Json> closeProcesses = [];
       while (mounted) {
         if (widget.desktop) {
           hideWorkspace();
@@ -380,25 +378,14 @@ class _WorkspaceState extends State<Workspace>
             await windowManager.hide();
           } catch (_) {}
         }
-        if (await c.shutdown(closeMountProcesses: closeProcesses)) break;
+        if (await c.shutdown()) break;
         if (widget.desktop) {
           await windowManager.show();
           _windowHidden = false;
           await windowManager.focus();
         }
         if (!mounted || c.quitBlockers.isEmpty) return;
-        final processes = <(Object?, Object?)>{
-          for (final blocker in c.quitBlockers)
-            for (final program in (blocker['programs'] as List).cast<Json>())
-              if (program['can_close'] != false)
-                (program['pid'], program['start_time']),
-        }.difference(requested);
-        if (!await _confirmQuitWithOpenMounts(processes)) return;
-        requested.addAll(processes);
-        closeProcesses = [
-          for (final (pid, startTime) in processes)
-            {'pid': pid, 'start_time': startTime},
-        ];
+        if (!await _confirmQuitWithOpenMounts()) return;
       }
       if (!mounted) return;
       if (trayReady) {
@@ -417,9 +404,7 @@ class _WorkspaceState extends State<Workspace>
     }
   }
 
-  Future<bool> _confirmQuitWithOpenMounts(
-    Set<(Object?, Object?)> closePrograms,
-  ) async =>
+  Future<bool> _confirmQuitWithOpenMounts() async =>
       await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
@@ -428,11 +413,7 @@ class _WorkspaceState extends State<Workspace>
           content: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                closePrograms.isNotEmpty
-                    ? '请先保存工作并处理标记为手动关闭的程序。确认后 TwoDrive 会请求其余列出的程序退出。未保存的内容可能丢失。'
-                    : '请关闭仍在使用这些目录的文件、窗口或终端，再重试退出。',
-              ),
+              const Text('请保存工作，正常关闭仍在使用这些目录的文件、窗口或终端，再重试退出。'),
               for (final blocker in c.quitBlockers) ...[
                 const SizedBox(height: 12),
                 Text(blocker['name'] as String),
@@ -441,7 +422,7 @@ class _WorkspaceState extends State<Workspace>
                     in (blocker['programs'] as List).cast<Json>())
                   Text(
                     '${program['name']}（PID ${program['pid']}）'
-                    '${closePrograms.contains((program['pid'], program['start_time'])) ? '' : ' · 请手动关闭或离开挂载目录'}',
+                    ' · 请手动关闭或离开挂载目录',
                   ),
               ],
             ],
@@ -453,7 +434,7 @@ class _WorkspaceState extends State<Workspace>
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: Text(closePrograms.isNotEmpty ? '关闭程序并退出' : '重试退出'),
+              child: const Text('重试退出'),
             ),
           ],
         ),
@@ -577,7 +558,11 @@ class _WorkspaceState extends State<Workspace>
   Future<void> fileAction(String action, Json file) async {
     switch (action) {
       case 'view':
-        await c.viewCloudFile(file);
+        if (c.isProfileMounted(file['profile'] as String)) {
+          await c.viewCloudFile(file);
+        } else {
+          await download(file);
+        }
       case 'download':
         await download(file);
       case 'rename':
@@ -1201,9 +1186,7 @@ class _WorkspaceState extends State<Workspace>
             alignment: Alignment.centerLeft,
             child: Text(
               directoryError != null
-                  ? c.directoryFromMount
-                        ? '刷新失败，正在显示挂载目录。$directoryError'
-                        : '刷新失败，正在显示上次读取的目录。$directoryError'
+                  ? '刷新失败，正在显示上次读取的目录。$directoryError'
                   : c.directoryLoading
                   ? '${entries.length} 项 · 正在刷新'
                   : '${entries.length} 项',

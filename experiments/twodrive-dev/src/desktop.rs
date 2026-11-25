@@ -478,6 +478,13 @@ impl App {
                 && let Some(session) = self.saved_session(p)
                 && let Some(binding) = session["binding"].as_str()
             {
+                if self
+                    .backend
+                    .as_ref()
+                    .is_some_and(|backend| backend.uses_directory_metadata())
+                {
+                    native_mount::ensure_native_migration(&self.mount_state(p), binding)?;
+                }
                 stale_mount::recover(&p.mount_path, &self.mount_state(p), binding)?;
             }
             ensure!(
@@ -689,6 +696,12 @@ impl App {
                     .connected
                     .as_ref()
                     .is_some_and(providers::uses_readonly_bridge)
+                || (self
+                    .backend
+                    .as_ref()
+                    .is_some_and(|b| b.uses_directory_metadata())
+                    && c.rename
+                    && c.delete)
                 || (c.backup() && c.rename && c.delete));
         value["mount"] =
             json!(supported_mount && self.backend.as_ref().is_some_and(|b| b.supports_mount()));
@@ -698,24 +711,12 @@ impl App {
         self.refresh_inactive();
         let accounts = self.account_states()?;
         let overall = connections::aggregate_accounts(&accounts);
-        #[cfg(all(target_os = "linux", feature = "mount"))]
-        let opened_files = native_mount::gvfs::opened_files(self);
-        #[cfg(not(all(target_os = "linux", feature = "mount")))]
-        let opened_files: Vec<Value> = Vec::new();
         let mounts: Vec<_> = accounts
             .iter()
             .filter(|a| a["mounted"] == true)
             .map(|a| {
-                #[allow(unused_mut)]
-                let mut path = a["mount_path"].clone();
-                #[cfg(all(target_os = "linux", feature = "mount"))]
-                if a["mount_failed"] != true
-                    && let Some(uri) = a["profile"].as_str().and_then(|id| native_mount::gvfs::browse_uri(self, id))
-                {
-                    path = json!(uri);
-                }
                 json!({"profile":a["profile"],"revision":a["revision"],"name":a["name"],
-                "path":path,"writable":a["writable"],"readonly":a["mount_readonly"],"failed":a["mount_failed"]})
+                "path":a["mount_path"],"writable":a["writable"],"readonly":a["mount_readonly"],"failed":a["mount_failed"]})
             })
             .collect();
         let gateway_dead = self
@@ -782,7 +783,7 @@ impl App {
             "connected":self.backend.is_some(),"profile":self.connected.as_ref().map(|p|&p.id),
             "multi_connection":true,"storage_usage":true,"connections":self.config.profiles.iter().filter(|p|self.online(&p.id)).map(|p|json!({"id":p.id,"revision":p.revision,"account_name":self.account_name(p)})).collect::<Vec<_>>(),
             "mounted":self.mounted.is_some(),"mount_failed":mount_dead,"gateway_failed":gateway_dead,"mount_support":mount_support,
-            "accounts":accounts,"overall":overall,"mounts":mounts,"opened_files":opened_files,
+            "accounts":accounts,"overall":overall,"mounts":mounts,
             "cache":cache,"network":network,
             "account_name": self.connected.as_ref().and_then(|p| self.account_name(p)),
             "autostart":self.autostart_path()?.exists()}),
@@ -1009,16 +1010,45 @@ impl App {
                     let folders: Vec<backup::Folder> =
                         serde_json::from_value(a["folders"].clone())?;
                     backup::validate(&folders, &p, &self.state, &providers::protected_paths(&p)?)?;
+                    if let Some(mode) = a["strategy"].as_str() {
+                        ensure!(matches!(mode, "replace" | "versioned"), "无效备份模式");
+                        ensure!(
+                            mode != "versioned"
+                                || public["capabilities"]["versioned_backup"] == true,
+                            "此连接不支持版本备份"
+                        );
+                    }
                     if self.connected.as_ref().is_some_and(|v| v.id == p.id) {
                         self.backup.take();
                         backup::cleanup_spool(&self.state, &p)?;
+                    }
+                    if let Some(mode) = a["strategy"].as_str() {
+                        for saved in self
+                            .config
+                            .profiles
+                            .iter_mut()
+                            .filter(|saved| saved.id == p.id)
+                        {
+                            saved.options.insert("backup_strategy".into(), json!(mode));
+                        }
+                        if let Some(current) =
+                            self.connected.as_mut().filter(|current| current.id == p.id)
+                        {
+                            current
+                                .options
+                                .insert("backup_strategy".into(), json!(mode));
+                        }
+                        self.state.save("profiles.json", &self.config)?;
                     }
                     backup::save_folders(&self.state, &p, &folders)?;
                     if self.connected.as_ref().is_some_and(|v| v.id == p.id) {
                         self.start_backup()?;
                     }
                 }
-                Ok(json!({"folders":backup::folders(&self.state, &p)?}))
+                let current = self.profile(&p.id)?;
+                Ok(
+                    json!({"folders":backup::folders(&self.state, &current)?,"strategy":if current.option("backup_strategy")=="versioned" {"versioned"} else {"replace"}}),
+                )
             }
             "sign_out" => {
                 let id = string(a, "id")?.to_owned();
@@ -1090,9 +1120,8 @@ impl App {
                 self.cache(&p, req.op == "clear_cache")
             }
             "mount" | "unmount" => self.mount_profile(a, req.op == "mount", &cancel),
-            "list" | "mkdir" | "rename" | "delete" | "upload" | "download" | "quota" => {
-                self.file_context(a)?.execute(req, &cancel, out)
-            }
+            "list" | "mkdir" | "rename" | "delete" | "upload" | "download" | "mounted_file"
+            | "quota" => self.file_context(a)?.execute(req, &cancel, out),
             _ => anyhow::bail!("unknown operation"),
         }
     }
@@ -1160,10 +1189,13 @@ pub fn run() -> anyhow::Result<()> {
         let (backend, binding) =
             providers::restore_session(&p, &session, &app.state.dir.join("paused"))?;
         let writable = backend.capabilities().upload;
+        if backend.uses_directory_metadata() {
+            native_mount::ensure_native_migration(&app.mount_state(&p), &binding)?;
+        }
         return mount::mount(
             State::new(app.mount_state(&p))?,
             p.mount_path,
-            backend,
+            backend.for_mount(),
             binding,
             writable,
         );
@@ -1202,7 +1234,10 @@ pub fn run() -> anyhow::Result<()> {
                 .cloned()
                 .unwrap_or_default();
             app.reap_jobs();
-            if matches!(req.op.as_str(), "upload" | "download" | "quota" | "list") {
+            if matches!(
+                req.op.as_str(),
+                "upload" | "download" | "mounted_file" | "quota" | "list"
+            ) {
                 let id = req.id;
                 if let Err(error) = app.start_file_job(
                     req,

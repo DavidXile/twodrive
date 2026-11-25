@@ -31,6 +31,9 @@ class BackupClient extends StorageClient {
           'revision': 'rev-$id',
           'name': name,
           'account_name': 'test-$id@example.invalid',
+          'backup_strategy': !supported && versionedProviders
+              ? 'versioned'
+              : 'replace',
           'capabilities': {
             'backup': supported || versionedProviders,
             'versioned_backup': !supported && versionedProviders,

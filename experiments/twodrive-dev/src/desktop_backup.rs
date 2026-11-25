@@ -52,6 +52,8 @@ impl Record {
 struct Manifest {
     binding: String,
     files: BTreeMap<String, Record>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    retained_versions: BTreeMap<String, Record>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     recent: Vec<String>,
 }
@@ -491,7 +493,11 @@ pub fn run(
     let s = directory(state, p)?;
     let _lock = s.run_lock()?;
     let paused = state.dir.join("paused");
-    let versioned = backend.versioned_backup();
+    let versioned = p.option("backup_strategy") == "versioned" && backend.versioned_backup();
+    ensure!(
+        versioned || backend.backup_replace_supported(),
+        "此连接只支持显式的版本备份"
+    );
     let mut manifest: Manifest = if s.dir.join("manifest.json").exists() {
         s.read("manifest.json")?
     } else {
@@ -502,6 +508,24 @@ pub fn run(
         "备份记录属于另一个服务器，不能重用"
     );
     manifest.binding = binding;
+    if !versioned {
+        ensure!(
+            manifest.files.values().all(|r| r.version_intent.is_none()),
+            "旧版本备份仍有未确认操作，请选择版本模式先恢复"
+        );
+        let paths: Vec<_> = manifest
+            .files
+            .iter()
+            .filter(|(_, r)| r.version_path.is_some())
+            .map(|(p, _)| p.clone())
+            .collect();
+        for path in paths {
+            manifest
+                .retained_versions
+                .insert(path.clone(), manifest.files.remove(&path).unwrap());
+        }
+        s.save("manifest.json", &manifest)?;
+    }
     let mut recent = restore_recent(&s, &manifest, &folders(state, p)?);
     manifest.recent = recent_paths(&recent);
     let mut confirmed_files = manifest.confirmed_files();
@@ -646,7 +670,11 @@ pub fn run(
                             )?
                         } else {
                             let mut uploaded = resume_matching_create(record, &hash, || {
-                                backend.resume_create_upload(&dest, &spool, progress.clone())
+                                if backend.capabilities().backup() {
+                                    backend.resume_create_upload(&dest, &spool, progress.clone())
+                                } else {
+                                    Ok(None)
+                                }
                             })?;
                             if uploaded.is_none() {
                                 reconcile_intent(&backend, &dest, record, &paused)?;
@@ -662,7 +690,7 @@ pub fn run(
                                         manifest.recent = recent_paths(&recent);
                                     }
                                     s.save("manifest.json", &manifest)?;
-                                    uploaded = Some(backend.upload_path(
+                                    uploaded = Some(backend.upload_backup_path(
                                         &dest,
                                         &spool,
                                         etag.as_deref(),
@@ -743,6 +771,7 @@ pub fn run(
 mod tests {
     use super::super::test_provider::OpaqueProvider;
     use super::*;
+    use twodrive_dev::provider::Provider;
 
     #[test]
     fn backup_report_is_idle_when_no_task_can_start() {
@@ -939,6 +968,7 @@ mod tests {
         let state = State::new(root.path().join("state")).unwrap();
         let profile = Profile {
             id: "recovery-count".into(),
+            options: [("backup_strategy".into(), json!("versioned"))].into(),
             mount_path: root.path().join("mount"),
             ..Default::default()
         };
@@ -1038,6 +1068,63 @@ mod tests {
             provider.download(&latest.remote_id).unwrap(),
             b"changed source"
         );
+    }
+
+    #[test]
+    fn default_backup_updates_original_path_even_when_versions_are_supported() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = State::new(temp.path().join("state")).unwrap();
+        let profile = Profile {
+            id: "default-recoverable".into(),
+            mount_path: temp.path().join("mount"),
+            ..Default::default()
+        };
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("file.txt"), b"new content").unwrap();
+        save_folders(
+            &state,
+            &profile,
+            &[Folder {
+                local: source,
+                remote: "/backup".into(),
+                enabled: true,
+            }],
+        )
+        .unwrap();
+        let directory = directory(&state, &profile).unwrap();
+        let mut provider = OpaqueProvider::default();
+        provider.recoverable = true;
+        provider.versioned = true;
+        provider.caps.conditional_upload = false;
+        provider.create_folder("/backup").unwrap();
+        let old = provider
+            .upload("/backup/file.txt", b"old content".to_vec())
+            .unwrap();
+        directory.save("manifest.json",&json!({"binding":"fixture","files":{"/backup/file.txt":{"hash":"previous","etag":old.etag,"intent":null}}})).unwrap();
+        let stop = directory.dir.join("folders.json");
+        provider.before_mutation = Some(Arc::new(move || {
+            fs::write(&stop, b"stop disposable worker")?;
+            Ok(())
+        }));
+        assert!(
+            run(
+                &state,
+                &profile,
+                Backend::new(provider.clone()),
+                "fixture".into(),
+                vec![]
+            )
+            .is_err()
+        );
+        let entries = provider.list_directory("/backup").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "/backup/file.txt");
+        assert_eq!(entries[0].remote_id, old.remote_id);
+        assert_eq!(provider.download(&old.remote_id).unwrap(), b"new content");
+        let manifest: Manifest = directory.read("manifest.json").unwrap();
+        assert!(manifest.files["/backup/file.txt"].version_path.is_none());
+        assert!(manifest.files["/backup/file.txt"].is_confirmed());
     }
 
     #[test]

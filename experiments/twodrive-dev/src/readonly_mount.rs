@@ -946,26 +946,12 @@ pub struct Bridge {
     thread: Option<thread::JoinHandle<()>>,
     refresh_thread: Option<thread::JoinHandle<()>>,
     quota_thread: Option<thread::JoinHandle<()>>,
-    #[cfg(any(test, target_os = "linux"))]
+    #[cfg(test)]
     fs: RemoteFs,
 }
 impl Bridge {
-    #[cfg(target_os = "linux")]
-    pub fn cached_paths(&self) -> anyhow::Result<Vec<String>> {
-        let cache = self
-            .fs
-            .0
-            .cache
-            .lock()
-            .map_err(|_| anyhow::anyhow!("content cache unavailable"))?;
-        let mut paths: Vec<_> = cache.iter().map(|item| item.meta.path.clone()).collect();
-        paths.sort_unstable();
-        paths.dedup();
-        Ok(paths)
-    }
-
     pub fn start(backend: Backend, cache_parent: &Path) -> anyhow::Result<Self> {
-        Self::start_inner(backend, cache_parent, None, false, None)
+        Self::start_inner(backend, cache_parent, None, false)
     }
     pub fn start_writable(
         backend: Backend,
@@ -973,7 +959,7 @@ impl Bridge {
         spool: &Path,
     ) -> anyhow::Result<Self> {
         let writer = crate::mount_write::Writer::new(backend.clone(), spool)?;
-        Self::start_inner(backend, cache_parent, Some(writer), false, None)
+        Self::start_inner(backend, cache_parent, Some(writer), false)
     }
     /// Opt in for the slow iCloud adapter; ordinary files keep the original
     /// synchronous version/recovery contract. Other providers are unchanged.
@@ -984,7 +970,7 @@ impl Bridge {
     ) -> anyhow::Result<Self> {
         let writer =
             crate::mount_write::Writer::new_with_editor_locks(backend.clone(), spool, true)?;
-        Self::start_inner(backend, cache_parent, Some(writer), false, None)
+        Self::start_inner(backend, cache_parent, Some(writer), false)
     }
     /// Compatibility entry point for the indexed iCloud mount with local
     /// advisory-lock acknowledgement. See start_indexed for directory policy.
@@ -1013,28 +999,13 @@ impl Bridge {
                 )
             })
             .transpose()?;
-        Self::start_inner(backend, cache_parent, writer, true, None)
-    }
-    #[cfg(target_os = "linux")]
-    pub fn start_gvfs(
-        backend: Backend,
-        cache_parent: &Path,
-        spool: Option<&Path>,
-        username: &str,
-    ) -> anyhow::Result<Self> {
-        let writer = spool
-            .map(|path| {
-                crate::mount_write::Writer::new_with_editor_locks(backend.clone(), path, true)
-            })
-            .transpose()?;
-        Self::start_inner(backend, cache_parent, writer, true, Some(username))
+        Self::start_inner(backend, cache_parent, writer, true)
     }
     fn start_inner(
         backend: Backend,
         cache_parent: &Path,
         writer: Option<Arc<crate::mount_write::Writer>>,
         retain_directories: bool,
-        basic_user: Option<&str>,
     ) -> anyhow::Result<Self> {
         let directory = tempfile::Builder::new()
             .prefix("readonly-mount-")
@@ -1089,15 +1060,7 @@ impl Bridge {
         let address = listener.local_addr()?;
         listener.set_nonblocking(true)?;
         let token = random_secret();
-        let basic = basic_user.is_some();
-        let auth = if let Some(user) = basic_user {
-            use base64::Engine;
-            let credentials =
-                base64::engine::general_purpose::STANDARD.encode(format!("{user}:{token}"));
-            format!("Basic {credentials}")
-        } else {
-            format!("Bearer {token}")
-        };
+        let auth = format!("Bearer {token}");
         let thread_stop = stop.clone();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -1125,7 +1088,7 @@ impl Bridge {
         // Warm asynchronously so the usual first native Statfs can report
         // capacity, while a slow/unavailable provider never delays mounting.
         let _ = fs.quota_snapshot();
-        #[cfg(any(test, target_os = "linux"))]
+        #[cfg(test)]
         let bridge_fs = fs.clone();
         let thread = thread::spawn(move || {
             runtime.block_on(async move {
@@ -1188,13 +1151,8 @@ impl Bridge {
                                     None
                                 };
                                 let response = if let Some(status) = denied {
-                                    let mut response = Response::builder().status(status);
-                                    if basic && status == StatusCode::UNAUTHORIZED {
-                                        response = response.header(
-                                            "WWW-Authenticate",
-                                            r#"Basic realm="TwoDrive iCloud""#,
-                                        );
-                                    }
+                                    let response = Response::builder().status(status);
+
                                     response.body(Body::empty()).unwrap()
                                 } else {
                                     if matches!(
@@ -1270,7 +1228,7 @@ impl Bridge {
             thread: Some(thread),
             refresh_thread: Some(refresh_thread),
             quota_thread: Some(quota_thread),
-            #[cfg(any(test, target_os = "linux"))]
+            #[cfg(test)]
             fs: bridge_fs,
         })
     }

@@ -112,6 +112,9 @@ pub trait Provider: CloudBackend {
         Ok(None)
     }
     fn capabilities(&self) -> Capabilities;
+    fn recoverable_backup(&self) -> bool {
+        false
+    }
     fn versioned_backup(&self) -> bool {
         false
     }
@@ -218,6 +221,7 @@ pub struct Backend {
     inner: Arc<dyn Provider>,
     paused: Option<PathBuf>,
     writable: bool,
+    mount_writes: bool,
     write_guard: Option<(PathBuf, String)>,
     policy: Arc<crate::sync_policy::SyncPolicy>,
 }
@@ -286,9 +290,16 @@ impl Backend {
             inner: Arc::new(provider),
             paused: None,
             writable: true,
+            mount_writes: false,
             write_guard: None,
             policy: Arc::default(),
         }
+    }
+    /// Use provider-specific recovery for writes made through TwoDriveFS.
+    /// This does not advertise atomic conditional writes to other clients.
+    pub fn for_mount(mut self) -> Self {
+        self.mount_writes = self.inner.uses_directory_metadata();
+        self
     }
     pub fn with_pause_file(mut self, path: PathBuf) -> Self {
         self.paused = Some(path);
@@ -348,7 +359,23 @@ impl Backend {
         caps.upload && caps.mkdir && self.inner.versioned_backup()
     }
     pub fn backup_supported(&self) -> bool {
-        self.capabilities().backup() || self.versioned_backup()
+        self.backup_replace_supported() || self.versioned_backup()
+    }
+    pub fn backup_replace_supported(&self) -> bool {
+        self.capabilities().backup()
+            || (self.capabilities().upload
+                && self.capabilities().mkdir
+                && self.inner.recoverable_backup())
+    }
+    pub fn upload_backup_path(
+        &self,
+        path: &str,
+        source: &Path,
+        version: Option<&str>,
+        progress: Progress,
+    ) -> anyhow::Result<MetadataEntry> {
+        ensure!(self.backup_replace_supported(), "此连接不支持原路径备份");
+        self.manual_upload_path(path, source, version, progress)
     }
     pub fn upload_backup_version(
         &self,
@@ -672,6 +699,21 @@ pub fn valid_path(path: &str) -> anyhow::Result<()> {
 }
 
 impl CloudBackend for Backend {
+    fn uses_directory_metadata(&self) -> bool {
+        self.inner.uses_directory_metadata()
+    }
+    fn directory_metadata(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
+        self.check_pause()?;
+        valid_path(path)?;
+        if path == "/"
+            && let Some((at, entries)) = self.inner.initial_directory_listing()
+            && at.elapsed() < std::time::Duration::from_secs(15)
+        {
+            return Ok(entries);
+        }
+        self.inner.directory_metadata(path)
+    }
+
     fn is_conflict_error(&self, e: &anyhow::Error) -> bool {
         self.inner.is_conflict_error(e)
     }
@@ -754,6 +796,9 @@ impl CloudBackend for Backend {
         version: Option<&str>,
         progress: &mut dyn FnMut(u64, u64) -> anyhow::Result<()>,
     ) -> anyhow::Result<MetadataEntry> {
+        if self.mount_writes && !self.capabilities().conditional_upload {
+            return crate::mount_write::upload(self, path, source, id, version, progress);
+        }
         self.check_pause()?;
         ensure!(
             self.capabilities().upload && self.capabilities().conditional_upload,

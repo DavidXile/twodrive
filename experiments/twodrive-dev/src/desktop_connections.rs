@@ -14,6 +14,7 @@ pub(super) struct FileContext {
     pub profile: Profile,
     pub backend: Backend,
     pub state: State,
+    mounted: bool,
 }
 pub(super) struct Job {
     profile: String,
@@ -329,6 +330,11 @@ impl App {
             profile: profile.clone(),
             backend: backend.context("请先连接服务器")?.clone(),
             state: self.state.clone(),
+            mounted: if self.connected.as_ref().is_some_and(|p| p.id == id) {
+                self.mounted.is_some()
+            } else {
+                self.inactive.get(id).is_some_and(|p| p.mounted.is_some())
+            },
         })
     }
     pub(super) fn disconnect_profile(&mut self, id: &str) -> anyhow::Result<()> {
@@ -529,12 +535,47 @@ impl FileContext {
         }
         let path = string(a, "path")?;
         match req.op.as_str() {
-            "list" => Ok(
-                json!({"path":path,"entries":self.backend.list_directory_checked(path, &mut || {
+            "list" => {
+                let database = self
+                    .state
+                    .dir
+                    .join(format!("mount-{}", self.profile.id))
+                    .join("mount.sqlite3");
+                let binding_file = database.parent().unwrap().join("binding.json");
+                let session: Value = self
+                    .state
+                    .read(&format!("session-{}.json", self.profile.id))
+                    .unwrap_or_default();
+                let owner: Value = fs::read(binding_file)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or_default();
+                let db = (self.backend.uses_directory_metadata()
+                    && database.is_file()
+                    && session["binding"].is_string()
+                    && owner["provider"] == session["binding"])
+                    .then(|| Database::new(database));
+                if let Some(db) = &db
+                    && db.has_directory_metadata(path)?
+                {
+                    emit(
+                        out,
+                        json!({"id":req.id,"event":"directory_snapshot","profile":self.profile.id,
+                        "revision":self.profile.revision,"path":path,
+                        "entries":db.list_children(path)?.into_iter().map(|r|metadata(r.metadata)).collect::<Vec<_>>() }),
+                    );
+                }
+                let entries = self.backend.list_directory_checked(path, &mut || {
                     ensure!(!cancel.load(Ordering::Relaxed), "目录刷新已取消");
                     Ok(())
-                })?.into_iter().map(metadata).collect::<Vec<_>>()}),
-            ),
+                })?;
+                if let Some(db) = &db {
+                    db.reconcile_directory_metadata(path, &entries)?;
+                }
+                Ok(
+                    json!({"path":path,"entries":entries.into_iter().map(metadata).collect::<Vec<_>>()}),
+                )
+            }
             "mkdir" => Ok(metadata(self.backend.create_folder(path)?)),
             "rename" => Ok(metadata(self.backend.rename_path(path, string(a, "to")?)?)),
             "delete" => {
@@ -568,6 +609,33 @@ impl FileContext {
                     a["etag"].as_str(),
                     progress,
                 )?))
+            }
+            "mounted_file" => {
+                ensure!(self.mounted, "此连接尚未挂载，请使用下载操作");
+                twodrive_dev::provider::valid_path(path)?;
+                ensure!(path != "/", "请选择文件");
+                #[cfg(target_os = "linux")]
+                let mount = linux_twodrive_fuse_mount_id(&self.profile.mount_path)?
+                    .context("此连接尚未挂载，请使用下载操作")?;
+                #[cfg(not(any(windows, target_os = "linux")))]
+                ensure!(
+                    is_mount(&self.profile.mount_path)?,
+                    "此连接尚未挂载，请使用下载操作"
+                );
+                let mut local = self.profile.mount_path.clone();
+                for component in path.trim_start_matches('/').split('/') {
+                    local.push(component);
+                    let meta = fs::symlink_metadata(&local)?;
+                    ensure!(!meta.is_symlink(), "文件路径包含链接，请从文件管理器打开");
+                }
+                ensure!(fs::symlink_metadata(&local)?.is_file(), "请选择文件");
+                #[cfg(target_os = "linux")]
+                ensure!(
+                    linux_twodrive_fuse_mount_id(&self.profile.mount_path)?.as_ref()
+                        == Some(&mount),
+                    "挂载已改变，请重试"
+                );
+                Ok(json!({"path":local}))
             }
             "download" => {
                 let output = PathBuf::from(string(a, "output")?);

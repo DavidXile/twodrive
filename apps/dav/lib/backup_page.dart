@@ -19,7 +19,8 @@ class _BackupPageState extends State<BackupPage> {
   String? ownerId;
   String? ownerRevision;
   StorageClient get c => widget.client;
-  bool get versioned => c.profile?['capabilities']?['versioned_backup'] == true;
+  String strategy = 'replace';
+  bool get versioned => strategy == 'versioned';
   bool get currentOwner =>
       ownerId != null &&
       c.selected == ownerId &&
@@ -46,6 +47,7 @@ class _BackupPageState extends State<BackupPage> {
   @override
   void initState() {
     super.initState();
+    strategy = c.profile?['backup_strategy'] as String? ?? 'replace';
     ownerId = c.selected;
     ownerRevision = c.profile?['revision'] as String?;
     load();
@@ -64,6 +66,10 @@ class _BackupPageState extends State<BackupPage> {
         });
         if (!mounted || !currentOwner) return;
         folders = (result['folders'] as List).cast<Json>();
+        strategy =
+            result['strategy'] as String? ??
+            c.profile?['backup_strategy'] as String? ??
+            'replace';
       }
     } catch (e) {
       if (!mounted || !currentOwner) return;
@@ -95,7 +101,7 @@ class _BackupPageState extends State<BackupPage> {
     }
   }
 
-  Future<void> save(List<Json> next) async {
+  Future<void> save(List<Json> next, {String? mode}) async {
     if (!editable) return;
     await c.action(tr('保存备份文件夹'), () async {
       if (!currentOwner) throw StateError(tr('备份目标已改变，请重新选择'));
@@ -103,9 +109,13 @@ class _BackupPageState extends State<BackupPage> {
         'id': ownerId,
         'revision': ownerRevision,
         'folders': next,
+        'strategy': mode ?? strategy,
       });
       if (mounted && currentOwner) {
-        setState(() => folders = (result['folders'] as List).cast<Json>());
+        setState(() {
+          folders = (result['folders'] as List).cast<Json>();
+          strategy = result['strategy'] as String? ?? mode ?? strategy;
+        });
       }
       await c.refreshStatus();
     });
@@ -184,6 +194,20 @@ class _BackupPageState extends State<BackupPage> {
         '备份任务按网盘分别保存。切换网盘不会迁移已有任务。',
         style: TextStyle(color: Colors.blueGrey, fontSize: 12),
       ),
+      if (c.profile?['capabilities']?['versioned_backup'] == true)
+        DropdownButtonFormField<String>(
+          initialValue: strategy,
+          decoration: const InputDecoration(labelText: '备份方式'),
+          items: const [
+            DropdownMenuItem(value: 'replace', child: Text('更新原文件（默认）')),
+            DropdownMenuItem(value: 'versioned', child: Text('每次修改另存版本')),
+          ],
+          onChanged: editable
+              ? (mode) {
+                  if (mode != null) save(folders, mode: mode);
+                }
+              : null,
+        ),
       if (versioned)
         const Padding(
           padding: EdgeInsets.only(top: 6),

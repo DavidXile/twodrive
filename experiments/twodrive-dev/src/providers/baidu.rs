@@ -17,7 +17,7 @@ use twodrive_dev::{
 };
 
 pub fn descriptor() -> Value {
-    json!({"id":"baidu","mount_backend":"readonly_bridge","label":"百度网盘","account_label":"百度账号","icon":"cloud",
+    json!({"id":"baidu","mount_backend":"twodrivefs","label":"百度网盘","account_label":"百度账号","icon":"cloud",
         "identity_fields":["baidu_state","root_path"],"protected_paths":["baidu_state"],
         "network_modes":["system","direct"],"write_recovery_field":"baidu_state","write_policy":"覆盖前核对版本并保留本机恢复副本；云端不提供原子版本覆盖，同时编辑仍可能冲突。","login_action":"configure",
         "help":"使用你自己的百度开放平台应用，在百度官方网页授权。解锁后可手动编辑；可见及可写文件受应用权限和授权根目录限制。AppKey、SecretKey 是应用凭据，无需在此输入百度账号密码。",

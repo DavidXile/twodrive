@@ -33,34 +33,33 @@ connection or synchronization failures keep the error icon.
 - Settings contains mount/unmount, clean-cache release and login autostart.
   **Autostart defaults off and installation never enables it.**
 
-### Transfer history and GNOME iCloud mounts
+### Directory cache, opening files and transfer history
 
-**传输** groups uploads, folder backups and downloads into separate tabs.
-Manual upload, download and view records are saved in the desktop state
-directory. The folder button reveals the file in the desktop file manager.
-The details dialog also offers the mounted cloud location when its original
-connection and configuration are available.
+The client retains the last successful directory response during refresh. On Linux,
+iCloud and Baidu mounts use the existing TwoDriveFS, with complete shallow listings
+stored in its SQLite metadata. The engine publishes cached metadata through IPC
+before refreshing it. Flutter does not enumerate mounted directories.
 
-On GNOME with Nautilus, GVfs WebDAV support, its POSIX export and Python GObject
-bindings installed, opt in to the iCloud GVfs mount by creating the empty
-`icloud-gnome-webdav` file under the desktop state directory (normally
-`~/.local/share/twodrive-dav/state`). Unmount and remount the iCloud connection
-to apply it. Remove that file and remount to return to the regular Linux mount.
-The mount will need an active GNOME session bus. On Debian-based desktops the
-relevant packages include `gvfs-backends`, `gvfs-fuse` and `python3-gi`.
+Opening a mounted file uses its verified original mount path, so edits pass through
+the filesystem cache and upload queue. For unmounted accounts, use the explicit
+Download action and choose a destination. Opening an existing mounted file is not
+reported as a new download. Upload/download history persists across restarts and
+keeps its original account/configuration identity.
 
-With GNOME recent files enabled, the engine retains iCloud files opened in
-Nautilus and reports them separately as `opened_files`. The saved cloud path
-resolves through the current mount after restart. The **下载** tab displays
-downloads and files viewed from the TwoDrive client.
+Busy mounts list the holding programs and paths. Save and close those applications
+normally, then retry exit. TwoDrive does not terminate the holding applications.
 
-In Nautilus, a green check means the current mount has the complete file in
-its temporary cache. Eviction and remounting clear that badge while preserving
-the opening history.
+The portable installer registers the DAV Nautilus extension and status emblems.
+The CI test `.deb` currently omits these integration assets; a clean installation
+of that package alone has no DAV badges. Badges use the current SQLite/cache state,
+not GNOME recent-file history. On Windows, automatic opening is limited to listed
+document/media types after an Internet-zone write; other types and marker failures
+are selected in Explorer. Native NTFS and associated application behavior still
+require Windows validation.
 
 ## Build and install
 
-Requirements: Flutter 3.41.8, Rust 1.96, Go 1.26.11 for the Linux mount helper,
+Requirements: Flutter 3.41.8, Rust 1.96,
 GTK 3 development files, clang, CMake, Ninja, pkg-config, FUSE 3 and a session
 D-Bus StatusNotifierItem host. Current
 native acceptance now includes isolated GNOME 46 GTK X11 and native GTK Wayland.
@@ -74,7 +73,6 @@ flutter build linux --release
 cd ../..
 # Keep the pinned supporting component beside the portable runtime.
 python3 scripts/install-rclone-component.py --platform linux-amd64 --destination dist/rclone
-python3 scripts/build-rclone-mount.py --destination dist/rclone
 cp dist/rclone/* apps/dav/build/linux/x64/release/bundle/
 python3 scripts/install-dav-desktop.py \
   --bundle apps/dav/build/linux/x64/release/bundle \

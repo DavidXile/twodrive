@@ -18,6 +18,7 @@ pub struct OpaqueProvider {
     files: Arc<Mutex<Files>>,
     pub caps: Capabilities,
     pub versioned: bool,
+    pub recoverable: bool,
     pub download_gate: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub metadata_lookups: Arc<Mutex<Vec<String>>>,
     pub directory_lookups: Arc<Mutex<Vec<String>>>,
@@ -32,6 +33,7 @@ impl Default for OpaqueProvider {
         Self {
             files: Arc::default(),
             versioned: false,
+            recoverable: false,
             download_gate: None,
             metadata_lookups: Arc::default(),
             directory_lookups: Arc::default(),
@@ -106,6 +108,13 @@ impl OpaqueProvider {
     }
 }
 impl CloudBackend for OpaqueProvider {
+    fn uses_directory_metadata(&self) -> bool {
+        self.recoverable
+    }
+    fn directory_metadata(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
+        Provider::list_directory(self, path)
+    }
+
     fn is_conflict_error(&self, e: &anyhow::Error) -> bool {
         e.to_string().contains("version conflict")
     }
@@ -216,6 +225,25 @@ impl CloudBackend for OpaqueProvider {
     }
 }
 impl Provider for OpaqueProvider {
+    fn recoverable_backup(&self) -> bool {
+        self.recoverable
+    }
+    fn manual_upload_supported(&self) -> bool {
+        self.recoverable
+    }
+    fn manual_upload(
+        &self,
+        path: &str,
+        source: &Path,
+        id: Option<&str>,
+        version: Option<&str>,
+        progress: Progress,
+    ) -> anyhow::Result<MetadataEntry> {
+        ensure!(self.recoverable, "manual recovery disabled");
+        crate_snapshot(self, path, id, version)?;
+        self.upload_controlled(path, source, id, version, progress)
+    }
+
     fn browse_parent_metadata(&self) -> bool {
         self.parent_browsing
     }
@@ -261,5 +289,18 @@ impl Provider for OpaqueProvider {
         self.upload_file_with_version(path, source, id, version, &mut |done, total| {
             progress(done, total)
         })
+    }
+}
+
+fn crate_snapshot(
+    backend: &OpaqueProvider,
+    path: &str,
+    id: Option<&str>,
+    version: Option<&str>,
+) -> anyhow::Result<()> {
+    match (backend.get_metadata_by_path(path)?, id, version) {
+        (None, None, None) => Ok(()),
+        (Some(m), Some(id), Some(version)) if m.remote_id == id && m.etag == version => Ok(()),
+        _ => anyhow::bail!("version conflict"),
     }
 }

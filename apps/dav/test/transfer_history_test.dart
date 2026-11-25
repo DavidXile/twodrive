@@ -12,6 +12,7 @@ const identity = {'profile': 'account', 'revision': 'one'};
 class HistoryClient extends StorageClient {
   final calls = <String>[];
   final opened = <String>[];
+  String mountedFile = '';
   final uploadStarted = Completer<void>();
   Completer<Json>? heldUpload;
   String revision = 'one';
@@ -37,6 +38,8 @@ class HistoryClient extends StorageClient {
         if (!uploadStarted.isCompleted) uploadStarted.complete();
         if (heldUpload case final hold?) return hold.future;
         return {'size': 7};
+      case 'mounted_file':
+        return {'path': mountedFile};
       case 'download':
         await File(args['output'] as String).writeAsString('fixture');
         return {'bytes': 7};
@@ -149,6 +152,10 @@ void main() {
         'path': '/测试/下载.txt',
         'output': output,
       });
+      first.mountedFile = output;
+      first.status['mounts'] = [
+        {'profile': 'account', 'revision': 'one', 'path': temp.path},
+      ];
       await first.viewCloudFile({
         ...identity,
         'name': '查看 #.docx',
@@ -157,7 +164,7 @@ void main() {
       });
       expect(first.opened, hasLength(1));
       final viewedPath = first.opened.single;
-      expect(viewedPath, endsWith('查看 #.docx'));
+      expect(viewedPath, output);
       expect(await first.shutdown(), isTrue);
       first.dispose();
 
@@ -168,18 +175,10 @@ void main() {
       });
       await second.start(engine.path, temp.path, '', '');
       final rows = second.transferRows;
-      expect(rows.map((r) => r.manual!.operation), [
-        'view',
-        'download',
-        'upload',
-      ]);
-      expect(rows.map((r) => r.info['local_path']), [
-        viewedPath,
-        output,
-        local,
-      ]);
-      expect(rows.map((r) => r.info['state']), List.filled(3, '已完成'));
-      expect(rows.map((r) => r.info['bytes_total']), [7, 7, 7]);
+      expect(rows.map((r) => r.manual!.operation), ['download', 'upload']);
+      expect(rows.map((r) => r.info['local_path']), [output, local]);
+      expect(rows.map((r) => r.info['state']), List.filled(2, '已完成'));
+      expect(rows.map((r) => r.info['bytes_total']), [7, 7]);
       expect(rows.last.info['account'], 'Example Drive');
       expect(rows.last.manual!.args['etag'], 'original-version');
       expect(rows.last.manual!.args, isNot(contains('unrelated')));

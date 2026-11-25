@@ -176,18 +176,13 @@ void main() {
       ]);
       expect(events, isNot(contains('window:destroy')));
 
-      await tester.tap(find.text(accept ? '关闭程序并退出' : '取消'));
+      await tester.tap(find.text(accept ? '重试退出' : '取消'));
       await tester.pump(const Duration(seconds: 1));
       await done;
       if (accept) {
         expect(client.quitArguments, [
           {'mount_confirmation': true},
-          {
-            'mount_confirmation': true,
-            'close_mount_processes': [
-              {'pid': 1234, 'start_time': 98765},
-            ],
-          },
+          {'mount_confirmation': true},
         ]);
         expect(events, contains('window:destroy'));
       } else {
@@ -236,12 +231,10 @@ void main() {
         find.text('launch-shell（PID 5678） · 请手动关闭或离开挂载目录'),
         findsOneWidget,
       );
-      await tester.tap(find.text('关闭程序并退出'));
+      await tester.tap(find.text('重试退出'));
       await tester.pump(const Duration(seconds: 1));
       await done;
-      expect(client.quitArguments.last['close_mount_processes'], [
-        {'pid': 1234, 'start_time': 98765},
-      ]);
+      expect(client.quitArguments.last, {'mount_confirmation': true});
       await tester.pumpWidget(const SizedBox());
       client.dispose();
     },
@@ -266,7 +259,7 @@ void main() {
       final Future<void> done = state.quit();
       await tester.pumpAndSettle();
       expect(find.text('/synthetic/mount'), findsOneWidget);
-      expect(find.text('关闭程序并退出'), findsNothing);
+      expect(find.text('重试退出'), findsOneWidget);
       await tester.tap(find.text('重试退出'));
       await tester.pump();
       await done;

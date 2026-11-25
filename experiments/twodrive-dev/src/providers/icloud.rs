@@ -11,7 +11,7 @@ use std::{
 use twodrive_dev::{profile::Profile, provider::Backend, rclone_drive::RcloneDrive, state::State};
 
 pub fn descriptor() -> Value {
-    json!({"id":"icloud","mount_backend":"readonly_bridge","label":"iCloud Drive","account_label":"Apple 账号","icon":"cloud",
+    json!({"id":"icloud","mount_backend":"twodrivefs","label":"iCloud Drive","account_label":"Apple 账号","icon":"cloud",
         "account_key":"name","summary_key":"name","identity_fields":["icloud_state"],"protected_paths":["icloud_state"],
         "network_modes":["system","direct"],"write_recovery_field":"icloud_state","write_policy":"写入前核对版本并保留本机原文件副本；云端不提供原子版本覆盖，同时编辑仍可能冲突。",
         "capabilities":{"mount":true,"upload":true,"manual_upload":true,"conditional_upload":false,"mkdir":true,"rename":true,"delete":true,"backup":true,"versioned_backup":true},

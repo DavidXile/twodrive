@@ -66,7 +66,8 @@ pub fn uses_readonly_bridge(p: &Profile) -> bool {
     descriptor(&p.kind)
         .map(|d| {
             d["capabilities"]["mount"] == true
-                && (d["mount_backend"] == "readonly_bridge" || !editable(p))
+                && (d["mount_backend"] == "readonly_bridge"
+                    || (!editable(p) && d["mount_backend"] != "twodrivefs"))
         })
         .unwrap_or(false)
 }
@@ -202,6 +203,11 @@ pub fn public_profile(p: &Profile) -> Value {
                 capabilities[key] = json!(false);
             }
         }
+        value["backup_strategy"] = json!(if p.option("backup_strategy") == "versioned" {
+            "versioned"
+        } else {
+            "replace"
+        });
         value["capabilities"] = capabilities;
     } else {
         value["provider_label"] = json!(&p.kind);

@@ -17,15 +17,10 @@ class DirectoryClient extends StorageClient {
     status = snapshot('a');
   }
 
-  final lists = <({Json args, Completer<Json> reply})>[];
+  final lists = <({Json args, int id, Completer<Json> reply})>[];
   final calls = <String>[];
-  final previews = <String, Completer<List<Json>?>>{};
   Completer<Json>? heldStatus;
   List<Json>? nextProfiles;
-
-  @override
-  Future<List<Json>?> loadMountedDirectory(String directory) =>
-      previews[directory]?.future ?? super.loadMountedDirectory(directory);
 
   Json snapshot(String id) => {
     'connected': true,
@@ -54,7 +49,7 @@ class DirectoryClient extends StorageClient {
         return {'status': snapshot(args['id'] as String)};
       case 'list':
         final reply = Completer<Json>();
-        lists.add((args: args, reply: reply));
+        lists.add((args: args, id: requestId!, reply: reply));
         return reply.future;
       default:
         return {};
@@ -87,6 +82,58 @@ Future<void> openFiles(WidgetTester tester, DirectoryClient client) async {
 }
 
 void main() {
+  testWidgets(
+    'engine snapshots render before refresh and obsolete snapshot events are ignored',
+    (tester) async {
+      final c = DirectoryClient();
+      await openFiles(tester, c);
+      await tester.pump();
+      final oldId = c.lists.single.id;
+      c.accept({
+        'id': oldId,
+        'event': 'directory_snapshot',
+        'profile': 'a',
+        'revision': 'ra',
+        'path': '/',
+        'entries': [
+          {
+            'path': '/cached.txt',
+            'name': 'cached.txt',
+            'directory': false,
+            'size': 5,
+            'etag': 'old',
+          },
+        ],
+      });
+      await tester.pump();
+      expect(find.text('cached.txt'), findsOneWidget);
+      expect(c.directoryReady, isFalse);
+      final next = c.browse('/new');
+      await tester.pump();
+      c.accept({
+        'id': oldId,
+        'event': 'directory_snapshot',
+        'profile': 'a',
+        'revision': 'ra',
+        'path': '/',
+        'entries': [
+          {'path': '/obsolete.txt', 'name': 'obsolete.txt', 'directory': false},
+        ],
+      });
+      await tester.pump();
+      expect(find.text('obsolete.txt'), findsNothing);
+      c.finishList(0, name: 'late-cloud.txt');
+      c.finishList(1, name: 'fresh.txt');
+      await next;
+      await tester.pump();
+      expect(find.text('fresh.txt'), findsOneWidget);
+      expect(find.text('late-cloud.txt'), findsNothing);
+      expect(c.directoryReady, isTrue);
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+    },
+  );
+
   testWidgets(
     'switching targets from Files resets the filter and keeps each directory',
     (tester) async {
@@ -154,46 +201,6 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     c.dispose();
   });
-
-  testWidgets(
-    'mounted folders can be browsed while cloud metadata is pending',
-    (tester) async {
-      final c = DirectoryClient();
-      c.previews['/'] = Completer<List<Json>?>();
-      c.previews['/folder'] = Completer<List<Json>?>();
-      await openFiles(tester, c);
-      c.previews['/']!.complete([
-        {'name': 'folder', 'path': '/folder', 'directory': true, 'etag': ''},
-      ]);
-      await tester.pump();
-      expect(find.text('folder'), findsOneWidget);
-      expect(c.lists.single.reply.isCompleted, isFalse);
-      expect(c.directoryReady, isFalse);
-
-      await tester.tap(find.text('folder'));
-      await tester.pump();
-      expect(c.lists.last.args['path'], '/folder');
-      c.previews['/folder']!.complete([
-        {
-          'name': 'preview.txt',
-          'path': '/folder/preview.txt',
-          'directory': false,
-          'etag': '',
-        },
-      ]);
-      await tester.pump();
-      expect(find.text('preview.txt'), findsOneWidget);
-      expect(c.directoryReady, isFalse);
-      c.finishList(0, name: 'obsolete.txt');
-      c.finishList(1, name: 'verified.txt');
-      await tester.pump();
-      expect(find.text('obsolete.txt'), findsNothing);
-      expect(find.text('verified.txt'), findsOneWidget);
-      expect(c.directoryReady, isTrue);
-      await tester.pumpWidget(const SizedBox());
-      c.dispose();
-    },
-  );
 
   testWidgets('View Files on a connection opens its directory immediately', (
     tester,

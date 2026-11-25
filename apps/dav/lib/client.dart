@@ -6,7 +6,6 @@ import 'updates.dart';
 import 'desktop_preferences.dart';
 import 'language.dart';
 import 'file_manager.dart';
-import 'mounted_directory.dart';
 part 'client_transfer_history.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -103,7 +102,6 @@ class StorageClient extends ChangeNotifier {
   final Map<int, Completer<Json>> _pending = {};
   final List<Transfer> transfers = [];
   final _TransferHistory _transferHistory = _TransferHistory();
-  Directory? _stateDirectory;
   String? transferHistoryError;
   List<Json> profiles = [];
   List<Json> providers = [];
@@ -151,15 +149,12 @@ class StorageClient extends ChangeNotifier {
   bool _disposed = false;
   DateTime? _directoryChecked;
   bool _directoryStale = true;
-  bool _directoryFromMount = false;
-  bool get directoryFromMount => _directoryFromMount;
   String? _directoryError;
   String? get directoryError => _directoryError;
   bool get directoryLoaded => _directoryChecked != null || entries.isNotEmpty;
   bool get directoryLoading => _directoryRead?.generation == _browseGeneration;
   bool get directoryReady =>
       directoryLoaded &&
-      !directoryFromMount &&
       !directoryLoading &&
       _directoryError == null &&
       (_directoryChecked == null || !_directoryStale);
@@ -173,7 +168,7 @@ class StorageClient extends ChangeNotifier {
       !directoryLoading &&
       _directoryError == null &&
       _directoryChecked == null &&
-      (entries.isEmpty || directoryFromMount);
+      entries.isEmpty;
   bool available = false;
   bool quitting = false;
   int _id = 0;
@@ -520,7 +515,6 @@ class StorageClient extends ChangeNotifier {
     bool server = false,
     String? nativeFixtureRoot,
   }) async {
-    _stateDirectory = Directory(state);
     try {
       final saved = await _transferHistory.load(
         File('$state/transfer-history.json'),
@@ -654,6 +648,27 @@ class StorageClient extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    if (message['event'] == 'directory_snapshot') {
+      if (_directoryRead?.id == id &&
+          _directoryRead?.generation == _browseGeneration &&
+          message['profile'] == selected &&
+          message['revision'] == profile?['revision'] &&
+          message['path'] == path &&
+          message['entries'] is List) {
+        entries = (message['entries'] as List)
+            .map(
+              (entry) => {
+                ...Map<String, dynamic>.from(entry as Map),
+                ...target,
+              },
+            )
+            .toList();
+        _directoryChecked = DateTime.now();
+        _directoryStale = true;
+        notifyListeners();
+      }
+      return;
+    }
     if (message['event'] == 'progress') {
       final task = transfers.where((t) => t.id == id).firstOrNull;
       if (task != null && task.phase == TransferPhase.running) {
@@ -686,7 +701,6 @@ class StorageClient extends ChangeNotifier {
     _engineOperations.clear();
     status = {};
     entries = [];
-    _directoryFromMount = false;
     _views.clear();
     _directories.clear();
     _directoryChecked = null;
@@ -1129,7 +1143,6 @@ class StorageClient extends ChangeNotifier {
     final cached = _directories.remove(key);
     if (cached != null) _directories[key] = cached;
     entries = cached?.entries ?? [];
-    _directoryFromMount = false;
     _directoryChecked = cached?.checked;
     _directoryStale = cached == null;
     _directoryError = null;
@@ -1137,7 +1150,6 @@ class StorageClient extends ChangeNotifier {
 
   void _saveDirectory(List listing, Json identity) {
     entries = listing.map((e) => {...e as Json, ...identity}).toList();
-    _directoryFromMount = false;
     final checked = DateTime.now();
     _directoryChecked = checked;
     _directoryStale = false;
@@ -1212,16 +1224,6 @@ class StorageClient extends ChangeNotifier {
     bool current() =>
         generation == _browseGeneration && available && !_disposed && !quitting;
     try {
-      if (!directoryLoaded) {
-        unawaited(() async {
-          final preview = await loadMountedDirectory(directory);
-          if (preview != null && current() && !directoryLoaded) {
-            entries = preview.map((entry) => {...entry, ...identity}).toList();
-            _directoryFromMount = true;
-            notifyListeners();
-          }
-        }());
-      }
       final result = await Future.sync(
         () => request('list', {'path': directory, ...identity}, requestId),
       );
@@ -1236,23 +1238,6 @@ class StorageClient extends ChangeNotifier {
       if (_directoryRead?.id == requestId) _directoryRead = null;
       if (current()) notifyListeners();
     }
-  }
-
-  @protected
-  Future<List<Json>?> loadMountedDirectory(String directory) async {
-    final id = selected;
-    if (id == null || !isProfileConnected(id)) return null;
-    final mount = mountForProfile(id);
-    final root = profile?['mount_path'];
-    final mountedPath = mount?['path'];
-    if (root is! String || mountedPath is! String || mount?['failed'] == true) {
-      return null;
-    }
-    return readMountedDirectory(
-      configuredRoot: root,
-      mountedPath: mountedPath,
-      directory: directory,
-    );
   }
 
   Future<void> mutate(String op, Json args) => action(tr('正在更新文件'), () async {
@@ -1355,41 +1340,22 @@ class StorageClient extends ChangeNotifier {
 
   Future<void> viewCloudFile(Json file) async {
     if (busy || quitting || _disposed) return;
-    Directory? folder;
     try {
       requireProfile(file);
-      final name = file['name'] as String;
-      if (name.isEmpty ||
-          name == '.' ||
-          name == '..' ||
-          name.contains(RegExp(r'[/\\\x00]')) ||
-          (Platform.isWindows && name.contains(RegExp(r'[:*?"<>|]')))) {
-        throw StateError('该文件名无法用于本机查看');
-      }
-      final state = _stateDirectory;
-      if (state == null) throw StateError('本机查看目录暂不可用');
-      final views = Directory('${state.absolute.path}/viewed-files');
-      await views.create(recursive: true);
-      folder = await views.createTemp('file-');
-      await transfer('view', {
-        'profile': file['profile'],
+      final id = file['profile'] as String;
+      if (!isProfileMounted(id)) throw StateError('此连接尚未挂载，请使用下载操作');
+      final verified = await request('mounted_file', {
+        'profile': id,
         'revision': file['revision'],
         'path': file['path'],
-        'size': file['size'],
-        'output': '${folder.path}${Platform.pathSeparator}$name',
       });
+      requireProfile(file);
+      if (!isProfileMounted(id)) throw StateError('挂载已改变，请重试');
+      await openViewedFile(verified['path'] as String);
     } catch (e) {
       if (!_disposed) {
         error = '$e'.replaceFirst('Bad state: ', '');
         notifyListeners();
-      }
-    } finally {
-      if (folder != null) {
-        try {
-          if (await folder.list().isEmpty) await folder.delete();
-        } on FileSystemException {
-          // The user may have moved the copy while it was open.
-        }
       }
     }
   }
@@ -1539,10 +1505,10 @@ class StorageClient extends ChangeNotifier {
 
   List<Json> quitBlockers = const [];
 
-  Future<bool> shutdown({List<Json> closeMountProcesses = const []}) {
+  Future<bool> shutdown() {
     final existing = _shutdown;
     if (existing != null) return existing;
-    final attempt = _shutdownOnce(closeMountProcesses);
+    final attempt = _shutdownOnce();
     _shutdown = attempt;
     unawaited(
       attempt.then((done) {
@@ -1552,7 +1518,7 @@ class StorageClient extends ChangeNotifier {
     return attempt;
   }
 
-  Future<bool> _shutdownOnce(List<Json> closeMountProcesses) async {
+  Future<bool> _shutdownOnce() async {
     quitBlockers = const [];
     if ((busy && !_restoringStartup) || runningTransfers.isNotEmpty) {
       error = tr('请先完成或取消当前操作，再退出。');
@@ -1568,11 +1534,7 @@ class StorageClient extends ChangeNotifier {
         if (_restoringStartup && activeId != null) {
           await request('cancel', {'id': activeId});
         }
-        final reply = await request('quit', {
-          'mount_confirmation': true,
-          if (closeMountProcesses.isNotEmpty)
-            'close_mount_processes': closeMountProcesses,
-        });
+        final reply = await request('quit', {'mount_confirmation': true});
         quitBlockers =
             (reply['quit_blockers'] as List?)?.cast<Json>() ?? const [];
         if (quitBlockers.isNotEmpty) {

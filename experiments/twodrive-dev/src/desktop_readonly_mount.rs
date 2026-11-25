@@ -5,10 +5,6 @@ use std::path::Component;
 use std::path::Prefix;
 use twodrive_dev::{rclone_drive, readonly_mount::Bridge, state::random_secret};
 
-#[cfg(target_os = "linux")]
-#[path = "desktop_icloud_gvfs.rs"]
-pub(super) mod gvfs;
-
 fn lifecycle(stage: &str) {
     if std::env::var_os("TWODRIVE_MOUNT_TRACE").is_some() {
         eprintln!("mount-lifecycle pid={} {stage}", std::process::id());
@@ -115,13 +111,6 @@ fn validate_target(path: &Path, private: &Path, protected: &[PathBuf]) -> anyhow
 }
 pub(super) fn start(app: &App, p: &Profile, cancel: &AtomicBool) -> anyhow::Result<Process> {
     ensure!(installed(), "{}", missing_driver());
-    #[cfg(target_os = "linux")]
-    gvfs::recover(app, p)?;
-    #[cfg(target_os = "linux")]
-    if !gvfs::selected(app, p) {
-        rclone_drive::binary()?;
-    }
-    #[cfg(windows)]
     rclone_drive::binary()?;
     validate_target(
         &p.mount_path,
@@ -243,14 +232,6 @@ fn start_component(
         password: random_secret(),
     };
     let mut command = Command::new(exe);
-    #[cfg(target_os = "linux")]
-    {
-        let mount_component = exe.with_file_name("rclone-mount");
-        if mount_component.is_file() {
-            command = Command::new(mount_component);
-            command.env("TWODRIVE_RCLONE_DEFER_GIO_PROBES", "1");
-        }
-    }
     for (key, _) in std::env::vars_os() {
         if key
             .to_string_lossy()
@@ -356,17 +337,6 @@ pub(super) fn worker(app: &App, p: &Profile) -> anyhow::Result<()> {
     let legacy_dirty = dirty_cache(&persistent.dir)?;
     if writable && legacy_dirty == 0 && recovery.join("observed.json").exists() {
         fs::remove_file(recovery.join("observed.json"))?;
-    }
-    #[cfg(target_os = "linux")]
-    if gvfs::selected(app, p) && legacy_dirty == 0 {
-        persistent.save("status.json", &json!({"pending":0,"error":false}))?;
-        return gvfs::run(
-            p,
-            backend,
-            &cache,
-            writable.then_some(recovery.as_path()),
-            &binding,
-        );
     }
     #[cfg(target_os = "linux")]
     let _target = LinuxTarget::prepare(&p.mount_path)?;
@@ -572,7 +542,7 @@ fn account_cache(app: &App, p: &Profile, binding: &str) -> PathBuf {
 }
 /// Inspect only our private metadata, including dirty files whose handles have
 /// not closed yet. RC upload queues alone do not include those open editors.
-fn dirty_cache(root: &Path) -> anyhow::Result<u64> {
+pub(super) fn dirty_cache(root: &Path) -> anyhow::Result<u64> {
     let meta = root.join("vfsMeta");
     if !meta.exists() {
         return Ok(0);
@@ -833,5 +803,44 @@ mod tests {
         let options = control.call("options/get", json!({})).unwrap();
         assert_eq!(options["vfs"]["ReadOnly"], true);
         let _ = control.call("core/quit", json!({}));
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn ensure_native_migration(mount: &Path, binding: &str) -> anyhow::Result<()> {
+    let account = twodrive_dev::mount_write::account_cache(mount, binding);
+    ensure!(
+        dirty_cache(&account.join("vfs"))? == 0
+            && dirty_cache(&mount.join("linux-readonly/vfs"))? == 0,
+        "旧挂载缓存仍有未上传内容，请先用原版本完成同步；迁移未开始"
+    );
+    let recovery = twodrive_dev::mount_write::recovery_status(&account.join("write-recovery"))?;
+    ensure!(
+        recovery["files"].as_u64() == Some(0) && recovery["editor_pending"].as_u64() == Some(0),
+        "旧挂载仍有编辑恢复内容，请先恢复；迁移未开始"
+    );
+    Ok(())
+}
+#[cfg(all(test, target_os = "linux"))]
+mod migration_tests {
+    use super::*;
+    #[test]
+    fn migration_refuses_dirty_metadata_and_editor_recovery_without_removing_either() {
+        let root = tempfile::tempdir().unwrap();
+        let mount = root.path();
+        let binding = "fixture-account";
+        let account = twodrive_dev::mount_write::account_cache(mount, binding);
+        fs::create_dir_all(account.join("vfs/vfsMeta/namespace")).unwrap();
+        let dirty = account.join("vfs/vfsMeta/namespace/file");
+        fs::write(&dirty, b"{\"Dirty\":true}").unwrap();
+        assert!(ensure_native_migration(mount, binding).is_err());
+        assert!(dirty.is_file());
+        fs::write(&dirty, b"{\"Dirty\":false}").unwrap();
+        assert!(ensure_native_migration(mount, binding).is_ok());
+        fs::create_dir_all(account.join("write-recovery")).unwrap();
+        let edited = account.join("write-recovery/edit.content");
+        fs::write(&edited, b"unsynchronized").unwrap();
+        assert!(ensure_native_migration(mount, binding).is_err());
+        assert_eq!(fs::read(edited).unwrap(), b"unsynchronized");
     }
 }
