@@ -42,6 +42,7 @@ class Transfer {
       _ => throw ArgumentError.value(value, 'state'),
     };
   }
+
   String? error;
   String get name => (args['path'] as String).split('/').last;
   bool get upload => operation == 'upload';
@@ -283,10 +284,14 @@ class StorageClient extends ChangeNotifier {
         '原连接',
   };
   List<TransferRow> get transferRows => [
-    for (final task in transfers.where((task) => task.phase == TransferPhase.running))
+    for (final task in transfers.where(
+      (task) => task.phase == TransferPhase.running,
+    ))
       (info: transferInfo(task), manual: task),
     for (final item in syncActivity) (info: item, manual: null),
-    for (final task in transfers.where((task) => task.phase != TransferPhase.running))
+    for (final task in transfers.where(
+      (task) => task.phase != TransferPhase.running,
+    ))
       (info: transferInfo(task), manual: task),
     for (final item
         in ((status['overall']?['recent'] as List?) ??
@@ -333,9 +338,10 @@ class StorageClient extends ChangeNotifier {
       (status['backup']?['state'] == 'scanning' ||
           status['backup']?['state'] == 'starting') ||
       (status['cache']?['pending'] as num? ?? 0) > 0;
-  Future<void> pauseToggle() => action(paused ? tr('恢复同步') : tr('暂停同步'), () async {
-    status = await request('pause', {'paused': !paused});
-  });
+  Future<void> pauseToggle() =>
+      action(paused ? tr('恢复同步') : tr('暂停同步'), () async {
+        status = await request('pause', {'paused': !paused});
+      });
   Future<void> signOut() => action(tr('退出登录'), () async {
     final id = selected;
     await request('sign_out', {'id': id});

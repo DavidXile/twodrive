@@ -132,9 +132,12 @@ void main() {
       );
       final edit = find.descendant(
         of: inactive,
-        matching: find.byIcon(Icons.edit_outlined),
+        matching: find.byTooltip('更多操作'),
       );
+      await tester.ensureVisible(edit);
       await tester.tap(edit);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('编辑'));
       await tester.pumpAndSettle();
       expect(find.text('编辑连接'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());

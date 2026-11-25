@@ -1,3 +1,7 @@
+import 'desktop_typography.dart';
+import 'dashboard_theme.dart';
+import 'cloud_target_picker.dart';
+import 'workspace_style.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'language.dart';
 import 'dart:async';
@@ -84,13 +88,17 @@ class _WorkspaceState extends State<Workspace>
   bool _directoryReadQueued = false;
   int page = WorkspacePage.overview.index;
   _TransferSection? transferSection;
-  String filter = '';
+  final fileFilter = TextEditingController();
+  (String?, Object?)? _filterOwner;
+  (String?, Object?) get fileOwner => (c.selected, c.profile?['revision']);
+  bool _switchingFileTarget = false;
   String _traySignature = '';
   Future<void> _trayWork = Future.value();
   Future<void>? _quitWork;
   @override
   void initState() {
     super.initState();
+    _filterOwner = fileOwner;
     c.addListener(changed);
     if (widget.desktop) {
       WidgetsBinding.instance.addObserver(this);
@@ -125,6 +133,10 @@ class _WorkspaceState extends State<Workspace>
   }
 
   void changed() {
+    if (_filterOwner != fileOwner) {
+      _filterOwner = fileOwner;
+      fileFilter.clear();
+    }
     if (mounted) {
       setState(() {});
     }
@@ -148,7 +160,8 @@ class _WorkspaceState extends State<Workspace>
     c.setView(
       visible: dashboardFocused || nativeTrayVisible,
       files: dashboardFocused && !panel && page == WorkspacePage.files.index,
-      transfers: dashboardFocused && !panel && page == WorkspacePage.transfers.index,
+      transfers:
+          dashboardFocused && !panel && page == WorkspacePage.transfers.index,
       quota:
           nativeTrayVisible ||
           (dashboardFocused &&
@@ -180,12 +193,14 @@ class _WorkspaceState extends State<Workspace>
     if (!presenting) refreshWorkspace(forceDirectory: true);
   }
 
-  @override
-  void onWindowMinimize() {
+  void hideWorkspace() {
     _windowHidden = true;
     dashboardFocused = false;
     updateViewInterests();
   }
+
+  @override
+  void onWindowMinimize() => hideWorkspace();
 
   @override
   void onWindowClose() {
@@ -196,7 +211,8 @@ class _WorkspaceState extends State<Workspace>
 
   @override
   void onWindowBlur() {
-    onWindowMinimize();
+    dashboardFocused = false;
+    updateViewInterests();
     if (!Platform.isLinux && !Platform.isWindows && panel && !presenting) {
       unawaited(windowManager.hide());
     }
@@ -447,6 +463,7 @@ class _WorkspaceState extends State<Workspace>
   @override
   void dispose() {
     c.removeListener(changed);
+    fileFilter.dispose();
     if (widget.desktop) {
       WidgetsBinding.instance.removeObserver(this);
       windowManager.removeListener(this);
@@ -859,10 +876,13 @@ class _WorkspaceState extends State<Workspace>
                     ),
                   Expanded(
                     child: switch (WorkspacePage.values[page]) {
-                      WorkspacePage.overview => OverviewPage(
-                        client: c,
-                        onNavigate: navigateTo,
-                        onOpenMount: (id) => openMount(id),
+                      WorkspacePage.overview => Theme(
+                        data: dashboardTheme(),
+                        child: OverviewPage(
+                          client: c,
+                          onNavigate: navigateTo,
+                          onOpenMount: (id) => openMount(id),
+                        ),
                       ),
                       WorkspacePage.files => filesPage(),
                       WorkspacePage.transfers => transfersPage(),
@@ -954,21 +974,68 @@ class _WorkspaceState extends State<Workspace>
         if (mounted) loadVisibleDirectory();
       });
     }
-    if (!c.connected) {
-      return empty(
-        Icons.cloud_outlined,
-        tr('连接你的文件'),
-        tr('选择存储提供者并连接你的账号或设备。'),
-        OutlinedButton(
-          onPressed: () => navigateTo(WorkspacePage.connections.index),
-          child: Text(tr('管理连接')),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Surface(
+          padding: const EdgeInsets.all(16),
+          child: CloudTargetPicker(
+            fieldKey: const ValueKey('files-target'),
+            label: tr('查看网盘'),
+            client: c,
+            onSelect:
+                c.available && !c.busy && !c.quitting && !_switchingFileTarget
+                ? (profile) => unawaited(selectFileTarget(profile))
+                : null,
+          ),
         ),
-      );
+        const SizedBox(height: 16),
+        Expanded(
+          child: Surface(
+            padding: const EdgeInsets.all(16),
+            child: _switchingFileTarget
+                ? const Center(child: CircularProgressIndicator())
+                : c.connected
+                ? fileDirectory()
+                : empty(
+                    Icons.cloud_outlined,
+                    '连接你的文件',
+                    c.profiles.isEmpty
+                        ? '前往连接页选择存储提供者，再添加账号或设备。'
+                        : '选择上方的网盘，或前往连接页添加新账号。',
+                    OutlinedButton(
+                      onPressed: () =>
+                          navigateTo(WorkspacePage.connections.index),
+                      child: Text(tr('管理连接')),
+                    ),
+                  ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> selectFileTarget(Json profile) async {
+    if (_switchingFileTarget ||
+        !c.available ||
+        c.busy ||
+        c.quitting ||
+        (c.connected && c.selected == profile['id'])) {
+      return;
     }
+    setState(() => _switchingFileTarget = true);
+    try {
+      await connectProfile(profile);
+    } finally {
+      if (mounted) setState(() => _switchingFileTarget = false);
+    }
+  }
+
+  Widget fileDirectory() {
     final entries = c.entries
         .where(
           (e) => (e['name'] as String).toLowerCase().contains(
-            filter.toLowerCase(),
+            fileFilter.text.toLowerCase(),
           ),
         )
         .toList();
@@ -987,7 +1054,7 @@ class _WorkspaceState extends State<Workspace>
             ),
             Expanded(child: SelectableText(c.path, maxLines: 2)),
             IconButton(
-              tooltip: '刷新',
+              tooltip: tr('刷新'),
               onPressed: c.busy || c.directoryLoading
                   ? null
                   : () => c.browse(c.path),
@@ -996,13 +1063,13 @@ class _WorkspaceState extends State<Workspace>
             if (c.canMkdir || c.canUpload) ...[
               if (c.canMkdir)
                 IconButton(
-                  tooltip: '新建文件夹',
+                  tooltip: tr('新建文件夹'),
                   onPressed: !canActOnFiles
                       ? null
                       : () async {
                           final identity = c.target;
                           final directory = c.path;
-                          final name = await nameDialog(tr('新建文件夹'));
+                          final name = await nameDialog('新建文件夹');
                           if (name != null) {
                             await c.mutate('mkdir', {
                               'path': childPath(directory, name),
@@ -1023,11 +1090,12 @@ class _WorkspaceState extends State<Workspace>
         ),
         const SizedBox(height: 12),
         TextField(
+          controller: fileFilter,
           decoration: InputDecoration(
             prefixIcon: Icon(Icons.search),
             hintText: tr('筛选当前目录'),
           ),
-          onChanged: (value) => setState(() => filter = value),
+          onChanged: (_) => setState(() {}),
         ),
         const SizedBox(height: 12),
         Expanded(
@@ -1042,7 +1110,7 @@ class _WorkspaceState extends State<Workspace>
                               const CircularProgressIndicator(),
                               const SizedBox(height: 16),
                             ],
-                            const Text('正在加载目录'),
+                            Text(tr('正在加载目录')),
                           ],
                         ),
                       )
@@ -1052,75 +1120,79 @@ class _WorkspaceState extends State<Workspace>
                   c.entries.isEmpty ? '当前目录为空' : '没有匹配的文件',
                   c.entries.isNotEmpty ? '请调整筛选条件。' : '',
                 )
-              : Card(
-                  margin: EdgeInsets.zero,
-                  color: Colors.white,
-                  clipBehavior: Clip.antiAlias,
-                  child: ListView.separated(
-                    itemCount: entries.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final file = entries[index];
-                      final directory = file['directory'] == true;
-                      final size = file['size'];
-                      return ListTile(
-                        leading: Icon(
-                          directory ? Icons.folder : Icons.description_outlined,
-                          color: directory
-                              ? const Color(0xffe7b448)
-                              : Colors.blueGrey,
+              : ListView.separated(
+                  key: ValueKey((fileOwner, c.path)),
+                  itemCount: entries.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final file = entries[index];
+                    final directory = file['directory'] == true;
+                    final size = file['size'];
+                    return ListTile(
+                      leading: Icon(
+                        directory ? Icons.folder : Icons.description_outlined,
+                        color: directory
+                            ? const Color(0xffe7b448)
+                            : Colors.blueGrey,
+                      ),
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                      ),
+                      title: Tooltip(
+                        message: file['name'] as String,
+                        child: Text(
+                          file['name'] as String,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        title: Text(file['name'] as String),
-                        subtitle: Text(
-                          directory
-                              ? '文件夹'
-                              : size is int
-                              ? bytes(size)
-                              : '文件',
-                        ),
-                        onTap: c.busy
-                            ? null
-                            : directory
-                            ? () => c.browse(file['path'] as String)
-                            : canActOnFiles
-                            ? () => c.viewCloudFile(file)
-                            : null,
-                        trailing: PopupMenuButton<String>(
-                          enabled: canActOnFiles,
-                          onSelected: (action) => fileAction(action, file),
-                          itemBuilder: (_) => [
-                            if (!directory) ...[
-                              const PopupMenuItem(
-                                value: 'view',
-                                child: Text('查看'),
-                              ),
-                              const PopupMenuItem(
-                                value: 'download',
-                                child: Text(tr('下载')),
-                              ),
-                            ],
-                            if (c.canRename)
-                              PopupMenuItem(
-                                value: 'rename',
-                                child: Text(tr('重命名')),
-                              ),
-                            if (c.canUpload &&
-                                !directory &&
-                                (file['etag'] as String).isNotEmpty)
-                              PopupMenuItem(
-                                value: 'replace',
-                                child: Text(tr('替换内容')),
-                              ),
-                            if (c.canDelete)
-                              PopupMenuItem(
-                                value: 'delete',
-                                child: Text(tr('删除')),
-                              ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
+                      ),
+                      subtitle: Text(
+                        directory
+                            ? '文件夹'
+                            : size is int
+                            ? bytes(size)
+                            : '文件',
+                      ),
+                      onTap: c.busy
+                          ? null
+                          : directory
+                          ? () => c.browse(file['path'] as String)
+                          : canActOnFiles
+                          ? () => download(file)
+                          : null,
+                      trailing: PopupMenuButton<String>(
+                        enabled: canActOnFiles,
+                        onSelected: (action) => fileAction(action, file),
+                        itemBuilder: (_) => [
+                          if (!directory)
+                            PopupMenuItem(value: 'view', child: Text(tr('查看'))),
+                          if (!directory)
+                            PopupMenuItem(
+                              value: 'download',
+                              child: Text(tr('下载')),
+                            ),
+                          if (c.canRename)
+                            PopupMenuItem(
+                              value: 'rename',
+                              child: Text(tr('重命名')),
+                            ),
+                          if (c.canUpload &&
+                              !directory &&
+                              (file['etag'] as String?)?.isNotEmpty == true)
+                            PopupMenuItem(
+                              value: 'replace',
+                              child: Text(tr('替换内容')),
+                            ),
+                          if (c.canDelete)
+                            PopupMenuItem(
+                              value: 'delete',
+                              child: Text(tr('删除')),
+                            ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
         ),
         if (c.directoryLoaded) ...[
@@ -1304,7 +1376,9 @@ class _WorkspaceState extends State<Workspace>
                 onPressed: () => c.cancelTransfer(task.id),
                 icon: const Icon(Icons.close, size: 18),
               ),
-            if (task != null && task.phase == TransferPhase.failed && !task.view)
+            if (task != null &&
+                task.phase == TransferPhase.failed &&
+                !task.view)
               IconButton(
                 tooltip: '重试传输',
                 onPressed: c.canRetryTransfer(task)
@@ -1469,120 +1543,151 @@ class _WorkspaceState extends State<Workspace>
     },
   );
 
-  Widget connectionsPage() => ListView(
-    children: [
-      if (c.connected)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 16),
-          child: Align(
+  Widget connectionsPage() => LayoutBuilder(
+    builder: (context, box) {
+      final columns = box.maxWidth >= 900 ? 2 : 1;
+      return ListView(
+        children: [
+          if (c.connected)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  onPressed: c.busy
+                      ? null
+                      : () async {
+                          if (await confirm(
+                            tr('退出登录？'),
+                            tr('断开此账号并移除客户端中保存的登录信息。服务器文件、备份源和独立的设备配对状态会保留。'),
+                          )) {
+                            await c.signOut();
+                          }
+                        },
+                  icon: const Icon(Icons.logout),
+                  label: Text(tr('退出登录')),
+                ),
+              ),
+            ),
+          Align(
             alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: c.busy
-                  ? null
-                  : () async {
-                      if (await confirm(
-                        tr('退出登录？'),
-                        tr('断开此账号并移除客户端中保存的登录信息。服务器文件、备份源和独立的设备配对状态会保留。'),
-                      )) {
-                        await c.signOut();
-                      }
-                    },
-              icon: const Icon(Icons.logout),
-              label: Text(tr('退出登录')),
+            child: FilledButton.icon(
+              onPressed: c.busy || !c.available ? null : () => editProfile(),
+              icon: const Icon(Icons.add),
+              label: Text(tr('添加连接')),
             ),
           ),
-        ),
-      Align(
-        alignment: Alignment.centerLeft,
-        child: FilledButton.icon(
-          onPressed: c.busy || !c.available ? null : () => editProfile(),
-          icon: const Icon(Icons.add),
-          label: Text(tr('添加连接')),
-        ),
-      ),
-      const SizedBox(height: 16),
-      if (c.connectedProfiles.length > 1)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Text(
-            tr('已连接 {arg0} 个网盘 · 点击卡片切换浏览', [c.connectedProfiles.length]),
+          const SizedBox(height: 16),
+          if (c.connectedProfiles.length > 1)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                tr('已连接 {arg0} 个网盘 · 点击卡片切换浏览', [c.connectedProfiles.length]),
+              ),
+            ),
+          Wrap(
+            spacing: 16,
+            runSpacing: 16,
+            children: [
+              for (final p in c.profiles)
+                SizedBox(
+                  width: (box.maxWidth - (columns - 1) * 16) / columns,
+                  child: ConnectionCard(
+                    key: ValueKey('connection-${p['id']}'),
+                    mountSupported: c.mountSupported,
+                    mountPath:
+                        c.mountForProfile(p['id'] as String)?['path']
+                            as String? ??
+                        p['mount_path'] as String?,
+                    mountFailed:
+                        c.mountForProfile(p['id'] as String)?['failed'] == true,
+                    mounted: c.isProfileMounted(p['id'] as String),
+                    onMount:
+                        c.busy ||
+                            !c.available ||
+                            (!c.isProfileMounted(p['id'] as String) &&
+                                !c.isProfileConnected(p['id'] as String))
+                        ? null
+                        : () =>
+                              c.mountDriverMissing &&
+                                  !c.isProfileMounted(p['id'] as String)
+                              ? showMountHelp(context, client: c)
+                              : c.mountToggle(p['id'] as String),
+                    onOpenMount:
+                        c.busy ||
+                            !c.available ||
+                            c.mountForProfile(p['id'] as String) == null ||
+                            c.mountForProfile(p['id'] as String)?['failed'] ==
+                                true
+                        ? null
+                        : () => openMount(p['id'] as String),
+                    profile: {
+                      ...p,
+                      if (c.connected && c.status['profile'] == p['id'])
+                        'account_name': c.account,
+                    },
+                    online: c.isProfileConnected(p['id'] as String),
+                    selected: c.connected && c.status['profile'] == p['id'],
+                    issue: c.connectionErrors[p['id']],
+                    connectLabel: c.needsAuthorization.contains(p['id'])
+                        ? tr('重新授权')
+                        : c.isProfileConnected(p['id'] as String)
+                        ? tr('查看文件')
+                        : c.connected
+                        ? tr('切换使用')
+                        : tr('登录并使用'),
+                    usage: c.quotas[p['id']],
+                    onSelect: c.busy || !c.available
+                        ? null
+                        : () => unawaited(connectProfile(p)),
+                    onRefresh: c.isProfileConnected(p['id'] as String)
+                        ? () => unawaited(
+                            c.refreshQuota(p['id'] as String, force: true),
+                          )
+                        : null,
+                    onDisconnect: c.busy || !c.available
+                        ? null
+                        : () => unawaited(c.disconnect(p['id'] as String)),
+                    onEdit:
+                        c.busy ||
+                            !c.available ||
+                            c.isProfileConnected(p['id'] as String)
+                        ? null
+                        : () => editProfile(p),
+                    onDelete:
+                        c.busy ||
+                            !c.available ||
+                            c.isProfileConnected(p['id'] as String)
+                        ? null
+                        : () async {
+                            if (await confirm(
+                              tr('删除连接配置？'),
+                              tr('服务器文件和已有配对状态会保留。'),
+                            )) {
+                              await c.remove(p['id'] as String);
+                            }
+                          },
+                  ),
+                ),
+            ],
           ),
-        ),
-      for (final p in c.profiles)
-        ConnectionCard(
-          key: ValueKey('connection-${p['id']}'),
-          mountSupported: c.mountSupported,
-          mounted: c.isProfileMounted(p['id'] as String),
-          onMount:
-              c.busy ||
-                  !c.available ||
-                  (!c.isProfileMounted(p['id'] as String) &&
-                      !c.isProfileConnected(p['id'] as String))
-              ? null
-              : () =>
-                    c.mountDriverMissing &&
-                        !c.isProfileMounted(p['id'] as String)
-                    ? showMountHelp(context, client: c)
-                    : c.mountToggle(p['id'] as String),
-          onOpenMount:
-              c.busy ||
-                  !c.available ||
-                  c.mountForProfile(p['id'] as String) == null ||
-                  c.mountForProfile(p['id'] as String)?['failed'] == true
-              ? null
-              : () => openMount(p['id'] as String),
-          profile: {
-            ...p,
-            if (c.connected && c.status['profile'] == p['id'])
-              'account_name': c.account,
-          },
-          online: c.isProfileConnected(p['id'] as String),
-          selected: c.connected && c.status['profile'] == p['id'],
-          issue: c.connectionErrors[p['id']],
-          connectLabel: c.needsAuthorization.contains(p['id'])
-              ? tr('重新授权')
-              : c.isProfileConnected(p['id'] as String)
-              ? tr('查看文件')
-              : c.connected
-              ? tr('切换使用')
-              : tr('登录并使用'),
-          usage: c.quotas[p['id']],
-          onSelect: c.busy || !c.available
-              ? null
-              : () => unawaited(connectProfile(p)),
-          onRefresh: c.isProfileConnected(p['id'] as String)
-              ? () => unawaited(c.refreshQuota(p['id'] as String, force: true))
-              : null,
-          onDisconnect: c.busy || !c.available
-              ? null
-              : () => unawaited(c.disconnect(p['id'] as String)),
-          onEdit:
-              c.busy || !c.available || c.isProfileConnected(p['id'] as String)
-              ? null
-              : () => editProfile(p),
-          onDelete:
-              c.busy || !c.available || c.isProfileConnected(p['id'] as String)
-              ? null
-              : () async {
-                  if (await confirm(tr('删除连接配置？'), tr('服务器文件和已有配对状态会保留。'))) {
-                    await c.remove(p['id'] as String);
-                  }
-                },
-        ),
-      if (defaultTargetPlatform == TargetPlatform.windows &&
-          c.status['cfapi']?['supported'] == true &&
-          c.profiles.any((p) => p['kind'] == 'onedrive'))
-        ListTile(
-          title: Text(tr('OneDrive 按需同步')),
-          onTap: () => navigateTo(WorkspacePage.cfapi.index),
-        ),
-      if (c.profiles.isEmpty)
-        Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(tr('选择存储提供者并填写连接信息。')),
-        ),
-    ],
+          if (defaultTargetPlatform == TargetPlatform.windows &&
+              c.status['cfapi']?['supported'] == true &&
+              c.profiles.any((p) => p['kind'] == 'onedrive'))
+            ListTile(
+              title: Text(tr('OneDrive 按需同步')),
+              onTap: () => navigateTo(WorkspacePage.cfapi.index),
+            ),
+          if (c.profiles.isEmpty)
+            Padding(
+              padding: EdgeInsets.all(24),
+              child: Text(tr('选择存储提供者并填写连接信息。')),
+            ),
+        ],
+      );
+    },
   );
+
   Widget settingsPage() {
     final cache = c.status['cache'] as Json?;
     return ListView(

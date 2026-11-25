@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:twodrive_dav/client.dart';
+import 'package:twodrive_dav/language.dart';
 
 const profile = {'id': 'account', 'revision': 'one', 'name': 'Example Drive'};
 const identity = {'profile': 'account', 'revision': 'one'};
@@ -61,6 +62,41 @@ Future<File> stubEngine(Directory directory) async {
 }
 
 void main() {
+  test(
+    'English completed transfers keep their result after restart',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'twodrive-locale-history-',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      addTearDown(() => desktopLocale.value = 'zh');
+      final engine = await stubEngine(temp);
+      final first = HistoryClient();
+      await first.start(engine.path, temp.path, '', '');
+      desktopLocale.value = 'en';
+      await first.transfer('upload', {
+        ...identity,
+        'path': '/example.txt',
+        'source': '${temp.path}/example.txt',
+      });
+      expect(first.transfers.single.phase, TransferPhase.completed);
+      expect(first.transferInfo(first.transfers.single)['state'], '已完成');
+      expect(await first.shutdown(), isTrue);
+      first.dispose();
+      final second = HistoryClient();
+      addTearDown(() async {
+        await second.shutdown();
+        second.dispose();
+      });
+      await second.start(engine.path, temp.path, '', '');
+      expect(second.transfers.single.phase, TransferPhase.completed);
+      desktopLocale.value = 'zh';
+      expect(second.transfers.single.state, '已完成');
+      expect(second.calls, isNot(contains('upload')));
+    },
+    skip: Platform.isWindows,
+  );
+
   test('file-manager opens stay outside actual transfer history', () {
     final c = StorageClient()
       ..status = {

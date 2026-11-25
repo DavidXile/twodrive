@@ -87,6 +87,58 @@ Future<void> openFiles(WidgetTester tester, DirectoryClient client) async {
 }
 
 void main() {
+  testWidgets(
+    'switching targets from Files resets the filter and keeps each directory',
+    (tester) async {
+      final c = DirectoryClient();
+      await openFiles(tester, c);
+      await tester.pump();
+      c.finishList(0, name: 'first.txt');
+      await tester.pumpAndSettle();
+      final browse = c.browse('/saved-folder');
+      await tester.pump();
+      c.finishList(1, name: 'saved.txt');
+      await browse;
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'saved');
+      expect(find.text('saved.txt'), findsOneWidget);
+
+      Future<void> choose(String account) async {
+        await tester.tap(find.byKey(const ValueKey('files-target')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(account).last);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+
+      await choose('Second account');
+      expect(c.selected, 'b');
+      expect(c.lists.last.args, containsPair('profile', 'b'));
+      expect(c.lists.last.args, containsPair('path', '/'));
+      expect(find.text('saved.txt'), findsNothing);
+      c.finishList(2, name: 'second.txt');
+      await tester.pumpAndSettle();
+      expect(find.text('second.txt'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '',
+      );
+
+      await choose('First account');
+      await tester.pumpAndSettle();
+      expect(c.path, '/saved-folder');
+      expect(find.text('saved.txt'), findsOneWidget);
+      expect(find.text('second.txt'), findsNothing);
+      expect(c.calls.where((op) => op == 'select'), hasLength(2));
+      expect(
+        c.calls.where((op) => ['connect', 'disconnect', 'mount'].contains(op)),
+        isEmpty,
+      );
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+    },
+  );
+
   testWidgets('showing Files automatically reads the selected root', (
     tester,
   ) async {
