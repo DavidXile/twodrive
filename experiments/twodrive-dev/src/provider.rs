@@ -797,7 +797,7 @@ impl CloudBackend for Backend {
         progress: &mut dyn FnMut(u64, u64) -> anyhow::Result<()>,
     ) -> anyhow::Result<MetadataEntry> {
         if self.mount_writes && !self.capabilities().conditional_upload {
-            return crate::mount_write::upload(self, path, source, id, version, progress);
+            return upload_for_mount(self, path, source, id, version, progress);
         }
         self.check_pause()?;
         ensure!(
@@ -831,4 +831,60 @@ impl CloudBackend for Backend {
         self.check_write()?;
         self.inner.delete(id)
     }
+}
+
+/// Bridge the filesystem's borrowed progress callback to provider adapters without
+/// buffering content or allowing callback failures to be ignored.
+fn upload_for_mount(
+    backend: &Backend,
+    path: &str,
+    source: &Path,
+    id: Option<&str>,
+    version: Option<&str>,
+    on_progress: &mut dyn FnMut(u64, u64) -> anyhow::Result<()>,
+) -> anyhow::Result<MetadataEntry> {
+    enum Event {
+        Progress(u64, u64, std::sync::mpsc::SyncSender<Result<(), String>>),
+        Done(anyhow::Result<MetadataEntry>),
+    }
+    let backend = backend.clone();
+    let path = path.to_owned();
+    let source = source.to_path_buf();
+    let id = id.map(str::to_owned);
+    let version = version.map(str::to_owned);
+    let (send, receive) = std::sync::mpsc::sync_channel(0);
+    let worker = std::thread::spawn(move || {
+        let progress_send = send.clone();
+        let progress = Arc::new(move |done, total| {
+            let (ack, result) = std::sync::mpsc::sync_channel(0);
+            progress_send.send(Event::Progress(done, total, ack))?;
+            result.recv()?.map_err(anyhow::Error::msg)
+        });
+        let result = match (id.as_deref(), version.as_deref()) {
+            (Some(id), Some(version)) => {
+                backend.manual_upload_snapshot(&path, &source, id, version, progress)
+            }
+            (None, None) => backend.manual_upload_path(&path, &source, None, progress),
+            _ => anyhow::bail!("incomplete mount upload identity"),
+        };
+        let _ = send.send(Event::Done(result));
+        Ok(())
+    });
+    let result = loop {
+        match receive.recv() {
+            Ok(Event::Progress(done, total, ack)) => {
+                let _ = ack.send(on_progress(done, total).map_err(|e| e.to_string()));
+            }
+            Ok(Event::Done(result)) => break result,
+            Err(_) => {
+                break Err(anyhow::anyhow!(
+                    "mount upload worker stopped; local edit retained"
+                ));
+            }
+        }
+    };
+    worker
+        .join()
+        .map_err(|_| anyhow::anyhow!("mount upload worker panicked"))??;
+    result
 }

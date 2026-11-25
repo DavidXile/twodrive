@@ -4,7 +4,6 @@ import sqlite3
 import subprocess
 import threading
 import time
-import fcntl
 import json
 import sys
 import base64
