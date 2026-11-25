@@ -1,3 +1,12 @@
+twodrive (0.2.24+dev0.4.0-1) unstable; urgency=medium
+
+  * Consolidate iCloud and Baidu mounts on TwoDriveFS and recoverable writes.
+  * Restore personal desktop pages, retain the Dashboard, and persist history.
+  * Default backups to original paths, make versioned copies an explicit choice.
+  * Preserve mounted-file edits and use normal application closure on busy quit.
+
+ -- DavidXile <244680153+DavidXile@users.noreply.github.com>  Wed, 25 Nov 2026 21:15:00 +0800
+
 twodrive (0.2.24+dev0.3.4-1) unstable; urgency=medium
 
   * Paint the Linux tray shadow with the popup content.
