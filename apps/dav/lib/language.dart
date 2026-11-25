@@ -387,6 +387,9 @@ const _english = <String, String>{
   '连接后自动挂载': 'Mount after connecting',
   '尚未挂载网盘，请在“连接”页点击对应网盘的“挂载”。': 'No mounted drives',
   '查看挂载组件安装说明': 'Mount setup instructions',
+  '当前网盘挂载缓存 · {arg0}': 'Current drive mount cache · {arg0}',
+  '只统计通过挂载读取或编辑的本机缓存；下载副本不计入。':
+      'Counts local cache read or edited through the mount; downloaded copies are excluded.',
   '挂载缓存 · {arg0}': 'Mount cache · {arg0}',
   '待处理或冲突：{arg0} 项。清理保留尚未上传的数据。':
       'Pending or conflicting items: {arg0}. Unuploaded data will be kept.',
