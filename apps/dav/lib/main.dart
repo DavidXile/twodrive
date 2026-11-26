@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'language.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 import 'client.dart';
 import 'workspace.dart';
+import 'workspace_viewport.dart';
 import 'server_window.dart';
 import 'platform_paths.dart';
 import 'app_theme.dart';
@@ -86,6 +88,10 @@ class DavApp extends StatelessWidget {
       title: server ? 'TDLink' : 'TwoDrive',
       debugShowCheckedModeBanner: false,
       theme: appTheme(),
+      builder:
+          desktop && !server && defaultTargetPlatform == TargetPlatform.windows
+          ? (context, child) => WorkspaceViewport(child: child!)
+          : null,
       home: server
           ? ServerWindow(client: client, desktop: desktop)
           : Workspace(client: client, desktop: desktop),

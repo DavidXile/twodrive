@@ -7,6 +7,7 @@ import 'package:twodrive_dav/status_tray.dart';
 import 'package:twodrive_dav/workspace.dart';
 import 'package:twodrive_dav/workspace_navigation.dart';
 import 'package:twodrive_dav/workspace_title_bar.dart';
+import 'package:twodrive_dav/workspace_viewport.dart';
 import 'package:twodrive_dav/tray_panel.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -33,6 +34,54 @@ class _ViewInterestClient extends StorageClient {
 }
 
 void main() {
+  testWidgets('large windows scale controls and preserve hit targets', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    var pressed = 0;
+    const control = ValueKey('scaled-control');
+    final filler = MaterialApp(
+      builder: (_, child) => WorkspaceViewport(child: child!),
+      home: Scaffold(
+        body: Align(
+          alignment: Alignment.bottomRight,
+          child: SizedBox(
+            key: control,
+            width: 120,
+            height: 48,
+            child: FilledButton(
+              onPressed: () => pressed++,
+              child: const Text('Action'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpWidget(filler);
+    expect(tester.getSize(find.byKey(control)), const Size(120, 48));
+    expect(tester.getRect(find.byKey(control)).width, 120);
+
+    tester.view.physicalSize = const Size(1920, 720);
+    await tester.pump();
+    expect(tester.getRect(find.byKey(control)).width, 120);
+
+    tester.view.physicalSize = const Size(1600, 900);
+    await tester.pump();
+    expect(tester.getRect(find.byKey(control)).width, closeTo(150, 0.1));
+    expect(tester.getRect(find.byKey(control)).height, closeTo(60, 0.1));
+    await tester.tap(find.text('Action'));
+    expect(pressed, 1);
+
+    tester.view.physicalSize = const Size(1280, 720);
+    await tester.pumpAndSettle();
+    expect(tester.getRect(find.byKey(control)).width, 120);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('application caption drives native window controls and drag', (
     tester,
   ) async {
