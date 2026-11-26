@@ -8,5 +8,8 @@ Linux additionally supports isolated FUSE mounting.
 Build, install, verification and platform limits are in
 [the desktop guide](../../doc/linux-dav-desktop.md).
 
+For Windows layout comparisons, see the
+[desktop UI screenshots](../../doc/assets/desktop-ui/README.md).
+
 Provider adapters and compatibility guarantees are described in the
 [boundary record](../../doc/provider-boundaries-2026-10-13.md).

@@ -31,3 +31,7 @@ The homepages reference the existing [status SVGs](../../packaging/icons/hicolor
 | [Error](../../packaging/icons/hicolor/scalable/emblems/emblem-twodrive-error.svg) | Error or conflict. |
 
 The [tray](../../scripts/twodrive-tray), [autostart entry](../../packaging/autostart/twodrive-tray.desktop), and [Settings launcher](../../packaging/applications/twodrive-settings.desktop) use the desktop theme's `folder-cloud` icon. The homepage cloud is a TwoDrive status emblem, not a separate application logo.
+
+## Desktop UI reference / 桌面界面参考
+
+Six Development workspace pages rendered with sample data. / 使用示例数据渲染的六个 Development 工作区页面。[Desktop UI reference / 桌面界面参考](desktop-ui/README.md)
