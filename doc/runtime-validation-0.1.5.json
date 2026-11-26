@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-15",
+  "version": "0.1.5",
+  "msix_version": "1.1.5.0",
+  "msix": {
+    "platform": "Windows 11 native",
+    "package_version": "1.1.5.0",
+    "signed": false,
+    "certificates_modified": false,
+    "checks": {
+      "installed_engine_sharing": true,
+      "install": true,
+      "uninstall": true,
+      "packaged_gui_and_engine_identity": true,
+      "dependency_registration_restored": true,
+      "gui_exit_releases_engine": true,
+      "managed_update_marker": true
+    },
+    "passed": true
+  },
+  "msix_sharing": {
+    "mode": "isolated desktop IPC and local QUIC",
+    "checks": {
+      "start_export_import_pair_download_upload": true,
+      "revoke_denies_new_requests_and_client_disconnect_keeps_hosting": true,
+      "same_engine_disconnect_preserves_hosting": true,
+      "explicit_replace_reauthorizes_and_same_scope_restart_retains_identity": true,
+      "changed_permissions_use_new_identity_and_enforce_readonly": true,
+      "quit_stops_hosting_and_releases_lock": true
+    },
+    "passed": true
+  },
+  "deb": {
+    "environment": "isolated Ubuntu Base 24.04 rootfs under WSL2/bubblewrap",
+    "package": "twodrive_0.2.14-2_amd64.deb",
+    "checks": {
+      "install_dependencies": true,
+      "metadata_and_upload_manifests": true,
+      "cli_smoke": true,
+      "gtk_settings_startup": true,
+      "installed_mock_fuse_io": true,
+      "remove": true
+    },
+    "live_onedrive": false,
+    "passed": true
+  },
+  "deb_source_commit": "ff8853db0cbaff9835b8827fc0b59d944e2a02fd",
+  "deb_sha256": "00eab1a0c41d02954406537b73495b748c0b42433686ce449aa9cc7c62a3926b",
+  "msix_sha256": "8a18e175db8b52d7ff711331ad47fe1d962c74e4e88139d6ad2e22a5fdbf4b1e",
+  "scope": "Local acceptance; final release artifacts are separately verified after CI. GUI activation uses the real installed context; IPC/QUIC uses the official package debug context. Deb data backend is disposable mock.",
+  "deb_rootfs": {
+    "filename": "ubuntu-base-24.04.5-base-amd64.tar.gz",
+    "sha256": "e77b6f10c2590cef872b33ee9f635a0e3fd1f57fb074c0e52b5c7f56147a0c86",
+    "source": "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/"
+  }
+}

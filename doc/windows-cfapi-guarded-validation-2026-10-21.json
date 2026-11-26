@@ -1,0 +1,27 @@
+{
+  "date_utc": "2026-10-21",
+  "host": "Windows 11 x64 build 26300",
+  "candidate_source_commit": "2979061a23850c60d826c6c50cfd86e66f7f4d90",
+  "executable_sha256": "75d2cc65c04659c49a305843915bfe93edee43130c1c8709e86b403148c59549",
+  "approval": "explicit one-time isolated guarded fixture registration",
+  "native_checks": [
+    "placeholder_metadata_no_hydration",
+    "native_read_chinese_long_path",
+    "pin_intent_and_release_guard",
+    "clean_release",
+    "offline_failure_and_retry",
+    "disconnect_reconnect_preserves_residency",
+    "dirty_release_refused_bytes_preserved",
+    "generated_root_unregistered"
+  ],
+  "passed": true,
+  "fetch_callbacks": 6,
+  "expected_injected_offline_failures": 2,
+  "post_unregister_hresult": "0x80070186",
+  "all_three_generated_files_full_bytes_verified_after_unregister": true,
+  "entire_dirty_file_preserved": true,
+  "generated_files_retained": true,
+  "real_cloud_tested": false,
+  "explorer_visual_acceptance": "not verified",
+  "production_engine_native_bridge": "not activated by this probe"
+}

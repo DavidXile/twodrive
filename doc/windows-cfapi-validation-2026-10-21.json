@@ -1,0 +1,53 @@
+{
+  "date": "2026-10-21",
+  "baseline_dev": "507fef1cb4e8ec1639d0c15e95401368f0415dfc",
+  "pr": "https://github.com/LumiaBlack51/twodrive/pull/39",
+  "os": {
+    "edition": "Windows 11",
+    "build": 26300,
+    "arch": "x64"
+  },
+  "rustc": "1.98.1",
+  "cfapi": {
+    "platform_build": 26100,
+    "integration": 1576
+  },
+  "local": {
+    "unit_tests": 6,
+    "clippy": "passed -D warnings",
+    "format": "passed",
+    "release_build": "passed",
+    "read_only_capabilities": "passed"
+  },
+  "native": {
+    "authorization": "explicit one-time generated-root registration approved",
+    "passed": true,
+    "checks": [
+      "placeholder_metadata_no_hydration",
+      "native_read_chinese_long_path",
+      "pin_intent_and_release_guard",
+      "clean_release",
+      "offline_failure_and_retry",
+      "disconnect_reconnect_preserves_residency",
+      "dirty_release_refused_bytes_preserved",
+      "generated_root_unregistered"
+    ],
+    "fetch_callbacks": 6,
+    "expected_failed_callbacks": 2,
+    "tested_executable_sha256": "a1592be1184e30db221d0b4688481025ce594ffa6e3abeae7df99b4c77a408f3",
+    "post_cleanup_query_hresult": "0x80070186",
+    "generated_files_retained": true
+  },
+  "privacy": {
+    "private_user_path_prefixes_in_remapped_executable": 0,
+    "private_paths_or_accounts_in_report": false
+  },
+  "unverified": [
+    "Explorer visuals/context menus/thumbnails/indexer/AV",
+    "whole-process or Windows restart recovery",
+    "persistent engine journal and writable mutation recovery",
+    "live cloud account/provider behavior",
+    "existing OneDrive/Google Drive directory/cache takeover"
+  ],
+  "production_mount_enabled": false
+}

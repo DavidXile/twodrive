@@ -1,0 +1,373 @@
+{
+  "date": "2026-10-11",
+  "source": {
+    "source_branch": "dev",
+    "source_head": "355287f8a6d60883a4df18056c9aab1d7f5f9aca",
+    "runtime_source": "c73fece6b8e9215b562ea88317a31f9f5723cf7e",
+    "ci_run": "https://github.com/LumiaBlack51/twodrive/actions/runs/37594655979",
+    "linux_artifact_id": 11470840928,
+    "artifact_sha256_verified": "8e5384bdf77fc312a259a81e90d4b53cd0ad5d2defc59ff3db4d580807b36b24",
+    "binary_sha256": "8e2b61cd015ffd1ed4c5bc5242edc37642cb44915926e9f51f647a389d41f4e5",
+    "binary_version": "twodrive-dev 0.1.0"
+  },
+  "same_host_prerequisites": [
+    {
+      "command": "scripts/smoke.py --network lan --mount --read-only",
+      "result": "passed",
+      "scope": "same-host QUIC, real read-only FUSE mount, server rejects PUT"
+    },
+    {
+      "command": "scripts/smoke.py --network relay-only",
+      "result": "passed",
+      "bytes_compared": 2097105,
+      "scope": "two processes on this host via real public relay; GET/PUT/MOVE/DELETE; transport=relay verified"
+    }
+  ],
+  "pairing": {
+    "local_checks": [
+      "representation roundtrip preserves successful pairing",
+      "successful pairing consumes server invitation",
+      "read-only LAN QUIC download bytes match",
+      "consumed invitation rejects a different device identity",
+      "same device reconnects without invitation",
+      "revocation denies new read on existing connection"
+    ],
+    "source_regressions": {
+      "command": "cargo test --locked --offline --features mount --test integration pairing -- --nocapture",
+      "passed": [
+        "single_use_expiry_concurrent_pairing_and_private_state",
+        "real_quic_pairing_streaming_webdav_and_revocation_on_existing_connection"
+      ],
+      "failed": 0,
+      "scope": "current dev source; synthetic local state; real same-host QUIC"
+    },
+    "real_windows_initial_pairing": "successful",
+    "real_windows_new_identity_replay": {
+      "result": "passed",
+      "method": "fresh temporary client identity attempted original invitation while still within its validity period",
+      "observed": "server authorization denied",
+      "temporary_state": "removed"
+    },
+    "invitation_local_copies": "removed; not retained in report",
+    "presentation_design_constraints": [
+      "clipboard and QR must decode to the existing Invitation fields",
+      "keep server identity and connection hints, 256-bit random secret, version and expiry",
+      "reuse existing atomic invitation consumption and public-key-based authorization",
+      "never use invitation string as a persistent reconnect credential",
+      "new presentation needs parser regressions and one connection smoke; this assessment does not cover future protocol redesign"
+    ],
+    "disclosure_boundary": "Valid unconsumed invitations can be redeemed by their holder; resulting unwanted device authorization must be revoked. Consumed or expired invitations do not authorize new devices."
+  },
+  "earlier_real_two_device_checks": {
+    "network_condition": "User reported hotspot disconnect and automatic campus-network fallback after these checks. Byte-integrity and observed relay results remain valid; fixed hotspot/campus conditions for this earlier interval are unconfirmed.",
+    "initial_selected_transport": "relay",
+    "metadata_http_status": 207,
+    "small_file_integrity": "passed: one existing small regular file, selected by size; names and content omitted",
+    "local_read_only_mount_enforcement": {
+      "kernel_errno": "EROFS",
+      "remote_put_http_status": 201,
+      "remote_policy": "writable",
+      "remote_owned_probe_absent_http_status": 404
+    },
+    "large_file_checks": [
+      {
+        "check": "large live download and real FUSE read match",
+        "remote": {
+          "bytes": 67108864,
+          "sha256": "60828475a1cc8e577251030416fd81a4d632b69c4a6fc59bd72cc4df8bce7430",
+          "seconds": 86.825,
+          "mib_per_second": 0.737
+        },
+        "fuse": {
+          "bytes": 67108864,
+          "sha256": "60828475a1cc8e577251030416fd81a4d632b69c4a6fc59bd72cc4df8bce7430",
+          "seconds": 83.866,
+          "mib_per_second": 0.763
+        },
+        "source_name": "omitted"
+      },
+      {
+        "check": "new disposable PUT/GET/MOVE/GET/DELETE",
+        "bytes": 16777216,
+        "expected_sha256": "341aacac661ccb210720bedaa9ead5d668fe5ea41a73532fc147c71e34040df1",
+        "upload_seconds": 32.248,
+        "upload_mib_per_second": 0.496,
+        "readback": {
+          "bytes": 16777216,
+          "sha256": "341aacac661ccb210720bedaa9ead5d668fe5ea41a73532fc147c71e34040df1",
+          "seconds": 25.391,
+          "mib_per_second": 0.63
+        },
+        "moved_readback": {
+          "bytes": 16777216,
+          "sha256": "341aacac661ccb210720bedaa9ead5d668fe5ea41a73532fc147c71e34040df1",
+          "seconds": 56.44,
+          "mib_per_second": 0.283
+        }
+      }
+    ],
+    "checksum_evidence": "Largest synthetic sample hash also matched Windows-produced checksum metadata; user confirmed source hashes and successful upload records. No remote shell or independent Windows hash command was executed by this Linux client.",
+    "path_observation": {
+      "addresses_and_credentials": "omitted",
+      "any_direct_path_available": false,
+      "authenticated_options_requests": 15,
+      "direct_udp_selected": false,
+      "seconds": 48.199569902,
+      "selected_transports_observed": [
+        "relay"
+      ],
+      "network_condition_correction": "User reported hotspot disconnect and automatic campus-network fallback after these checks. Byte-integrity and observed relay results remain valid; fixed hotspot/campus conditions for this earlier interval are unconfirmed."
+    }
+  },
+  "confirmed_original_windows_cleanup": {
+    "user_confirmed_disposable_entries": 7,
+    "deleted_entries": 7,
+    "deleted_file_bytes": 134218379,
+    "remaining_shared_entries": 0,
+    "server_identity_and_pairing_state": "preserved per user instruction; not exported by share",
+    "share_root_directory": "left empty; root deletion not part of this protocol"
+  },
+  "monitored_hotspot_repeat": {
+    "date": "2026-10-11",
+    "scope": "Real Windows campus-network server and Linux current Wi-Fi, identified as phone hotspot by user; monitored repeat after reported automatic campus fallback.",
+    "network_guard": {
+      "interval_seconds": 0.5,
+      "samples": 420,
+      "changes_at_seconds": [],
+      "initial_wifi_connected": true,
+      "monitored": [
+        "active Wi-Fi connection identifier and link state",
+        "all route tables and policy routing rules"
+      ],
+      "private_network_values": "observed in memory only; omitted from report",
+      "unchanged_during_observed_interval": true
+    },
+    "checks": [
+      {
+        "check": "PUT 64 MiB / GET full hash / MOVE / GET 1 MiB Range",
+        "bytes": 67108864,
+        "expected_sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6",
+        "upload_seconds": 68.943,
+        "upload_mib_per_second": 0.928,
+        "readback": {
+          "bytes": 67108864,
+          "sha256": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6",
+          "http_status": 200,
+          "seconds": 89.987,
+          "mib_per_second": 0.711
+        },
+        "moved_range_readback": {
+          "bytes": 1048576,
+          "sha256": "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83",
+          "http_status": 206,
+          "seconds": 2.358,
+          "mib_per_second": 0.424
+        }
+      }
+    ],
+    "cleanup": {
+      "shared_entries_remaining": 0,
+      "owned_remote_names_checked": 2,
+      "owned_remote_files_absent": true,
+      "private_server_state_preserved": true,
+      "gateway_stopped": true,
+      "root_check_scope": "PROPFIND-visible children; reserved atomic-upload staging paths are hidden by server listing and cleaned by AtomicFile Drop; no Windows shell inspection executed"
+    },
+    "http_socket_timeout_seconds": 240,
+    "request_body_send_observations": [
+      {
+        "bytes": 67108864,
+        "seconds": 64.587
+      }
+    ],
+    "path_observation": {
+      "addresses_and_credentials": "omitted",
+      "any_direct_path_available": false,
+      "authenticated_options_requests": 15,
+      "direct_udp_selected": false,
+      "scope": "Real paired Windows server; current monitored Wi-Fi interval; no invitation reused",
+      "seconds": 47.294338762,
+      "selected_transports_observed": [
+        "relay"
+      ]
+    },
+    "elapsed_seconds": 226.847
+  },
+  "local_cleanup": {
+    "status": "complete",
+    "removed": [
+      "Downloaded Linux artifact archive",
+      "Standalone test release and diagnostic executables",
+      "Temporary Python/Rust harnesses and private gateway logs",
+      "FUSE hydration cache and test mount state",
+      "Redundant temporary reports and empty download/mount directories"
+    ],
+    "before": {
+      "files": 29,
+      "logical_bytes": 136872268,
+      "allocated_bytes": 136351744
+    },
+    "after": {
+      "files": 5,
+      "logical_bytes": 594,
+      "allocated_bytes": 12288
+    },
+    "freed_logical_bytes": 136871674,
+    "kept": "Only existing client device identity, paired remote address, loopback gateway credentials, and zero-length state locks; all private file bytes verified unchanged",
+    "kept_file_count": 5,
+    "test_mount_active": false,
+    "test_executables_running": 0,
+    "existing_stable_service": {
+      "MainPID": "2404",
+      "NRestarts": "0",
+      "ActiveState": "active"
+    },
+    "repository_record_bytes_excluded_from_measurement": 14835
+  },
+  "verification_limits": [
+    "Relay data access is verified when reported; direct UDP selection or hole punching is not established.",
+    "Earlier network intervals cannot establish continuous hotspot/campus separation after reported automatic campus fallback.",
+    "Current Wi-Fi identity as phone hotspot and Windows campus attachment are user-confirmed; monitoring detects local Wi-Fi/profile and route changes, not remote routing or brief changes between samples.",
+    "FlClash TUN and selected Hysteria2 VPS proxy policy are confirmed in current route configuration; measured peer path uses NA-west relay. This is not a proxy-bypassed native NAT hole-punching test.",
+    "No real OneDrive end-to-end test, clipboard import UI, or QR UI was exercised.",
+    "Server private state was preserved; the shared root is the only remotely accessible deletion scope."
+  ],
+  "tun_interface_connected": true,
+  "production_code_changed": false,
+  "commit_or_release": "none created for this verification",
+  "sensitive_data": "No invitation secret, credentials, identity private keys, network profile names, remote endpoint IPs, or full shared-file listing retained.",
+  "monitored_hotspot_repeat_initial_timeout": {
+    "date": "2026-10-11",
+    "scope": "Real Windows campus-network server and Linux current Wi-Fi, identified as phone hotspot by user; monitored repeat after reported automatic campus fallback.",
+    "network_guard": {
+      "interval_seconds": 0.5,
+      "samples": 189,
+      "changes_at_seconds": [],
+      "initial_wifi_connected": true,
+      "monitored": [
+        "active Wi-Fi connection identifier and link state",
+        "all route tables and policy routing rules"
+      ],
+      "private_network_values": "observed in memory only; omitted from report",
+      "unchanged_during_observed_interval": true
+    },
+    "checks": [],
+    "cleanup": {
+      "shared_entries_remaining": 0,
+      "owned_remote_names_checked": 1,
+      "owned_remote_files_absent": true,
+      "private_server_state_preserved": true,
+      "gateway_stopped": true
+    },
+    "path_observation": {
+      "addresses_and_credentials": "omitted",
+      "any_direct_path_available": false,
+      "authenticated_options_requests": 15,
+      "direct_udp_selected": false,
+      "scope": "Real paired Windows server; current monitored Wi-Fi interval; no invitation reused",
+      "seconds": 47.088028995,
+      "selected_transports_observed": [
+        "relay"
+      ]
+    },
+    "failure": "URLError: <urlopen error timed out>",
+    "elapsed_seconds": 101.803,
+    "http_socket_timeout_seconds": 40
+  },
+  "temporary_harness_fixes": [
+    {
+      "incident": "TD-20261011-01",
+      "old_result": "accepted authentication then empty HTTP response",
+      "fix": "Do not finish QUIC send stream before reading HTTP response; default Hyper half-close policy retained",
+      "new_result": "15 authenticated OPTIONS passed in real-device observation"
+    },
+    {
+      "incident": "TD-20261011-02",
+      "old_result": "URLError timed out with 40-second request-body send deadline",
+      "fix": "240-second temporary test budget; same 64 MiB bytes and production client",
+      "new_result": "body send took 64.587 seconds; full readback SHA-256 matched; move/range/delete passed"
+    }
+  ],
+  "route_inspection": {
+    "path_observation": {
+      "addresses_and_credentials": "omitted",
+      "any_direct_path_available": false,
+      "authenticated_options_requests": 15,
+      "direct_udp_selected": false,
+      "scope": "Read-only real-device route observation after monitored transfer; no additional file payloads; current proxy routing configuration inspected locally",
+      "seconds": 45.09457706,
+      "selected_path_rtt_milliseconds": [
+        453.677375,
+        483.71940800000004,
+        508.771883,
+        508.471185,
+        496.215255,
+        502.221535,
+        518.5769409999999,
+        521.130719,
+        533.47965,
+        521.492933,
+        504.308532,
+        485.217151,
+        492.383327,
+        481.654292,
+        464.719696
+      ],
+      "selected_remote_relay_urls": [
+        "https://usw1-1.relay.n0.iroh.link./"
+      ],
+      "selected_transports_observed": [
+        "relay"
+      ],
+      "rtt_summary_milliseconds": {
+        "min": 453.7,
+        "median": 502.2,
+        "max": 533.5
+      }
+    },
+    "physical_uplink": "Wi-Fi; user-confirmed phone hotspot",
+    "kernel_ipv4_route": "Higher-priority policy routing sends ordinary public IPv4 and relay fake-IP destination into FlClash TUN, table 2022; main table still has Wi-Fi hotspot default",
+    "proxy_mode": "rule",
+    "dns_mode": "fake-ip",
+    "relay_rule_provider_checks": {
+      "relay_domain": "usw1-1.relay.n0.iroh.link",
+      "domain_provider_matches": {
+        "cn_domain": false,
+        "onedrive_domain": false,
+        "private_domain": false
+      },
+      "ip_provider_matches": {
+        "cn_ip": {
+          "5.78.69.43": false
+        },
+        "private_ip": {
+          "5.78.69.43": false
+        }
+      },
+      "real_relay_A_records": [
+        "5.78.69.43"
+      ]
+    },
+    "fallback_rule": "MATCH,PROXY",
+    "saved_active_profile_selection": {
+      "PROXY": "HY2-VPS"
+    },
+    "selected_proxy_type": "hysteria2",
+    "logical_path_from_current_config": [
+      "Linux TwoDrive",
+      "FlClash TUN",
+      "phone-hotspot physical uplink",
+      "selected VPS proxy",
+      "NA-west iroh relay",
+      "Windows campus-network server"
+    ],
+    "relay_region_evidence": "iroh 1.3.0 defaults.rs defines usw1-1.relay.n0.iroh.link. as NA_WEST_RELAY_HOSTNAME; live selected path matches this URL",
+    "observation_limits": [
+      "Proxy controller API is disabled; outbound policy is inferred from current on-disk configuration, saved active-profile selection, all applicable rule-provider exclusions, and kernel routing.",
+      "No ICMP traceroute or packet capture; physical carrier transit hops are not enumerated.",
+      "Windows outbound proxy configuration was not inspected."
+    ],
+    "changes_to_network_configuration": "none",
+    "private_routing_values": "Physical private addresses, network profile names and private proxy endpoint omitted from this repository record."
+  }
+}

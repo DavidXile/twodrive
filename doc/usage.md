@@ -42,6 +42,8 @@ twodrive release /Documents/report.pdf
 
 Pinning a folder applies to existing descendants. Locally created descendants can inherit that policy; **newly discovered cloud files remain online-only**, even beneath an already pinned folder. Folder emblems summarize descendants, not guaranteed offline availability of every child. Confirm downloads before going offline; `twodrive status-path /Documents/report.pdf` reports effective pin state.
 
+Selecting **Always keep** for an online-only file immediately shows **cloud + pin** in Nautilus. The two emblems remain while the pinned content waits for download or is downloading; after the complete cache is published, only **pin** remains. Folder emblems also reflect pinned descendants waiting for download; errors and pending uploads retain their existing indicators.
+
 **During download:** releasing a file cancels the download and removes partial data. A folder release includes descendants. Old handles cannot restart the transfer; an explicit new open can download again. A blocked network request must return or time out before cancellation finishes.
 
 **During writing/upload:** the release request is persisted and shown as cloud + syncing. Cache is removed after successful upload and closure of open handles. Failed/conflicting uploads retain data. Automatic pruning still protects pinned content; Always Keep cancels a pending release.
@@ -76,7 +78,9 @@ Settings is a **GTK 4 overview with an upload source chooser** for token-file st
 
 TwoDrive is experimental, not a backup system. Keep independent copies. Local recovery and conflict handling reduce specific risks; they do not guarantee against data loss.
 
-On an ETag conflict, TwoDrive attempts to retain the cloud version under its original name and upload the local edit as a `TwoDrive conflict` copy. This is not document merging. Existing duplicate cloud directories need separate reconciliation. Unsupported OneDrive filenames, including `:` or `?`, can block uploads while retaining local content; inspect the error and rename appropriately.
+Renaming during an upload keeps the local identity and replays the latest cloud destination. Atomic saves into a renamed file retain that pending move. Names containing unsupported characters stay local until corrected; rename and folder creation validate names before contacting OneDrive.
+
+On an ETag conflict, TwoDrive attempts to retain the cloud version under its original name and upload the local edit as a `TwoDrive conflict` copy. If an upload returns a data-endpoint 404 and a separate lookup confirms that its bound cloud ID is absent, TwoDrive also preserves the local edit as a conflict copy. It does not recreate the original name or overwrite a replacement at that name. Once the copy is acknowledged and recorded, only the matching old generation is retired; a concurrent newer save remains pending. This is not document merging. Existing duplicate cloud directories need separate reconciliation. Unsupported OneDrive filenames, including `:` or `?`, can block uploads while retaining local content; inspect the error and rename appropriately.
 
 Tokens are plaintext JSON with mode `0600`; Secret Service is not implemented. Do not share tokens, OAuth callback URLs, or upload-session URLs. `twodrive logout` removes the local token file only: stop the daemon first, since a running process can retain tokens in memory. It does not revoke account-side consent.
 
@@ -84,15 +88,38 @@ The mount's recovery/metadata loop waits 60 seconds between passes and uses `ac_
 
 File and directory rwx permissions are stored locally and enforced on this mount, including executable files and `chmod`; they survive remounts but do not sync to OneDrive. Cloud-only imports and existing entries default to 0644 (files) or 0755 (directories). Full POSIX ownership, special mode bits, and directory timestamp semantics are not preserved; the mount root mode remains fixed. The client operates against the signed-in user's `/me/drive`; do not assume multi-account management or arbitrary SharePoint library support.
 
+## Filename upload exclusions
+
+Office owner files whose names start with `~$` stay local in FUSE. Applications can create, read, write, lock and delete them normally; they do not create upload activity or cloud retry jobs. Local writes and pending uploads are not network transfers: the tray shows uploading only while the backend transfer runs, and byte progress comes from that transfer.
+
+Add optional filename rules to `~/.config/twodrive/config.toml`:
+
+```toml
+[sync]
+exclude_name_regexes = ['(?i)\.bak$', '^scratch-[0-9]+\.txt$']
+```
+
+These are Rust regular expressions, matched against the filename (not its full path). Matching searches anywhere unless anchored with `^`/`$`, and is case sensitive unless `(?i)` is used. TOML single quotes preserve the backslash. Lookaround and backreferences are unsupported; invalid or oversized patterns reject configuration loading. The default custom list is empty; the built-in `~$` rule always applies. Close mounted files before restarting TwoDrive to apply changes.
+
+The same regexes filter known-folder scans, events and saved upload jobs. Existing exact-name/suffix rules remain specific to known folders; those scanners also prune matching ancestor names. FUSE regexes apply to files, not directory trees. Excluded local bytes remain durable across restart and are protected from cache release. Renaming a temporary file to a nonexcluded final name, including atomic replacement of an existing document, restores normal upload after active writers close. Removing a custom rule restores upload on restart. Previously uploaded cloud copies are not removed by exclusion; explicitly deleting a cloud-backed file still uses the normal cloud deletion queue. Reading existing cloud files still works; this is an upload exclusion, not selective download or a remote cleanup command. A missing local-only cache is reported for recovery rather than replaced with older cloud bytes.
+
 ## Optional known-folder uploads
 
 Known-folder handling is **disabled by default**, separate from the read/write mount, and supports `upload_only`. Configured local folders upload directly without an extra TwoDrive content cache. Local source deletion does not delete the cloud copy; deletion propagation is ignored even if requested in config.
 
-Read [config.example.toml](../config.example.toml) before enabling it. The example disables startup/rescans (`startup_scan = false`, `rescan_interval = "0s"`); generated defaults use `true` and `"15m"`. The watcher baselines existing files, then handles additions/renames and configured scans. It is not bidirectional backup or a promise to upload all existing files immediately. Temporary/hidden files and symlinks are skipped. Keep sources until uploads succeed.
+Read [config.example.toml](../config.example.toml) before enabling it. The example disables startup/rescans (`startup_scan = false`, `rescan_interval = "0s"`); generated defaults use `true` and `"15m"`. The watcher baselines existing files, then handles additions, content changes, renames and configured scans. It is not bidirectional backup or a promise to upload all existing files immediately. Temporary/hidden files and symlinks are skipped. Keep sources until uploads succeed.
 
 Local sources are explicit paths: changing the desktop language or renaming a directory does not change an upload mapping. Open `twodrive settings` to inspect sources and choose a replacement, or use `twodrive known-folders status` for JSON diagnostics. Missing sources and skipped symbolic links are reported alongside differences from the system's XDG special directories. These differences can also be intentional custom mappings. A system special directory reset to `$HOME` must be repaired separately; TwoDrive does not rewrite `user-dirs.dirs`, move local contents, or migrate links from another OneDrive client.
 
 Use the zero-based mapping index from the diagnostics to update one source, for example `twodrive known-folders set-source 1 ~/Downloads`. The command validates the directory, preserves cloud destinations and other settings, and saves atomically. Restart TwoDrive after saving (close files on the mount first; a service installation can use `systemctl --user restart twodrive-daemon.service`). Until restart the daemon retains its previous mapping. Sources missing at startup also require a restart after being restored. The home directory, filesystem root, and sources inside or containing the TwoDrive mount are rejected to avoid uploading the whole home or feeding the cloud mount back into uploads. Existing configuration files are diagnosed without automatically changing paths. See [TD-20261006-01](incidents.md#td-20261006-01系统语言切换后特殊目录与上传来源错位) for evidence and verification limits.
+
+`exclude_names` defaults to `["node_modules"]`. Names and existing suffix rules apply to every component below a configured source, for scans, file events and persisted work. To exclude a whole development tree, add its directory name. Changing exclusions takes effect after restart; excluded local bookkeeping is retired without deleting source files or existing cloud copies.
+
+Editor data changes and atomic saves share the configured debounce (default 5 seconds): consecutive saves coalesce into the latest source generation, with a maximum wait of `max(debounce, 30 seconds)` during continuous activity. Local saving never waits for cloud admission. First uploads and retries of an already admitted generation do not consume churn budgets. Changed generations have a sliding limit of 25 per file in 20 seconds. Ordinary first edits of separate files do not consume the project budget; repeated changes have a separate limit of 180 per detected hot project. Deferred work remains durable and retries the latest source, without reducing configured upload concurrency or capping uploads per batch. Set either `max_*_uploads_per_window` to 0 to disable that budget; `upload_rate_window` controls the shared window.
+
+Normal events only update in-memory counters. Project discovery runs only after file churn reaches its limit or aggregate repeated changes reach the project threshold. It checks for the nearest `.git`, `package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `pom.xml`, `build.gradle` or `build.gradle.kts`, at most eight directories upward and never above the configured source. Positive and negative results are cached for the window. At most eight uncached ancestor searches run per window (at most 512 marker metadata checks); additional unknown roots retain file protection until a later window. There is no background project search. Unrecognized projects retain file protection only. Optional `upload_rate_roots` (absolute or `~/` paths) override discovery, with the most specific matching root taking priority. Budgets and discovery caches reset on daemon restart; they protect resource use rather than enforce a durable quota.
+
+Known-folder state now uses `known-folders-state.sqlite3` in the data directory. A legacy `known-folders-state.json` is imported in one transaction and retained as a rollback snapshot; subsequent progress is stored in SQLite, so that JSON is no longer a live queue. Preserve the SQLite state, legacy snapshot and existing recovery state during backup or rollback. Completed uploads update only their own snapshot and queue row. No pending source content is copied into this database.
 
 ## Paths and diagnostics
 

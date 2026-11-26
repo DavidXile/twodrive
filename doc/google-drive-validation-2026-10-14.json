@@ -1,0 +1,24 @@
+{
+  "environment": "live Google Drive",
+  "checks": {
+    "connect": true,
+    "upload": true,
+    "download_sha256": "31a1f9dea0169551092d05e8bf4a446228c8c3eb4c9b713c66adcb7fd53c89be",
+    "bytes": 262144,
+    "create_only": true,
+    "overwrite": true,
+    "stale_version_rejected": true,
+    "move_and_rename": true,
+    "unicode_name": true,
+    "fuse_read": true,
+    "fuse_write_cloud_roundtrip": true,
+    "folder_backup_create_update": true,
+    "backup_local_delete_does_not_delete_cloud": true,
+    "trash_delete": true,
+    "owned_remote_folder_trashed": true
+  },
+  "boundaries": [
+    "Uses only its newly created disposable remote folder; delete moves it to trash.",
+    "Does not prove Google editor byte editing, shared drives, Windows or every network condition."
+  ]
+}

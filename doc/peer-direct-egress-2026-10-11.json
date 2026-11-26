@@ -1,0 +1,147 @@
+{
+  "date": "2026-10-11",
+  "mode": "direct (fallback disabled)",
+  "environment": "Linux physical Wi-Fi to phone hotspot, FlClash TUN remains enabled; existing Windows campus-network server unchanged",
+  "payload_bytes": 2097152,
+  "payload_sha256": "91d3beb88a9b2f778a6c44a1c53b63d3c79931845a9aef84b3fb414610bd1938",
+  "checks": {
+    "full_sha256_match": true,
+    "move_and_range": true,
+    "both_owned_paths_404": true,
+    "all_observed_public_tcp_bound_to_wifi": true
+  },
+  "upload_seconds": 7.858,
+  "download_seconds": 7.21,
+  "delete_statuses": [
+    404,
+    204
+  ],
+  "final_visible_share_entries": 0,
+  "route_samples": 22,
+  "route_unchanged": true,
+  "tcp_egress": [
+    "physical Wi-Fi wlo1 -> 49.13.207.244",
+    "physical Wi-Fi wlo1 -> 5.223.65.62",
+    "physical Wi-Fi wlo1 -> 5.78.69.43"
+  ],
+  "verification_limits": [
+    "Local bypass only; Windows proxy settings not inspected or changed",
+    "Connection still uses encrypted iroh relay; UDP peer direct path not established by this test",
+    "Periodic socket and network sampling cannot exclude events between samples",
+    "No Windows native compilation/TUN bypass test or real OneDrive test",
+    "Peer transport was printed at pairing only; socket sampling did not continuously observe QUIC path selection."
+  ],
+  "verification_commands": [
+    "cargo fmt --all -- --check",
+    "cargo test --offline --locked --features mount (13 unit + 9 integration passed)",
+    "cargo clippy --offline --all-targets --locked --features mount -- -D warnings",
+    "cargo build --offline --locked --features mount",
+    "cargo test --offline --locked (13 unit + 9 integration passed)",
+    "cargo clippy --offline --all-targets --locked -- -D warnings",
+    "git diff --check"
+  ],
+  "pre_nxdomain_fix_default_auto_repeat": {
+    "mode": "auto (CLI default, no route flag)",
+    "checks": {
+      "full_sha256_match": true,
+      "move_and_range": true,
+      "both_owned_paths_404": true,
+      "all_observed_public_tcp_bound_to_wifi": true,
+      "no_fallback_notice": false
+    },
+    "payload_bytes": 2097152,
+    "payload_sha256": "91d3beb88a9b2f778a6c44a1c53b63d3c79931845a9aef84b3fb414610bd1938",
+    "upload_seconds": 5.259,
+    "download_seconds": 6.245,
+    "delete_statuses": [
+      404,
+      204
+    ],
+    "final_visible_share_entries": 0,
+    "route_samples": 19,
+    "route_unchanged": true,
+    "public_tcp_destinations": [
+      "49.13.207.244",
+      "5.223.65.62",
+      "5.78.69.43"
+    ],
+    "exit_code": 0,
+    "network_messages": [
+      "network: route=physical interface=wlo1 fallback=reported-system/proxy",
+      "network: route=system/proxy fallback; component=DNS TXT; physical connection failed",
+      "network: route=system/proxy fallback; component=DNS TXT; physical connection failed",
+      "network: route=system/proxy fallback; component=DNS TXT; physical connection failed",
+      "network: route=system/proxy fallback; component=DNS TXT; physical connection failed",
+      "network: route=system/proxy fallback; component=DNS TXT; physical connection failed",
+      "Selected path: relay:https://usw1-1.relay.n0.iroh.link./ RTT: 952.5 ms",
+      "network: route=system/proxy fallback; component=DNS TXT; physical connection failed",
+      "network: route=system/proxy fallback; component=DNS TXT; physical connection failed"
+    ]
+  },
+  "final_default_auto_repeat": {
+    "mode": "auto (CLI default, no route flag), after negative-DNS classification fix",
+    "checks": {
+      "full_sha256_match": true,
+      "move_and_range": true,
+      "both_owned_paths_404": true,
+      "all_observed_public_tcp_bound_to_wifi": true,
+      "no_fallback_notice": true
+    },
+    "payload_bytes": 2097152,
+    "payload_sha256": "91d3beb88a9b2f778a6c44a1c53b63d3c79931845a9aef84b3fb414610bd1938",
+    "upload_seconds": 48.606,
+    "download_seconds": 9.15,
+    "delete_statuses": [
+      404,
+      204
+    ],
+    "final_visible_share_entries": 0,
+    "route_samples": 61,
+    "route_unchanged": true,
+    "public_tcp_destinations": [
+      "49.13.207.244",
+      "5.223.65.62",
+      "5.78.69.43"
+    ],
+    "exit_code": 0,
+    "network_messages": [
+      "network: route=physical interface=wlo1 fallback=reported-system/proxy",
+      "Selected path: relay:https://usw1-1.relay.n0.iroh.link./ RTT: 760.9 ms"
+    ]
+  },
+  "negative_dns_regression": {
+    "before_fix": "valid_nxdomain_is_not_a_physical_route_failure failed: DNS response unusable",
+    "after_fix": "passed; no-SOA and zero-MINIMUM TTL remain zero; SERVFAIL and mismatched question/transaction fail",
+    "live_probe": "two public recursive servers returned NXDOMAIN through physical source; counterpart TXT absence reason not established"
+  },
+  "performance_limit": "No speedup claim: final 2 MiB upload took 48.606 s, versus 5.259 s before the DNS classification fix; these separate, uncontrolled timing samples do not establish cause.",
+  "remaining_windows_compatibility": "Existing Windows binary interoperated with the new Linux endpoint without another invite; Windows automatic-bypass code was not compiled or run natively.",
+  "cleanup": {
+    "remote_owned_test_files_deleted": true,
+    "remote_final_visible_entries": 0,
+    "remote_private_identity_and_grants": "preserved; no Windows shell access",
+    "local_test_client_processes_remaining": 0,
+    "local_client_state_bytes": 594,
+    "local_client_state_contents": "device identity, paired remote, private credentials and lock files only",
+    "local_experiment_build_cache": "cargo clean removed 15997 files, 11.7 GiB; includes pre-existing experiment cache",
+    "stable_daemon": {
+      "active": true,
+      "pid": 2404,
+      "restarts": 0
+    },
+    "preserved": "source changes, sanitized reports and paired state; no global proxy/routing changes"
+  },
+  "implementation": {
+    "base_commit": "355287f8a6d60883a4df18056c9aab1d7f5f9aca",
+    "branch": "dev",
+    "delivery": "uncommitted worktree; no release or Windows binary replacement",
+    "source_sha256": {
+      "src/network.rs": "763a2b32db103ffd18f71cb84c81ebe32e29836948eb2cd527926135a21c8d17",
+      "src/network/dns.rs": "44fc632167177f012820a6d619c38e27c9cf6e207db26cebe63e60681e8367bc",
+      "src/network/lookup.rs": "da18c10628913be53f26c1bec8227f9d7b2c4bb68f17f20632c82c72c08a1900",
+      "src/network/proxy.rs": "047b463a5bed9f318258f66eed8fedb1100aa1bd115aff229519d3212bec18a9",
+      "src/peer.rs": "7a66ca3da146699fc0d41a9d6322e5adfd3fbb962c5e420de033adaedf61cbaa",
+      "src/main.rs": "cceeddd79116e58d258941f3da88bdaaa926f5b4d288dadce96c466bfffc339d"
+    }
+  }
+}

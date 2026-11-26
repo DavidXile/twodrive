@@ -8,12 +8,40 @@ pub trait CloudBackend: Send + Sync + 'static {
         crate::onedrive::is_conflict_error(error)
     }
 
+    /// A missing data endpoint can require reconciliation of a bound upload.
+    /// Authentication failures must not be mistaken for remote deletions.
+    fn is_not_found_error(&self, error: &anyhow::Error) -> bool {
+        error
+            .downcast_ref::<crate::diagnostics::RequestFailure>()
+            .is_some_and(|failure| {
+                failure.status == 404
+                    && failure.operation == crate::diagnostics::RequestOperation::Graph
+            })
+    }
+
+    /// Providers without a reliable delta feed refresh complete shallow directories.
+    /// A failed or partial listing must return Err, never a deletion snapshot.
+    fn uses_directory_metadata(&self) -> bool {
+        false
+    }
+    fn directory_metadata(&self, _path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
+        anyhow::bail!("shallow directory metadata unavailable")
+    }
+
     fn list_all(&self) -> anyhow::Result<Vec<MetadataEntry>>;
     fn get_metadata(&self, remote_id: &str) -> anyhow::Result<Option<MetadataEntry>> {
         Ok(self
             .list_all()?
             .into_iter()
             .find(|entry| entry.remote_id == remote_id))
+    }
+    /// Revalidate a known download. Return canonical metadata if its version changed.
+    fn metadata_for_download(
+        &self,
+        remote_id: &str,
+        _known: &MetadataEntry,
+    ) -> anyhow::Result<Option<MetadataEntry>> {
+        self.get_metadata(remote_id)
     }
     fn get_metadata_by_path(&self, path: &str) -> anyhow::Result<Option<MetadataEntry>> {
         let path = normalize_cloud_path(path);

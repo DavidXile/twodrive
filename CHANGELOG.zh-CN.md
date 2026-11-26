@@ -4,6 +4,10 @@
 
 本页整理自原 README。发布资产和验证说明保留在 Releases；[debian/changelog](debian/changelog)保留软件包历史。以下描述的是发布时的变化，不代表新的测试结果或当前行为保证。
 
+## Development 0.1.3 — 云端删除受阻状态
+
+同步稳定版 0.2.14 的诊断与持久退避，以及此前的本地 unlink 修复。Linux 挂载状态区分本地已删除与云端删除待确认/被拒绝，并提供重试操作。桌面文件页直接删除仍同步返回结果；未改变权限或删除目标，原对象访问限制仍未定位。
+
 ## 0.2.18 — 旧缓存回收与自动保留期限
 
 原子保存替换和干净云端版本失效时，将旧缓存持久化登记为待回收。读写句柄、上传声明及待删除任务仍引用时延后回收；不扫描删除来源不明的缓存或恢复材料。后台维护现在执行 `cache.retain_for`（默认 30 天），并保护固定、处理中及最近访问的内容。
@@ -33,6 +37,14 @@
 ## 0.2.12 — 等待下载反馈
 
 Nautilus 在申请固定/下载后立即显示等待状态，刷新和文件对象重建后仍保留反馈，失败后允许重试。
+
+## Development 0.1.2 — 云账号与托盘定位
+
+接入 Google Drive 桌面登录与普通文件读写、条件覆盖、文件夹备份和 Linux FUSE。连接页支持在线添加/管理非活动的 WebDAV/NAS、PC/NAS 共享、Google Drive 和 OneDrive 配置；保存失败保留原列表。设备共享支持主动开启的签名局域网发现、可信邀请与 QUIC 配对。
+
+GNOME/Zorin 托盘使用真实图标边界定位，同时支持 X11 和原生 Wayland，随包提供 TwoDrive 专用组件；首次安装可能须下次桌面登录加载。Linux/Windows 包附安装器和[提供者、登录、上传及配套组件规范](doc/provider-integration-spec.md)。Google 在线文档仍以网页入口展示；其他 Wayland compositor、组织/共享盘及任意跨公网 NAT 打洞尚未验收。
+
+详情：[Google Drive](doc/google-drive-dev.md)、[连接管理](doc/storage-connections-dev.md)、[托盘定位](doc/tray-positioning-2026-10-14.md)、[故障证据](doc/incidents.md)。
 
 ## 0.2.10-2 — 内部架构重构
 

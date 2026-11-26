@@ -21,6 +21,171 @@ pub struct State {
     pub dir: PathBuf,
 }
 
+fn persist_atomic(output: tempfile::NamedTempFile, destination: &Path) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    {
+        persist_windows(output, destination, std::thread::sleep)
+    }
+    #[cfg(not(windows))]
+    {
+        output.persist(destination)?;
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn persist_windows(
+    mut output: tempfile::NamedTempFile,
+    destination: &Path,
+    mut wait: impl FnMut(std::time::Duration),
+) -> anyhow::Result<()> {
+    for retry in 0..=6 {
+        match output.persist(destination) {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                // Windows readers may temporarily omit FILE_SHARE_DELETE.
+                // Keep the same synced temporary file and old destination;
+                // never delete the old file or retry permanent failures forever.
+                if retry == 6 || !matches!(error.error.raw_os_error(), Some(5 | 32 | 33)) {
+                    return Err(error.into());
+                }
+                output = error.file;
+                wait(std::time::Duration::from_millis(25 * (retry + 1)));
+            }
+        }
+    }
+    unreachable!()
+}
+
+#[cfg(all(test, windows))]
+mod atomic_windows_tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    #[test]
+    fn temporary_delete_denial_recovers_without_removing_old_content() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("config.json");
+        fs::write(&target, b"old content").unwrap();
+        let mut lock = Some(
+            OpenOptions::new()
+                .read(true)
+                .share_mode(3)
+                .open(&target)
+                .unwrap(),
+        );
+        let mut output = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        output.write_all(b"new content").unwrap();
+        output.as_file().sync_all().unwrap();
+        // This is the prior unretried replacement behavior, against a real handle.
+        let denied = output.persist(&target).unwrap_err();
+        assert!(matches!(denied.error.raw_os_error(), Some(5 | 32 | 33)));
+        assert_eq!(fs::read(&target).unwrap(), b"old content");
+        let mut retries = 0;
+        persist_windows(denied.file, &target, |_| {
+            retries += 1;
+            assert_eq!(fs::read(&target).unwrap(), b"old content");
+            drop(lock.take());
+        })
+        .unwrap();
+        assert_eq!(retries, 1);
+        assert_eq!(fs::read(&target).unwrap(), b"new content");
+    }
+
+    #[test]
+    fn persistent_delete_denial_is_bounded_and_keeps_previous_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("config.json");
+        fs::write(&target, b"old content").unwrap();
+        let _lock = OpenOptions::new()
+            .read(true)
+            .share_mode(3)
+            .open(&target)
+            .unwrap();
+        let mut output = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        output.write_all(b"new content").unwrap();
+        let mut retries = 0;
+        assert!(persist_windows(output, &target, |_| retries += 1).is_err());
+        assert_eq!(retries, 6);
+        assert_eq!(fs::read(&target).unwrap(), b"old content");
+        let state = State::new(root.path().join("private")).unwrap();
+        state
+            .save("profiles.json", &serde_json::json!({"name":"old"}))
+            .unwrap();
+        let _state_lock = OpenOptions::new()
+            .read(true)
+            .share_mode(3)
+            .open(state.dir.join("profiles.json"))
+            .unwrap();
+        assert!(
+            state
+                .save("profiles.json", &serde_json::json!({"name":"new"}))
+                .is_err()
+        );
+        assert_eq!(
+            state.read::<serde_json::Value>("profiles.json").unwrap()["name"],
+            "old"
+        );
+    }
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+    #[test]
+    fn exported_connection_is_private_single_use_and_replacement_is_explicit() {
+        let root = tempfile::tempdir().unwrap();
+        let state = State::new(root.path().join("private")).unwrap();
+        let shared = root.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        state
+            .save(
+                "share.json",
+                &Share {
+                    root: shared.clone(),
+                    writable: true,
+                    address: EndpointAddr::new(state.identity().unwrap().public()),
+                },
+            )
+            .unwrap();
+        let output = root.path().join("connection.json");
+        state.export_connection(&output, "My PC", false).unwrap();
+        let original = fs::read(&output).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        assert_eq!(value["connection"]["name"], "My PC");
+        assert_eq!(value["connection"]["writable"], true);
+        assert!(
+            !String::from_utf8(original.clone())
+                .unwrap()
+                .contains(&root.path().to_string_lossy().to_string())
+        );
+        let first: Invitation = serde_json::from_slice(&original).unwrap();
+        assert!(state.export_connection(&output, "My PC", false).is_err());
+        assert_eq!(fs::read(&output).unwrap(), original);
+        assert!(state.authorize("first", Some(&first.secret)).unwrap());
+        assert!(!state.authorize("second", Some(&first.secret)).unwrap());
+        state.export_connection(&output, "My PC", true).unwrap();
+        let second: Invitation = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+        assert_ne!(first.secret, second.secret);
+        assert!(!state.authorize("second", Some(&first.secret)).unwrap());
+        assert!(state.authorize("second", Some(&second.secret)).unwrap());
+        assert!(!state.authorize("third", Some(&second.secret)).unwrap());
+        assert!(
+            state
+                .export_connection(&shared.join("leak.json"), "My PC", false)
+                .is_err()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(output).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Invitation {
     pub version: u8,
@@ -131,6 +296,10 @@ impl State {
     }
 
     pub fn save(&self, name: &str, value: &impl Serialize) -> anyhow::Result<()> {
+        self.write_bytes(name, &serde_json::to_vec_pretty(value)?)
+    }
+
+    pub(crate) fn write_bytes(&self, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
         let mut output = tempfile::NamedTempFile::new_in(&self.dir)?;
         #[cfg(unix)]
         {
@@ -139,9 +308,9 @@ impl State {
                 .as_file()
                 .set_permissions(fs::Permissions::from_mode(0o600))?;
         }
-        output.write_all(&serde_json::to_vec_pretty(value)?)?;
+        output.write_all(bytes)?;
         output.as_file().sync_all()?;
-        output.persist(self.dir.join(name))?;
+        persist_atomic(output, &self.dir.join(name))?;
         #[cfg(unix)]
         File::open(&self.dir)?.sync_all()?;
         Ok(())
@@ -208,13 +377,39 @@ impl State {
     }
 
     pub fn invite(&self, output: &Path) -> anyhow::Result<()> {
+        self.issue_invitation(output, None, false).map(|_| ())
+    }
+
+    /// Export a backwards-compatible invitation with public client setup hints.
+    /// Never include the host path, private identity or an existing peer's keys.
+    pub fn export_connection(
+        &self,
+        output: &Path,
+        name: &str,
+        replace: bool,
+    ) -> anyhow::Result<u64> {
+        ensure!(
+            !name.trim().is_empty() && name.len() <= 120 && !name.chars().any(char::is_control),
+            "invalid share name"
+        );
+        self.issue_invitation(output, Some(name), replace)
+    }
+
+    fn issue_invitation(
+        &self,
+        output: &Path,
+        name: Option<&str>,
+        replace: bool,
+    ) -> anyhow::Result<u64> {
         let share: Share = self.read("share.json")?;
         let parent = output
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         ensure!(
-            !parent.canonicalize()?.starts_with(&share.root),
+            !parent
+                .canonicalize()?
+                .starts_with(share.root.canonicalize()?),
             "invitation must be outside the shared directory"
         );
         let invitation = Invitation {
@@ -224,12 +419,33 @@ impl State {
             expires: now() + 600,
         };
         self.control(|control| {
-            write_new_json(output, &invitation)?;
+            if let Some(name) = name {
+                let mut value = serde_json::to_value(&invitation)?;
+                value["connection"] =
+                    serde_json::json!({"schema":1,"name":name,"writable":share.writable});
+                if output.exists() {
+                    let metadata = fs::symlink_metadata(output)?;
+                    ensure!(
+                        replace && metadata.is_file() && !metadata.is_symlink(),
+                        "连接文件已存在，请选择新文件或确认替换"
+                    );
+                }
+                let mut file = tempfile::NamedTempFile::new_in(parent)?;
+                file.write_all(&serde_json::to_vec_pretty(&value)?)?;
+                file.as_file().sync_all()?;
+                if replace {
+                    persist_atomic(file, output)?;
+                } else {
+                    file.persist_noclobber(output)?;
+                }
+            } else {
+                write_new_json(output, &invitation)?;
+            }
             control.invitation = Some(InvitationHash {
                 hash: Sha256::digest(invitation.secret.as_bytes()).into(),
                 expires: invitation.expires,
             });
-            Ok(())
+            Ok(invitation.expires)
         })
     }
 

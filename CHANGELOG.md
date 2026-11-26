@@ -4,6 +4,10 @@
 
 User-facing highlights moved from the former README. Releases hold published assets and verification notes; [debian/changelog](debian/changelog) retains package history. These entries describe changes at release time, not fresh test results or a guarantee of current behavior.
 
+## Development 0.1.3 — Retained cloud deletion status
+
+Includes stable 0.2.14 diagnostics and durable deletion backoff, plus the earlier stable local unlink fix. Linux mount status separates local deletion from unconfirmed/rejected cloud cleanup and offers an explicit retry action. Direct desktop file deletion retains its synchronous error behavior. Original-object access restrictions remain unresolved; permissions and targets are unchanged.
+
 ## 0.2.18 — Cache retirement and automatic retention
 
 Superseded saves and clean remote versions enter a durable reclamation queue. Open readers/writers, upload claims and pending deletions defer removal; unknown cache and recovery files are preserved. The daemon now applies `cache.retain_for` (default 30 days) in its background maintenance cycle, with pin, in-progress and recent-access protection.
@@ -33,6 +37,14 @@ Details and validation limits: [TD-20261014-12](doc/incidents.md#td-20261014-12�
 ## 0.2.12 — Pending-download feedback
 
 Nautilus immediately shows requested pin/download work, retains feedback across refresh and file-object replacement, and allows retry after failure.
+
+## Development 0.1.2 — Cloud accounts and anchored tray
+
+Google Drive desktop sign-in now supports ordinary-file read/write, conditional replacement, directory backups and Linux FUSE. The connection page can add and manage inactive WebDAV/NAS, PC/NAS sharing, Google Drive and OneDrive accounts while connected; failed configuration persistence preserves the current list. Devices use opt-in signed LAN discovery and trusted invitation pairing over QUIC.
+
+GNOME/Zorin tray positioning uses actual icon bounds on X11 and native Wayland through the included TwoDrive component; first installation may require a new desktop login. Linux/Windows bundles include installers and the [provider, login, upload and supporting-component specification](doc/provider-integration-spec.md). Google editor documents remain browser shortcuts; other Wayland compositors, organization/shared drives and arbitrary cross-network NAT traversal have not been accepted.
+
+Details: [Google Drive](doc/google-drive-dev.md), [connections](doc/storage-connections-dev.md), [tray positioning](doc/tray-positioning-2026-10-14.md), [incident evidence](doc/incidents.md).
 
 ## 0.2.10-2 — Internal architecture refactor
 

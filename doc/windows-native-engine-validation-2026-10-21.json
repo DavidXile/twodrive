@@ -1,0 +1,77 @@
+{
+  "source_sha": "aff4faa2513da3378896264b312e6b671028ed9d",
+  "candidate_sha256": "f7ff8b2c49839027c03a74382eef605f88d78abc4d604807bc714bcb923538ba",
+  "windows_build": 26300,
+  "unregistered": true,
+  "post_query_hresult": "0x80070186",
+  "files_retained": true,
+  "files": [
+    {
+      "object": 0,
+      "bytes": 65536,
+      "full_byte_match": true,
+      "sha256": "72d7cf2b45a3239d30501c5cef709ce3addb365decb509df7ae30c44037d8cbf"
+    },
+    {
+      "object": 1,
+      "bytes": 65536,
+      "full_byte_match": true,
+      "sha256": "e05a19880e522ec8b96bf1098d4660e3d467fd307333541f39f21463f7a34312"
+    },
+    {
+      "object": 2,
+      "bytes": 65536,
+      "full_byte_match": true,
+      "sha256": "38d9be03ab889d1ee341e65b8cb5491172d17de45c728b84c571c024713390f7"
+    }
+  ],
+  "persistent_dirty_marker_verified_after_owner_exit": true,
+  "journal_rows": [
+    [
+      "generated-object-0",
+      1,
+      0,
+      1,
+      1,
+      0,
+      0
+    ],
+    [
+      "generated-object-1",
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      "generated-object-2",
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
+  "explorer_icons": "unverified",
+  "real_cloud": "not_tested",
+  "purpose": "generated Provider through actual shared engine and CFAPI, no live cloud",
+  "approval": "one-time explicit user approval; consumed; no repeat registration",
+  "checks": {
+    "metadata_does_not_hydrate": true,
+    "chinese_and_long_leaf_normal_os_reads": true,
+    "native_copy_dehydration_private_cache_retained": true,
+    "open_handle_veto": true,
+    "pin_veto": true,
+    "offline_missing_cache_failure_and_retry": true,
+    "cached_offline_read": true,
+    "whole_dirty_file_preserved_and_release_vetoed": true
+  },
+  "observed_fetch_callbacks": 6,
+  "injected_failure_callbacks": 2,
+  "gui_native_controls": "widget tested; new full package pending CI",
+  "native_root_restart_reconnect": "not implemented",
+  "real_cloud_writes": false
+}

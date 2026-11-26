@@ -1,0 +1,109 @@
+{
+  "date": "2026-10-11",
+  "native": {
+    "ci_run_id": 38143055331,
+    "source_commit": "3dddc00eed7bbe73f34c06a705ae542c86933851",
+    "artifacts": {
+      "Linux": {
+        "artifact_id": 11703676803,
+        "archive_sha256": "0bbdd28b37cf27d07e9e0a310ce1f8b7849a4ba1952bae6c93fe36fdfffa069b",
+        "bytes": 29155336,
+        "sha256": "39daa495f0cb9435ba70c17d4b19ad478a3fca4cd25598b775e6eab5a7c7a4ba"
+      },
+      "Windows": {
+        "artifact_id": 11703458586,
+        "archive_sha256": "e53d11a49df81133349348d59b26630d8db41a9275341ab8e88e2c9c9a78d9c5",
+        "bytes": 16131072,
+        "sha256": "8dc3cff67a83982509c595bc8178f0d583096d9b27616e01550ffdbc288ded9d"
+      }
+    }
+  },
+  "delivery_before_recovery": {
+    "queue": "td-control-ea1d359464d441de8366e765e3499368",
+    "ci_run_id": 38143055331,
+    "source_commit": "3dddc00eed7bbe73f34c06a705ae542c86933851",
+    "windows_sha256": "8dc3cff67a83982509c595bc8178f0d583096d9b27616e01550ffdbc288ded9d",
+    "device": "3429f971c6527a60e3bae8a642aecdc98dad71e83a76c192e0c2c00888ad5235",
+    "owner": "326778c8667f3b2fad9687f5f08f3b81bab59c4ea7e136caa98f051bc63a2e5f",
+    "initial_entries": 0,
+    "files": {
+      "twodrive-dev.exe": {
+        "bytes": 16131072,
+        "sha256": "8dc3cff67a83982509c595bc8178f0d583096d9b27616e01550ffdbc288ded9d",
+        "readback_match": true,
+        "seconds": 348.569
+      },
+      "start-test-agent.ps1": {
+        "bytes": 2855,
+        "sha256": "7b548f983f507c98296464a28ccf649028cfda85bf2df0096899ca59e355eab1",
+        "readback_match": true,
+        "seconds": 1.593
+      }
+    },
+    "complete": true
+  },
+  "restored_delivery": {
+    "queue": "td-control-ea1d359464d441de8366e765e3499368",
+    "ci_run_id": 38143055331,
+    "source_commit": "3dddc00eed7bbe73f34c06a705ae542c86933851",
+    "windows_sha256": "8dc3cff67a83982509c595bc8178f0d583096d9b27616e01550ffdbc288ded9d",
+    "device": "3429f971c6527a60e3bae8a642aecdc98dad71e83a76c192e0c2c00888ad5235",
+    "owner": "326778c8667f3b2fad9687f5f08f3b81bab59c4ea7e136caa98f051bc63a2e5f",
+    "recovery": true,
+    "complete": true,
+    "exe_put_201": true,
+    "exe_head_bytes": 16131072,
+    "exe_prefix_1024_match": true,
+    "full_exe_readback": false,
+    "script_sha256": "7b548f983f507c98296464a28ccf649028cfda85bf2df0096899ca59e355eab1",
+    "script_readback_match": true,
+    "execution_hash_check": "bootstrap expected raw SHA256; signed agent ready must match"
+  },
+  "validation": {
+    "native_both_platforms": "success; full bootstrap/child lifecycle and real encrypted control transport",
+    "windows_live": "signed ready observed 2026-10-12; remote retry and candidate delivery executed",
+    "windows_fallback": "unresolved TD-20261011-10",
+    "dev_promoted": false
+  },
+  "cleanup": {
+    "owned_cargo_target_removed": true,
+    "superseded_local_binaries_removed": true,
+    "remaining_native_binaries": "required for pending live validation",
+    "windows_original_identity_and_grants": "preserved by prior failures; controller will verify normal finish"
+  },
+  "resume_2026_10_12": {
+    "native_ci": 38248783869,
+    "live_signed_ready": true,
+    "both_auto_passed": true,
+    "linux_fallback_passed": true,
+    "windows_fallback": "registration timeout; TD-20261012-02",
+    "diagnostic_candidate_ci": 38250184130,
+    "candidate_delivery_put_201": true,
+    "candidate_bytes": 16175104,
+    "cleanup": "failed children removed; controller finish and bundle cleanup pending",
+    "record": "peer-windows-egress-2026-10-12.json"
+  },
+  "completed_2026_10_12": {
+    "status": "passed",
+    "source_commit": "1a484376ba4cc5a45ce8c9909832482245974eac",
+    "native_ci": 38256439762,
+    "candidate_delivered_by_twodrive": true,
+    "windows_private_copy_sha256_verified": true,
+    "stages_passed": [
+      "both_auto",
+      "linux_fallback",
+      "windows_fallback"
+    ],
+    "control_finished": true,
+    "bootstrap_cleanup": {
+      "agent_exit_code": 0,
+      "identity_and_grants_preserved": true,
+      "bootstrap_runtime_removed": true,
+      "executable_payload_removed": true
+    },
+    "public_control_bundle_removed": true,
+    "shared_root_children_remaining": 0,
+    "original_windows_serve_available": true,
+    "evidence": "peer-windows-egress-2026-10-12.json"
+  }
+}

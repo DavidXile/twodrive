@@ -16,7 +16,9 @@ use crate::recovery::{enqueue_recovery, recover_interrupted_writes};
 pub fn mount_mock(paths: AppPaths) -> anyhow::Result<()> {
     cleanup_stale_mountpoint(&paths.mount_dir);
     paths.ensure()?;
-    let db = Database::new(paths.db_path.clone());
+    let config = Config::load_or_create(&paths)?;
+    let db = Database::new(paths.db_path.clone())
+        .with_name_exclusions(config.sync.exclude_name_regexes.clone());
     db.init()?;
     let backend = MockBackend::new();
     let config = Config::load_or_create(&paths)?;
@@ -34,6 +36,7 @@ pub fn mount_mock(paths: AppPaths) -> anyhow::Result<()> {
         backend,
         upload_concurrency,
         config.cache_retain_seconds()?,
+        false,
     )?;
     Ok(())
 }
@@ -41,7 +44,9 @@ pub fn mount_mock(paths: AppPaths) -> anyhow::Result<()> {
 pub fn mount_graph(paths: AppPaths) -> anyhow::Result<()> {
     cleanup_stale_mountpoint(&paths.mount_dir);
     paths.ensure()?;
-    let db = Database::new(paths.db_path.clone());
+    let config = Config::load_or_create(&paths)?;
+    let db = Database::new(paths.db_path.clone())
+        .with_name_exclusions(config.sync.exclude_name_regexes.clone());
     db.init()?;
     let backend = GraphBackend::from_paths(&paths)?;
     let config = Config::load_or_create(&paths)?;
@@ -57,6 +62,7 @@ pub fn mount_graph(paths: AppPaths) -> anyhow::Result<()> {
         backend,
         upload_concurrency,
         config.cache_retain_seconds()?,
+        false,
     )
 }
 
@@ -74,6 +80,7 @@ pub fn mount_backend<B: CloudBackend>(
         backend,
         upload_concurrency,
         Config::default().cache_retain_seconds()?,
+        true,
     )
 }
 
@@ -84,19 +91,29 @@ fn mount_backend_with_retention<B: CloudBackend>(
     backend: B,
     upload_concurrency: usize,
     retain_seconds: i64,
+    desktop_controls: bool,
 ) -> anyhow::Result<()> {
     // No live handles exist yet; reconcile the durable local cache before serving requests.
     recover_interrupted_writes(&db)?;
     let recovery_cache = cache_dir.clone();
-    let fs = TwoDriveFs::new_with_upload_concurrency(db, cache_dir, backend, upload_concurrency)?;
-    let (stop_tx, stop_rx) = mpsc::channel();
+    let mut fs =
+        TwoDriveFs::new_with_upload_concurrency(db, cache_dir, backend, upload_concurrency)?;
+    let (signal_tx, signal_rx) = mpsc::sync_channel(1);
+    if desktop_controls {
+        fs.cache_controls = Some(crate::cache_controls::CacheControls::new(
+            fs.db.clone(),
+            recovery_cache.clone(),
+            fs.backend.clone(),
+        ));
+        fs.refresh_signal = Some(signal_tx.clone());
+    }
     let recovery_db = fs.db.clone();
     let recovery_backend = Arc::clone(&fs.backend);
     let sender = fs.upload_pool.sender.clone();
     let recovery = thread::spawn(move || {
         loop {
             // Replay via the normal workers so recovery and new saves share item locks.
-            if let Err(err) = enqueue_recovery(&recovery_db, &sender) {
+            if let Err(err) = enqueue_recovery(&recovery_db, &sender, !desktop_controls) {
                 eprintln!("twodrive: recovery scan failed: {err:#}");
             }
             if let Err(err) = sync_delta_metadata(&recovery_db, recovery_backend.as_ref()) {
@@ -105,8 +122,8 @@ fn mount_backend_with_retention<B: CloudBackend>(
             if let Err(err) = maintain_cache(&recovery_db, &recovery_cache, retain_seconds) {
                 eprintln!("twodrive: cache maintenance deferred: {err:#}");
             }
-            match stop_rx.recv_timeout(Duration::from_secs(60)) {
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            match signal_rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                 _ => break,
             }
         }
@@ -116,7 +133,7 @@ fn mount_backend_with_retention<B: CloudBackend>(
         MountOption::DefaultPermissions,
     ];
     let result = fuser::mount2(fs, &mount_dir, &options);
-    let _ = stop_tx.send(());
+    drop(signal_tx);
     let _ = recovery.join();
     result?;
     Ok(())

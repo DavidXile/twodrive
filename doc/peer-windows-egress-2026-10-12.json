@@ -1,0 +1,368 @@
+{
+  "validation_status": "passed",
+  "final_source_commit": "1a484376ba4cc5a45ce8c9909832482245974eac",
+  "date": "2026-10-12",
+  "network_context": "Linux campus Wi-Fi with FlClash TUN; Windows campus Wi-Fi with TUN previously confirmed; independent NAT not established",
+  "independent_nat_established": false,
+  "baseline_native_ci": 38248783869,
+  "controller_ready_sha256": "8dc3cff67a83982509c595bc8178f0d583096d9b27616e01550ffdbc288ded9d",
+  "original_linux_client_state_preserved": true,
+  "diagnostic_candidate": {
+    "ci_run_id": 38250184130,
+    "source_commit": "23ab32734dcf5a149d8d99ac6258aae471afc4d4",
+    "artifact_id": 11747808601,
+    "archive_sha256": "4345450213ac5a3ce6447a3a5c529b4afc8fb50c7b1e42ed86180c0ed5db4f09",
+    "bytes": 16175104,
+    "sha256": "405ff0a484b529f3ea8db170099f9912fb65193061014edcc51a4bf4be6fde60"
+  },
+  "candidate_delivery": {
+    "ci_run_id": 38250184130,
+    "sha256": "405ff0a484b529f3ea8db170099f9912fb65193061014edcc51a4bf4be6fde60",
+    "bytes": 16175104,
+    "put_status": 201,
+    "put_seconds": 289.013,
+    "head_bytes": 16175104,
+    "prefix_match": true
+  },
+  "cleanup": {
+    "controller_finished": true,
+    "temporary_windows_children_removed": true,
+    "bootstrap": {
+      "agent_exit_code": 0,
+      "identity_and_grants_preserved": true,
+      "bootstrap_runtime_removed": true,
+      "executable_payload_removed": true
+    },
+    "public_control_bundle_removed": true,
+    "shared_root_children_remaining": 0,
+    "original_windows_serve_available": true,
+    "local_owned_artifacts_removed": true,
+    "local_probe_state_dirs_removed": true,
+    "local_control_gateway_stopped": true
+  },
+  "dev_promoted": true,
+  "system_proxy_diagnostic": {
+    "candidate": {
+      "ci_run_id": 38253177181,
+      "source_commit": "55b80ad649cad7447e9e1a904b602d035d55bd88",
+      "artifact_id": 11749506459,
+      "archive_sha256": "bf6be5261c0a618be405768da017155828234212010a425888637cd1b355d16a",
+      "bytes": 16217088,
+      "sha256": "d2f9b24651c1c50ebb5eb30c5654e7a6628b69906feac8b801cc3e1bd3ddd01c"
+    },
+    "delivery": {
+      "ci_run_id": 38253177181,
+      "sha256": "d2f9b24651c1c50ebb5eb30c5654e7a6628b69906feac8b801cc3e1bd3ddd01c",
+      "bytes": 16217088,
+      "put_status": 204,
+      "put_seconds": 279.899,
+      "head_bytes": 16217088,
+      "prefix_match": true
+    },
+    "windows_fallback_passed": false,
+    "native_aps_dns": {
+      "records": 1,
+      "ipv4": 1,
+      "fake_ip": 1
+    },
+    "endpoint_aps_dns_a_error_categories": [
+      "dns",
+      "other"
+    ],
+    "endpoint_aps_dns_aaaa_records": 0,
+    "home_relays": 0,
+    "static_system_proxy_read_error": null,
+    "static_system_proxy_configured": false,
+    "deeper_raw_dns_failure_cause": "unconfirmed"
+  },
+  "native_dns_fix": {
+    "windows": {
+      "ci_run_id": 38256439762,
+      "source_commit": "1a484376ba4cc5a45ce8c9909832482245974eac",
+      "artifact_id": 11750043842,
+      "archive_sha256": "31519cc9d7ceb5ea20699b484ac1a73111d16dd4cc785afb3d909e33175d2a1d",
+      "bytes": 16254976,
+      "sha256": "fcf37d62e34f2236bf5248a0bc1e8bf32be33f5b9b4abf597531b091ec289966"
+    },
+    "linux": {
+      "ci_run_id": 38256439762,
+      "source_commit": "1a484376ba4cc5a45ce8c9909832482245974eac",
+      "artifact_id": 11750547444,
+      "archive_sha256": "6d3b23193d22d4092c86c9e9aca27cfcd20baf6b6256f4a3bef9c63ce13b882b",
+      "bytes": 29316128,
+      "sha256": "9c15c2d7fe28ae3d7e03bc4041e1162d87d2771444d17aa443b7f4882a0ae5d8"
+    },
+    "delivery": {
+      "ci_run_id": 38256439762,
+      "sha256": "fcf37d62e34f2236bf5248a0bc1e8bf32be33f5b9b4abf597531b091ec289966",
+      "bytes": 16254976,
+      "put_status": 204,
+      "put_seconds": 312.001,
+      "head_bytes": 16254976,
+      "prefix_match": true
+    },
+    "native_ci": {
+      "run_id": 38256439762,
+      "linux_unit_tests": 27,
+      "windows_unit_tests": 22,
+      "linux_integration_tests": 10,
+      "windows_integration_tests": 9,
+      "control_protocol_tests_per_platform": 2,
+      "format_clippy_release_lan_and_signed_transport_smoke": "passed",
+      "new_system_dns_regressions_per_platform": 4
+    },
+    "windows_fallback_diagnostic_retry_passed": true,
+    "final_validation": {
+      "status": "passed",
+      "stages": [
+        {
+          "name": "both_auto",
+          "passed": true,
+          "data": {
+            "bytes": 2097152,
+            "sha256": "1e075c8d478ad21844e33e830a695ef03a4d2488b69ee275bd8947618bb1be1e",
+            "put_seconds": 2.212,
+            "get_seconds": 2.785,
+            "full_hash": true,
+            "move": true,
+            "range_bytes": 262144,
+            "delete_404": true
+          },
+          "linux_network": {
+            "samples": 8,
+            "public_tcp_samples": 14,
+            "physical_bound_tcp_samples": 14,
+            "nonphysical_tcp_samples": 0,
+            "route_unchanged": true,
+            "proxy_fake_ip_present": true
+          },
+          "windows_network": {
+            "nonphysical_tcp_samples": 0,
+            "physical_tcp_samples": 16,
+            "proxy_fake_ip_present": true,
+            "public_tcp_samples": 16,
+            "route_unchanged": true,
+            "samples": 10
+          },
+          "selected_path": [
+            "Selected path: relay:https://aps1-1.relay.n0.iroh.link./ RTT: 90.5 ms"
+          ],
+          "linux_network_messages": [
+            "network: route=physical interface=wlo1 fallback=reported-system/proxy"
+          ],
+          "windows_network_messages": [
+            "network: route=physical interface={A413DAC6-7B2C-4D3D-ADB0-31CB2CC4EAB5} fallback=reported-system/proxy"
+          ],
+          "windows_execution_sha256": "fcf37d62e34f2236bf5248a0bc1e8bf32be33f5b9b4abf597531b091ec289966",
+          "windows_child_stopped_for_cleanup": true
+        },
+        {
+          "name": "linux_fallback",
+          "passed": true,
+          "data": {
+            "bytes": 2097152,
+            "sha256": "1e075c8d478ad21844e33e830a695ef03a4d2488b69ee275bd8947618bb1be1e",
+            "put_seconds": 4.099,
+            "get_seconds": 4.698,
+            "full_hash": true,
+            "move": true,
+            "range_bytes": 262144,
+            "delete_404": true
+          },
+          "linux_network": {
+            "samples": 18,
+            "public_tcp_samples": 65,
+            "physical_bound_tcp_samples": 0,
+            "nonphysical_tcp_samples": 65,
+            "route_unchanged": true,
+            "proxy_fake_ip_present": true
+          },
+          "windows_network": {
+            "nonphysical_tcp_samples": 0,
+            "physical_tcp_samples": 28,
+            "proxy_fake_ip_present": true,
+            "public_tcp_samples": 28,
+            "route_unchanged": true,
+            "samples": 15
+          },
+          "selected_path": [
+            "Selected path: relay:https://aps1-1.relay.n0.iroh.link./ RTT: 1003.6 ms"
+          ],
+          "linux_network_messages": [
+            "network: route=system/proxy fallback; physical setup or relay registration failed",
+            "network: route=system/proxy; physical bypass disabled"
+          ],
+          "windows_network_messages": [
+            "network: route=physical interface={A413DAC6-7B2C-4D3D-ADB0-31CB2CC4EAB5} fallback=reported-system/proxy"
+          ],
+          "windows_execution_sha256": "fcf37d62e34f2236bf5248a0bc1e8bf32be33f5b9b4abf597531b091ec289966",
+          "windows_child_stopped_for_cleanup": true
+        },
+        {
+          "name": "windows_fallback",
+          "passed": true,
+          "data": {
+            "bytes": 2097152,
+            "sha256": "1e075c8d478ad21844e33e830a695ef03a4d2488b69ee275bd8947618bb1be1e",
+            "put_seconds": 3.917,
+            "get_seconds": 5.118,
+            "full_hash": true,
+            "move": true,
+            "range_bytes": 262144,
+            "delete_404": true
+          },
+          "linux_network": {
+            "samples": 17,
+            "public_tcp_samples": 48,
+            "physical_bound_tcp_samples": 48,
+            "nonphysical_tcp_samples": 0,
+            "route_unchanged": true,
+            "proxy_fake_ip_present": true
+          },
+          "windows_network": {
+            "nonphysical_tcp_samples": 30,
+            "physical_tcp_samples": 0,
+            "proxy_fake_ip_present": true,
+            "public_tcp_samples": 30,
+            "route_unchanged": true,
+            "samples": 17
+          },
+          "selected_path": [
+            "Selected path: relay:https://usw1-1.relay.n0.iroh.link./ RTT: 739.8 ms"
+          ],
+          "linux_network_messages": [
+            "network: route=physical interface=wlo1 fallback=reported-system/proxy"
+          ],
+          "windows_network_messages": [
+            "network: route=system/proxy fallback; physical setup or relay registration failed",
+            "network: route=system/proxy; physical bypass disabled",
+            "network: system proxy config manual=false usable=false bypass=false pac=false autodetect=false read_error=None",
+            "network: dns=system-native fallback; route=system/proxy"
+          ],
+          "windows_execution_sha256": "fcf37d62e34f2236bf5248a0bc1e8bf32be33f5b9b4abf597531b091ec289966",
+          "windows_child_stopped_for_cleanup": true
+        }
+      ],
+      "original_linux_client_state_preserved": true
+    },
+    "scope": [
+      "current two campus Wi-Fi devices with TUN; independent NAT not established this round",
+      "physical TCP sample/source checks; UDP is source-bound and forced VPN/WFP can still intercept",
+      "static HTTP proxy parsers tested natively, configured static proxy not exercised on these devices",
+      "PAC/WPAD/SOCKS not implemented; TXT retains existing resolver"
+    ]
+  },
+  "dev_promotion_commit": "343b4fa93ae9b3cd639f63e4edc4ebcc733143b3",
+  "dev_ci": {
+    "webdav_peer_run_id": 38258670629,
+    "peer_native_run_id": 38258670478,
+    "windows_dual_preview_run_id": 38258670638,
+    "status": "success",
+    "verified_date": "2026-10-13"
+  },
+  "baseline_stages": [
+    {
+      "name": "both_auto",
+      "passed": true,
+      "data": {
+        "bytes": 2097152,
+        "sha256": "1e075c8d478ad21844e33e830a695ef03a4d2488b69ee275bd8947618bb1be1e",
+        "put_seconds": 1.213,
+        "get_seconds": 5.473,
+        "full_hash": true,
+        "move": true,
+        "range_bytes": 262144,
+        "delete_404": true
+      },
+      "linux_network": {
+        "samples": 10,
+        "public_tcp_samples": 17,
+        "physical_bound_tcp_samples": 17,
+        "nonphysical_tcp_samples": 0,
+        "route_unchanged": true,
+        "proxy_fake_ip_present": true
+      },
+      "selected_path": [
+        "Selected path: relay:https://aps1-1.relay.n0.iroh.link./ RTT: 92.5 ms"
+      ],
+      "linux_network_messages": [
+        "network: route=physical interface=wlo1 fallback=reported-system/proxy"
+      ],
+      "windows_network": {
+        "nonphysical_tcp_samples": 0,
+        "physical_tcp_samples": 14,
+        "proxy_fake_ip_present": true,
+        "public_tcp_samples": 14,
+        "route_unchanged": true,
+        "samples": 7
+      },
+      "windows_network_messages": [
+        "network: route=physical interface={A413DAC6-7B2C-4D3D-ADB0-31CB2CC4EAB5} fallback=reported-system/proxy"
+      ],
+      "windows_failure_exit_code": null
+    },
+    {
+      "name": "linux_fallback",
+      "passed": true,
+      "data": {
+        "bytes": 2097152,
+        "sha256": "1e075c8d478ad21844e33e830a695ef03a4d2488b69ee275bd8947618bb1be1e",
+        "put_seconds": 4.448,
+        "get_seconds": 5.103,
+        "full_hash": true,
+        "move": true,
+        "range_bytes": 262144,
+        "delete_404": true
+      },
+      "linux_network": {
+        "samples": 19,
+        "public_tcp_samples": 71,
+        "physical_bound_tcp_samples": 0,
+        "nonphysical_tcp_samples": 71,
+        "route_unchanged": true,
+        "proxy_fake_ip_present": true
+      },
+      "selected_path": [
+        "Selected path: relay:https://aps1-1.relay.n0.iroh.link./ RTT: 1094.1 ms"
+      ],
+      "linux_network_messages": [
+        "network: route=system/proxy fallback; physical setup or relay registration failed",
+        "network: route=system/proxy; physical bypass disabled"
+      ],
+      "windows_network": {
+        "nonphysical_tcp_samples": 0,
+        "physical_tcp_samples": 30,
+        "proxy_fake_ip_present": true,
+        "public_tcp_samples": 30,
+        "route_unchanged": true,
+        "samples": 15
+      },
+      "windows_network_messages": [
+        "network: route=physical interface={A413DAC6-7B2C-4D3D-ADB0-31CB2CC4EAB5} fallback=reported-system/proxy"
+      ],
+      "windows_failure_exit_code": null
+    },
+    {
+      "name": "windows_fallback",
+      "passed": false,
+      "data": null,
+      "linux_network": null,
+      "selected_path": [],
+      "linux_network_messages": [],
+      "windows_network": {
+        "nonphysical_tcp_samples": 0,
+        "physical_tcp_samples": 0,
+        "proxy_fake_ip_present": true,
+        "public_tcp_samples": 0,
+        "route_unchanged": true,
+        "samples": 20
+      },
+      "windows_network_messages": [
+        "network: route=system/proxy fallback; physical setup or relay registration failed",
+        "network: route=system/proxy; physical bypass disabled",
+        "Error: relay registration timed out; check outbound connectivity or use --no-relay for LAN testing"
+      ],
+      "windows_failure_exit_code": 1
+    }
+  ]
+}

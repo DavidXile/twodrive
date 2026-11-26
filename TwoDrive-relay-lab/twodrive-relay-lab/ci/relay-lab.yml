@@ -1,0 +1,35 @@
+name: Relay Lab
+
+on:
+  push:
+    branches:
+      - exp/encrypted-relays
+    paths:
+      - 'experiments/twodrive-relay-lab/**'
+      - '.github/workflows/relay-lab.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test relay lab
+        working-directory: experiments/twodrive-relay-lab
+        run: cargo test --all-targets
+      - name: Build relay lab
+        working-directory: experiments/twodrive-relay-lab
+        run: cargo build --release
+      - name: Upload native binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: twodrive-relay-lab-${{ matrix.os }}
+          path: |
+            experiments/twodrive-relay-lab/target/release/twodrive-relay-lab
+            experiments/twodrive-relay-lab/target/release/twodrive-relay-lab.exe
+          if-no-files-found: error

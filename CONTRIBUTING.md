@@ -87,6 +87,10 @@ For a standalone disposable daemon smoke test, build the workspace then run:
 python3 scripts/test-isolated-mock.py --cli target/debug/twodrive --daemon target/debug/twodrive-daemon
 ```
 
+## Development storage providers
+
+New cloud/provider integrations must follow the [provider, authentication, upload and supporting-component specification](doc/provider-integration-spec.md). Declare unavailable capabilities, keep credentials out of public IPC, and ship contract/auth/recovery tests and explicitly scoped live validation. Shared services and Flutter must remain provider-neutral.
+
 ## Propose a change
 
 Use a focused branch and pull request. Explain behavior, data risks, and tests actually run; add regressions for reproducible bugs. Never report skipped/unrun tests as passing.

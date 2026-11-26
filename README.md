@@ -56,6 +56,8 @@ See file status at a glance and manage cloud files directly in Nautilus.
 
 <img src="packaging/icons/hicolor/scalable/emblems/emblem-twodrive-cloud.svg" width="22" height="22" alt="Cloud"> + <img src="packaging/icons/hicolor/scalable/emblems/emblem-twodrive-syncing.svg" width="22" height="22" alt="Syncing"> **Release pending:** a release was requested while changes were still being written or uploaded. Local data stays until upload succeeds and open handles close.
 
+<img src="packaging/icons/hicolor/scalable/emblems/emblem-twodrive-cloud.svg" width="22" height="22" alt="Cloud"> + <img src="packaging/icons/hicolor/scalable/emblems/emblem-twodrive-pinned.svg" width="22" height="22" alt="Pinned"> **Keep pending:** Always keep was selected and the content is still waiting to download or downloading. Once the cache is published, only the pin remains.
+
 Folder emblems summarize descendants; they do not prove that every file is cached. Newly discovered cloud files remain online-only, including beneath an already pinned folder. [Pinning and release semantics →](doc/usage.md#keep-or-release-content)
 
 </details>
@@ -94,3 +96,30 @@ The desktop helpers are still limited: **Settings can change upload sources; oth
 Contributions, reproducible bug reports, and documentation improvements are welcome. Start with [CONTRIBUTING](CONTRIBUTING.md) for the Rust workspace, test commands, and an isolated mock backend that does not touch your real OneDrive. [Release history](CHANGELOG.md) and [engineering notes](doc/README.md#engineering-notes) live outside this overview.
 
 [MIT license](LICENSE). An independent project, not an official Microsoft client.
+
+## Experimental device peer
+
+The `dev` branch includes the standalone Windows/Linux `twodrive-peer` from `codex/peer-control`
+control process alongside the refactored provider architecture. It uses separate
+local state and does not replace the installed mount or daemon. See the
+[implementation and security boundary](doc/peer-implementation.md) and
+[first two-machine test guide](doc/peer-quickstart.zh-CN.md). Native Windows
+artifacts are built by the Peer native builds workflow. This stage implements
+authenticated control messages and signed updates, not file backup transfer.
+
+## Combined Windows, WebDAV and QUIC dev preview
+
+The dev branch also includes the Windows Full/Lite preview from PR #9 and encrypted WebDAV/QUIC directory sharing from PR #8. The combined Windows packages contain all three tools with independent state. See the [integration and setup guide](doc/dev-integration.md) for the supported flows and current UI boundaries. These builds do not install or replace stable TwoDrive.
+
+The Development desktop now consumes provider schemas and capabilities through IPC. WebDAV stays inside its adapter; successful proxy fallback uses a yellow warning triangle. See the [provider boundary record](doc/provider-boundaries-2026-10-13.md).
+
+Google Drive desktop OAuth and ordinary-file read/write support are also available in `dev`. See the [Google Drive setup and verification guide](doc/google-drive-dev.md). Google editor documents appear as browser shortcuts.
+
+The connection page now supports adding inactive accounts while connected, WebDAV/NAS setup, OneDrive sign-in, and opt-in LAN device discovery with invitation import. See [storage connection setup and validation](doc/storage-connections-dev.md).
+
+TwoDrive tray positioning on GNOME/Zorin now uses actual icon bounds for X11 and native Wayland. See [setup and isolated validation](doc/tray-positioning-2026-10-14.md); the GNOME component first loads on a new desktop session.
+
+Future third-party storage integrations follow the [provider, login, upload and supporting-component specification](doc/provider-integration-spec.md), included in the Development release.
+
+Download [Development 0.1.6](https://github.com/LumiaBlack51/twodrive/releases/tag/dev-v0.1.6) for Linux/Windows, source, installers, the provider specification and verification evidence. This is a prerelease.
+

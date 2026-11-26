@@ -1,0 +1,299 @@
+name: TwoDrive desktop
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    paths:
+      - 'apps/dav/**'
+      - 'experiments/twodrive-dev/**'
+      - 'experiments/windows-cfapi/**'
+      - 'crates/**'
+      - 'scripts/*dav-desktop.py'
+      - 'scripts/test-desktop-windows-ui.py'
+      - 'scripts/test-dav-tray-x11.py'
+      - 'scripts/test-tray-workspace-linux.py'
+      - 'scripts/tray_x11_geometry.py'
+      - 'packaging/gnome-tray-anchor/**'
+      - 'packaging/nautilus/**'
+      - 'packaging/icons/**'
+      - 'packaging/development/**'
+      - 'debian/control'
+      - 'debian/rules'
+      - 'debian/changelog'
+      - 'debian/copyright'
+      - 'debian/twodrive-dav.*'
+      - 'scripts/build-dav-deb.sh'
+      - 'scripts/test-debian-package.py'
+      - 'doc/provider-integration-spec.md'
+      - 'scripts/install-dav-desktop.py'
+      - 'scripts/test_dav_installer.py'
+      - 'scripts/install-rclone-component.py'
+      - 'scripts/test_rclone_component.py'
+      - 'scripts/verify-icloud-desktop.py'
+      - 'scripts/test_icloud_validation_guard.py'
+      - 'scripts/test_provider_login_console.py'
+      - 'scripts/test-desktop-instances.py'
+      - 'scripts/test-desktop-instance-identity.py'
+      - 'scripts/windows-instance-identity/**'
+      - 'scripts/test-storage-connections.py'
+      - 'scripts/test-desktop-queue.py'
+      - 'scripts/test-desktop-multi.py'
+      - 'scripts/test-desktop-startup.py'
+      - 'scripts/test-windows-readonly-mount.py'
+      - 'scripts/test-windows-editable-mount.py'
+      - 'scripts/test-linux-locked-mount.py'
+      - 'scripts/test-desktop-sharing.py'
+      - 'scripts/test_engine_fixture.py'
+      - 'scripts/test-msix-runtime.ps1'
+      - 'scripts/test-msix-context.py'
+      - 'scripts/test_msix_window_target.py'
+      - 'scripts/test_msix_packaging.py'
+      - '.github/workflows/linux-dav-desktop.yml'
+      - 'packaging/msix/**'
+      - 'scripts/build-msix.ps1'
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Native platform to validate
+        type: choice
+        options: [all, linux, windows]
+        default: all
+      native_stop_fixture:
+        description: 'Run disposable Windows CFAPI stop/restart fixtures (registers temporary roots)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'windows'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native desktop prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang cmake ninja-build pkg-config libgtk-3-dev fuse3 xvfb xauth openbox mutter wmctrl xdotool x11-utils python3-pil gjs python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 debhelper
+          dpkg-checkbuilddeps -Ppkg.twodrive.dav
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: experiments/twodrive-dev -> target
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.8'
+          channel: stable
+          cache: true
+      - name: Rust checks
+        working-directory: experiments/twodrive-dev
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --features mount --all-targets -- -D warnings
+          python3 scripts/test-provider-old-paths.py
+          cargo test --locked --features mount
+          cargo build --locked --release --features mount --bins
+      - name: Pinned iCloud supporting component
+        run: |
+          python3 -m unittest discover -s scripts -p test_icloud_validation_guard.py
+          python3 scripts/install-rclone-component.py --platform linux-amd64 --destination dist/rclone
+          TWODRIVE_TEST_RCLONE="$PWD/dist/rclone/rclone" cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features mount rclone_drive:: -- --ignored
+          TWODRIVE_TEST_RCLONE="$PWD/dist/rclone/rclone" cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features mount readonly_mount::tests::official_rclone_reads_the_private_provider_bridge -- --ignored
+      - name: Desktop IPC and WebDAV operations
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+          python3 scripts/test-dav-desktop.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
+          python3 scripts/test-desktop-queue.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
+          python3 scripts/test-desktop-multi.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
+          python3 scripts/test-desktop-startup.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
+          python3 scripts/test-storage-connections.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
+          python3 scripts/test-desktop-sharing.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
+      - name: Linux Provider bridge FUSE and retained-account ownership
+        run: |
+          TWODRIVE_RCLONE_BIN="$PWD/dist/rclone/rclone" python3 scripts/test-linux-readonly-mount.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
+          TWODRIVE_RCLONE_BIN="$PWD/dist/rclone/rclone" python3 scripts/test-desktop-startup.py --native --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev"
+          TWODRIVE_TEST_RCLONE="$PWD/dist/rclone/rclone" cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features mount --test bridge_fuse_linux -- --ignored
+          TWODRIVE_TEST_RCLONE="$PWD/dist/rclone/rclone" cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features mount --lib native_statfs_and_gio_return_while_cloud_quota_is_stalled -- --ignored
+      - name: Shallow provider metadata and cache-aware GIO on TwoDriveFS
+        run: cargo test --locked -p twodrive-fs shallow_mount_is_lazy_cache_aware_and_reads_while_metadata_is_stalled -- --ignored --exact filesystem::tests::shallow_mount_is_lazy_cache_aware_and_reads_while_metadata_is_stalled
+      - name: Linux locked startup and pending-write recovery through FUSE
+        run: python3 scripts/test-linux-locked-mount.py --engine "$PWD/experiments/twodrive-dev/target/release/twodrive-dav-engine" --peer "$PWD/experiments/twodrive-dev/target/release/twodrive-dev" --report linux-locked-mount.json
+      - name: Verify bulk pin isolation and automatic retry
+        run: cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features mount --bin twodrive-dev folder_pin_retry_does_not_block_release_or_unrelated_reads -- --ignored
+      - name: Tray positioning regression
+        run: |
+          clang++ -std=c++17 -Wall -Wextra -Werror apps/dav/linux/runner/tray_geometry_test.cc -o /tmp/tray-geometry-test
+          /tmp/tray-geometry-test
+          gjs -m packaging/gnome-tray-anchor/geometry_test.js
+      - name: Flutter checks and native build
+        working-directory: apps/dav
+        run: |
+          flutter pub get --enforce-lockfile
+          dart format --output=none --set-exit-if-changed lib test
+          flutter analyze
+          flutter test
+          flutter build linux --release
+      - name: Verify foreground and minimized tray behavior with a window manager
+        run: /usr/bin/python3 scripts/test-tray-workspace-linux.py apps/dav/build/linux/x64/release/bundle --engines experiments/twodrive-dev/target/release
+      - name: Tray shadow under the X11 compositor
+        run: |
+          /usr/bin/python3 scripts/test-tray-workspace-linux.py --mutter apps/dav/build/linux/x64/release/bundle --engines experiments/twodrive-dev/target/release
+          /usr/bin/python3 scripts/test-tray-workspace-linux.py --mutter --quit-from-tray apps/dav/build/linux/x64/release/bundle --engines experiments/twodrive-dev/target/release
+      - name: Assemble portable directory
+        run: |
+          cp experiments/twodrive-dev/target/release/twodrive-dev experiments/twodrive-dev/target/release/twodrive-dav-engine experiments/twodrive-dev/target/release/twodrive-provider-login apps/dav/build/linux/x64/release/bundle/
+          cp dist/rclone/* apps/dav/build/linux/x64/release/bundle/
+          cp -r packaging/gnome-tray-anchor apps/dav/build/linux/x64/release/bundle/
+          cp packaging/nautilus/twodrive_nautilus.py apps/dav/build/linux/x64/release/bundle/twodrive_dav_nautilus.py
+          cp -r packaging/icons/hicolor/scalable/emblems apps/dav/build/linux/x64/release/bundle/
+          cp scripts/install-dav-desktop.py apps/dav/build/linux/x64/release/bundle/
+          mkdir -p apps/dav/build/linux/x64/release/bundle/docs
+          cp doc/provider-integration-spec.md doc/storage-connections-dev.md doc/desktop-sharing-validation.md doc/google-drive-dev.md doc/icloud-drive.md doc/tray-positioning-2026-10-14.md apps/dav/build/linux/x64/release/bundle/docs/
+          cp packaging/development/INSTALL-LINUX.md apps/dav/build/linux/x64/release/bundle/INSTALL.md
+          tar -C apps/dav/build/linux/x64/release -cJf twodrive-development-linux-x64.tar.xz bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: twodrive-development-linux-x64
+          path: twodrive-development-linux-x64.tar.xz
+          if-no-files-found: error
+      - name: Package DAV desktop for Debian-based test systems
+        run: bash scripts/build-dav-deb.sh apps/dav/build/linux/x64/release/bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: twodrive-development-dav-debian-amd64
+          path: dist/dav-debian/*.*
+          if-no-files-found: error
+
+  windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'linux'
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: '-C target-feature=+crt-static'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: experiments/twodrive-dev -> target
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.8'
+          channel: stable
+          cache: true
+      - name: Portable desktop engine
+        working-directory: experiments/twodrive-dev
+        run: |
+          cargo clippy --locked --features native-local-fixture --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/test-provider-old-paths.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --features native-local-fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --locked --release --features native-sync --bins
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retained native profile edit recovery
+        run: python scripts/test-desktop-native-recovery.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
+      - name: Persistent native coordinator compile and unit contracts
+        working-directory: experiments/twodrive-dev
+        run: |
+          cargo clippy --locked --features native-sync,native-test-hooks --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --features native-sync,native-test-hooks
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Native runtime installer staging recovery (generated task only)
+        run: ./experiments/twodrive-dev/scripts/test-native-runtime-installer.ps1
+      - name: Opt-in large-catalogue native stop and restart (generated roots only)
+        if: github.event_name == 'workflow_dispatch' && inputs.native_stop_fixture
+        run: ./scripts/test-native-runtime-cancellation.ps1 -RootParent '${{ runner.temp }}'
+      - name: Windows IPC, file transfer, backups and autostart isolation
+        run: |
+          python scripts/test-local-file-preflight.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/test-dav-desktop.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/test-desktop-queue.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/test-desktop-multi.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/test-desktop-startup.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/test-desktop-sharing.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Pinned iCloud supporting component
+        run: |
+          python scripts/install-rclone-component.py --platform windows-amd64 --destination dist/rclone
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s scripts -p test_rclone_component.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s scripts -p test_icloud_validation_guard.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:TWODRIVE_TEST_PROVIDER_LOGIN = (Resolve-Path experiments/twodrive-dev/target/release/twodrive-provider-login.exe).Path
+          python -m unittest discover -s scripts -p test_provider_login_console.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:TWODRIVE_TEST_RCLONE = (Resolve-Path dist/rclone/rclone.exe).Path
+          cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features native-local-fixture rclone_drive:: -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features native-local-fixture readonly_mount::tests::official_rclone_reads_the_private_provider_bridge -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path experiments/twodrive-dev/Cargo.toml --locked --features native-local-fixture official_local_control_authentication_and_readonly_options -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:TWODRIVE_RCLONE_BIN = $env:TWODRIVE_TEST_RCLONE
+          python scripts/test-windows-readonly-mount.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Default editable Windows mounts and restart recovery
+        run: python scripts/test-windows-editable-mount.py --engine experiments/twodrive-dev/target/release/twodrive-dav-engine.exe --peer experiments/twodrive-dev/target/release/twodrive-dev.exe --report desktop-editable-mount.json --allow-missing-driver
+      - name: Flutter checks and native Windows build
+        working-directory: apps/dav
+        run: |
+          flutter pub get --enforce-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter analyze
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter build windows --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assemble portable Windows directory
+        run: |
+          Copy-Item experiments/twodrive-dev/target/release/twodrive-dev.exe,experiments/twodrive-dev/target/release/twodrive-dav-engine.exe,experiments/twodrive-dev/target/release/twodrive-native-dev.exe,experiments/twodrive-dev/target/release/twodrive-provider-login.exe apps/dav/build/windows/x64/runner/Release/
+          Copy-Item dist/rclone/* apps/dav/build/windows/x64/runner/Release/
+          Copy-Item scripts/install-desktop-windows.ps1 apps/dav/build/windows/x64/runner/Release/
+          New-Item -ItemType Directory -Force apps/dav/build/windows/x64/runner/Release/docs | Out-Null
+          Copy-Item doc/provider-integration-spec.md,doc/storage-connections-dev.md,doc/desktop-sharing-validation.md,doc/google-drive-dev.md,doc/icloud-drive.md,doc/windows-write-lock.md,doc/tray-positioning-2026-10-14.md apps/dav/build/windows/x64/runner/Release/docs/
+          Copy-Item packaging/development/INSTALL-WINDOWS.md apps/dav/build/windows/x64/runner/Release/INSTALL.md
+      - name: Windows native tray smoke
+        run: python scripts/test-desktop-native-package.py --bundle apps/dav/build/windows/x64/runner/Release
+      - name: Windows native tray UI smoke
+        run: python scripts/test-desktop-windows-ui.py apps/dav/build/windows/x64/runner/Release/twodrive_dav.exe
+      - name: Independent desktop state instances
+        run: python scripts/test-desktop-instances.py --app apps/dav/build/windows/x64/runner/Release/twodrive_dav.exe --report desktop-instances.json
+      - name: Effective default state uses one Windows instance identity
+        run: python scripts/test-desktop-instance-identity.py --report desktop-instance-identity.json
+      - name: Build validated unsigned MSIX test package
+        run: |
+          $syntaxErrors = $null
+          [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/test-msix-runtime.ps1'), [ref]$null, [ref]$syntaxErrors)
+          if ($syntaxErrors.Count) { throw ($syntaxErrors | Out-String) }
+          python -m unittest discover -s scripts -p test_engine_fixture.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s scripts -p test_msix_window_target.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:TWODRIVE_TEST_MSIX_BUNDLE = (Resolve-Path apps/dav/build/windows/x64/runner/Release).Path
+          python -m unittest discover -s scripts -p test_msix_packaging.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/build-msix.ps1 -Bundle apps/dav/build/windows/x64/runner/Release -TestPackage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: twodrive-development-msix-test
+          path: dist/msix/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twodrive-development-windows-x64
+          path: apps/dav/build/windows/x64/runner/Release/
+          if-no-files-found: error

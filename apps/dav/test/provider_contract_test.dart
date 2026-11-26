@@ -1,0 +1,436 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:twodrive_dav/client.dart';
+import 'package:twodrive_dav/main.dart';
+import 'package:twodrive_dav/profile_dialog.dart';
+import 'package:twodrive_dav/tray_panel.dart';
+import 'package:twodrive_dav/connection_card.dart';
+
+class _ListingClient extends StorageClient {
+  @override
+  Future<Json> request(String op, [Json args = const {}, int? requestId]) =>
+      op == 'list'
+      ? Future.value({'entries': []})
+      : super.request(op, args, requestId);
+}
+
+void main() {
+  testWidgets(
+    'read-only schema hides write permission and private internal fields',
+    (tester) async {
+      tester.view.physicalSize = const Size(1000, 1200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      Json? saved;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async {
+                saved = await showDialog<Json>(
+                  context: context,
+                  builder: (_) => const ProfileDialog(
+                    providers: [
+                      {
+                        'id': 'smb',
+                        'label': 'SMB2/3（只读）',
+                        'network_modes': ['system'],
+                        'capabilities': {
+                          'upload': false,
+                          'conditional_upload': false,
+                          'mkdir': false,
+                          'rename': false,
+                          'delete': false,
+                          'backup': false,
+                          'mount': false,
+                        },
+                        'fields': [
+                          {'key': 'server', 'label': '服务器', 'required': true},
+                          {'key': 'share', 'label': '共享名', 'required': true},
+                          {'key': 'username', 'label': '用户名', 'required': true},
+                          {'key': 'password', 'label': '密码', 'secret': true},
+                          {
+                            'key': 'credential_state',
+                            'label': 'private reference',
+                            'internal': true,
+                            'secret': true,
+                          },
+                        ],
+                      },
+                    ],
+                    original: {
+                      'id': 'smb',
+                      'kind': 'smb',
+                      'name': 'Synthetic',
+                      'server': '127.0.0.1',
+                      'share': 'synthetic',
+                      'username': 'test',
+                      'password_saved': true,
+                    },
+                  ),
+                );
+              },
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      expect(find.text('服务器'), findsOneWidget);
+      expect(find.text('共享名'), findsOneWidget);
+      expect(find.text('允许修改远端文件'), findsNothing);
+      expect(find.text('private reference'), findsNothing);
+      expect(find.textContaining('已保存'), findsWidgets);
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+      expect(saved?['kind'], 'smb');
+      expect(saved?['network_route'], 'system');
+      expect(saved?['writable'], false);
+      expect(saved!.containsKey('credential_state'), false);
+    },
+  );
+
+  testWidgets(
+    'connected account can open add dialog and edit inactive accounts',
+    (tester) async {
+      tester.view.physicalSize = const Size(1100, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = StorageClient()
+        ..available = true
+        ..selected = 'active';
+      c.status = {'connected': true, 'profile': 'active'};
+      c.profiles = [
+        {'id': 'active', 'name': 'Active account', 'kind': 'example'},
+        {'id': 'other', 'name': 'Other account', 'kind': 'example'},
+      ];
+      c.providers = [
+        {'id': 'example', 'label': 'Example storage', 'fields': []},
+      ];
+      await tester.pumpWidget(DavApp(client: c));
+      await tester.tap(find.text('连接').first);
+      await tester.pumpAndSettle();
+      final add = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, '添加连接'),
+      );
+      expect(add.onPressed, isNotNull);
+      await tester.tap(find.text('添加连接'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ProfileDialog), findsOneWidget);
+      expect(c.connected, isTrue);
+      expect(c.selected, 'active');
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      final inactive = find.ancestor(
+        of: find.text('Other account'),
+        matching: find.byType(ConnectionCard),
+      );
+      final edit = find.descendant(
+        of: inactive,
+        matching: find.byTooltip('更多操作'),
+      );
+      await tester.ensureVisible(edit);
+      await tester.tap(edit);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('编辑'));
+      await tester.pumpAndSettle();
+      expect(find.text('编辑连接'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+    },
+  );
+
+  testWidgets('new provider schema works without DAV or peer fields', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 1100);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    Json? saved;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () async {
+              saved = await showDialog<Json>(
+                context: context,
+                builder: (_) => const ProfileDialog(
+                  providers: [
+                    {
+                      'id': 'bucket',
+                      'label': 'Example Storage',
+                      'fields': [
+                        {'key': 'bucket', 'label': '存储空间', 'required': true},
+                        {
+                          'key': 'access_token',
+                          'label': '访问凭据',
+                          'secret': true,
+                        },
+                      ],
+                    },
+                  ],
+                  original: {
+                    'id': 'p',
+                    'kind': 'bucket',
+                    'name': 'Account',
+                    'bucket': 'sample',
+                    'mount_path': '/tmp/example',
+                    'network_route': 'auto',
+                  },
+                ),
+              );
+            },
+            child: const Text('open'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    expect(find.text('Example Storage'), findsOneWidget);
+    expect(find.text('存储空间'), findsOneWidget);
+    expect(find.textContaining('WebDAV'), findsNothing);
+    expect(find.textContaining('配对状态'), findsNothing);
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(saved?['kind'], 'bucket');
+    expect(saved?['bucket'], 'sample');
+    expect(saved!.containsKey('url'), isFalse);
+    expect(saved!.containsKey('peer_state'), isFalse);
+  });
+  testWidgets(
+    'capabilities independently control file operations and provider labels',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = StorageClient()
+        ..available = true
+        ..selected = 'p';
+      c.profiles = [
+        {
+          'id': 'p',
+          'kind': 'bucket',
+          'name': 'Example',
+          'provider_label': 'Example Storage',
+          'account_name': 'bucket account',
+          'writable': true,
+        },
+      ];
+      c.status = {
+        'connected': true,
+        'capabilities': {
+          'upload': true,
+          'conditional_upload': false,
+          'rename': true,
+          'delete': false,
+          'mkdir': false,
+          'backup': false,
+          'mount': false,
+        },
+      };
+      c.entries = [
+        {
+          'name': 'sample',
+          'path': '/sample',
+          'directory': false,
+          'size': 3,
+          'etag': 'version',
+        },
+      ];
+      await tester.pumpWidget(DavApp(client: c));
+      await tester.tap(find.text('文件').first);
+      await tester.pumpAndSettle();
+      expect(find.text('上传'), findsNothing);
+      expect(find.byTooltip('新建文件夹'), findsNothing);
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.pumpAndSettle();
+      expect(find.text('重命名'), findsOneWidget);
+      expect(find.text('删除'), findsNothing);
+      expect(find.text('替换内容'), findsNothing);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TrayPanel(
+            client: c,
+            onManage: ([int p = 0]) async {},
+            onOpenFolder: () async {},
+            onQuit: () async {},
+          ),
+        ),
+      );
+      expect(find.text('Example Storage'), findsOneWidget);
+      expect(find.text('账号 · bucket account'), findsOneWidget);
+      expect(find.text('WebDAV'), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+    },
+  );
+  testWidgets(
+    'successful proxy fallback uses warning triangle and native warning asset',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final icons = <String>[];
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      const tray = MethodChannel('twodrive/status_tray');
+      const window = MethodChannel('window_manager');
+      messenger.setMockMethodCallHandler(tray, (call) async {
+        if (call.method == 'configure') {
+          icons.add((call.arguments as Map)['icon'] as String);
+        }
+        return null;
+      });
+      messenger.setMockMethodCallHandler(
+        window,
+        (call) async => call.method.startsWith('is') ? false : null,
+      );
+      addTearDown(() {
+        messenger.setMockMethodCallHandler(tray, null);
+        messenger.setMockMethodCallHandler(window, null);
+      });
+      final c = _ListingClient()..available = true;
+      c.status = {
+        'connected': true,
+        'route_fallback': true,
+        'network': ['network: route=system/proxy fallback'],
+      };
+      await tester.pumpWidget(DavApp(client: c, desktop: true));
+      await tester.pumpAndSettle();
+      expect(
+        icons.last,
+        endsWith('cloud-warning.${Platform.isWindows ? 'ico' : 'svg'}'),
+      );
+      c.status = {'connected': true, 'component_fallback': true};
+      c.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(icons.last, isNot(contains('cloud-warning')));
+      c.status['overall'] = {'route_fallback': true};
+      c.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(icons.last, contains('cloud-warning'));
+      c.status = {'connected': true, 'route_fallback': true};
+      expect(find.byIcon(Icons.warning_amber_rounded), findsNothing);
+      expect(find.byIcon(Icons.error_outline), findsNothing);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TrayPanel(
+            client: c,
+            onManage: ([int p = 0]) async {},
+            onOpenFolder: () async {},
+            onQuit: () async {},
+          ),
+        ),
+      );
+      expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.error), findsNothing);
+      c.error = '同步失败';
+      await tester.pumpWidget(DavApp(client: c, desktop: true));
+      await tester.pumpAndSettle();
+      expect(
+        icons.last,
+        endsWith('cloud-error.${Platform.isWindows ? 'ico' : 'svg'}'),
+      );
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+    },
+  );
+  testWidgets('another account fallback does not label the selected drive', (
+    tester,
+  ) async {
+    final c = StorageClient()
+      ..selected = 'local'
+      ..status = {
+        'connected': true,
+        'route_fallback': false,
+        'overall': {'route_fallback': true},
+        'accounts': [
+          {
+            'profile': 'other',
+            'name': 'Other device',
+            'connected': true,
+            'route_fallback': true,
+          },
+        ],
+      };
+    expect(c.trayState, 'warning');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TrayPanel(
+          client: c,
+          onManage: ([int page = 0]) async {},
+          onOpenFolder: () async {},
+          onQuit: () async {},
+        ),
+      ),
+    );
+    expect(find.text('已连接 · 使用系统／代理兜底'), findsNothing);
+    expect(find.textContaining('Other device'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+  testWidgets('active relay keeps the normal tray and share volume', (
+    tester,
+  ) async {
+    final c = StorageClient()
+      ..selected = 'pc'
+      ..profiles = [
+        {'id': 'pc', 'kind': 'peer', 'name': 'Fixture PC'},
+      ]
+      ..status = {
+        'connected': true,
+        'system_tunnel_active': true,
+        'component_fallback': true,
+      };
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TrayPanel(
+          client: c,
+          onManage: ([int page = 0]) async {},
+          onOpenFolder: () async {},
+          onQuit: () async {},
+        ),
+      ),
+    );
+    expect(c.trayState, 'connected');
+    expect(find.byIcon(Icons.warning_amber_rounded), findsNothing);
+    expect(find.text('文件已就绪'), findsOneWidget);
+    expect(find.text('部分请求正在使用系统网络'), findsNothing);
+    expect(find.text('中继或设备发现的 TCP 连接正在使用系统网络。'), findsNothing);
+    expect(find.text('部分辅助网络请求尝试使用系统网络。'), findsNothing);
+    expect(find.text('已连接 · 使用系统／代理兜底'), findsNothing);
+    expect(find.text('共享所在卷'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+  test('warning is connected fallback only; actual errors retain priority', () {
+    final c = StorageClient();
+    c.status = {'connected': true, 'route_fallback': true, 'paused': true};
+    expect(c.trayState, 'warning');
+    c.status = {'connected': true, 'system_tunnel_active': true};
+    expect(c.trayState, 'connected');
+    c.status['system_tunnel_active'] = false;
+    expect(c.trayState, 'connected');
+    c.status['backup_failed'] = true;
+    expect(c.trayState, 'error');
+    c.status = {'connected': false, 'route_fallback': true};
+    expect(c.trayState, 'offline');
+    c.status = {
+      'connected': true,
+      'network': ['text route=system/proxy fallback'],
+    };
+    expect(c.trayState, 'connected');
+    c.status = {'connected': true};
+    expect(c.trayState, 'connected');
+    c.dispose();
+  });
+}

@@ -9,6 +9,7 @@ use twodrive_core::{
     Database, FileRecord, FileState, PendingMetadataKind, PendingMetadataOperation,
 };
 
+use crate::activity::ActivityGuard;
 use crate::cache_io::has_existing_cache;
 use crate::conflicts::{preserve_conflict_copy, record_upload_etag, record_upload_remote_id};
 use crate::locks::item_sync_lock;
@@ -27,10 +28,12 @@ pub fn recover_dirty_uploads_concurrent<B: CloudBackend>(
         .all_records()?
         .into_iter()
         .filter(|record| {
-            matches!(
-                record.state,
-                FileState::Dirty | FileState::Uploading | FileState::Conflict
-            ) && record.cache_path.as_deref().is_some_and(Path::exists)
+            !db.excludes_upload(record)
+                && matches!(
+                    record.state,
+                    FileState::Dirty | FileState::Uploading | FileState::Conflict
+                )
+                && record.cache_path.as_deref().is_some_and(Path::exists)
         })
         .collect::<Vec<_>>();
     if records.is_empty() {
@@ -84,14 +87,17 @@ pub fn recover_dirty_uploads_concurrent<B: CloudBackend>(
 pub fn recover_dirty_record<B: CloudBackend>(
     db: &Database,
     backend: &B,
-    record: FileRecord,
+    mut record: FileRecord,
     on_progress: &mut dyn FnMut(u64, u64) -> anyhow::Result<()>,
 ) -> anyhow::Result<bool> {
     let lock = item_sync_lock(&record.metadata.remote_id);
     let _guard = lock
         .lock()
         .map_err(|_| anyhow::anyhow!("item sync lock is poisoned"))?;
-    if db.get_by_remote_id(&record.metadata.remote_id)?.is_none() {
+    let Some(current) = db.get_by_remote_id(&record.metadata.remote_id)? else {
+        return Ok(false);
+    };
+    if db.excludes_upload(&current) || db.excludes_upload(&record) {
         return Ok(false);
     }
     if db.is_pending_delete(&record.metadata.remote_id, &record.metadata.path)? {
@@ -135,21 +141,39 @@ pub fn recover_dirty_record<B: CloudBackend>(
             .pending_deletes()?
             .iter()
             .any(|delete| delete.cloud_remote_id.as_deref() == Some(remote.remote_id.as_str()));
-        if owned_by_another_record || awaiting_delete {
+        if awaiting_delete {
             return Ok(false);
+        }
+        if owned_by_another_record {
+            let Some(adopted) = db.adopt_excluded_backup_identity(&record, &remote)? else {
+                return Ok(false);
+            };
+            record = adopted;
         }
     }
 
     if !db.begin_upload(&record)? {
         return Ok(false);
     }
-    match backend.upload_file_with_version(
+    let mut activity = ActivityGuard::start(
+        cache_path.parent().unwrap_or(Path::new(".")),
+        "upload",
+        &record.metadata.path,
+        &record.metadata.name,
+        Some(record.metadata.size),
+    );
+    let uploaded_result = backend.upload_file_with_version(
         &record.metadata.path,
         &cache_path,
         record_upload_remote_id(&record),
         record_upload_etag(&record).as_deref(),
-        on_progress,
-    ) {
+        &mut |done, total| {
+            activity.set_progress(done, Some(total));
+            on_progress(done, total)
+        },
+    );
+    drop(activity);
+    match uploaded_result {
         Ok(uploaded) => {
             let _commit_guard = upload_commit_lock()
                 .lock()
@@ -181,14 +205,26 @@ pub fn recover_dirty_record<B: CloudBackend>(
             Ok(true)
         }
         Err(err) => {
+            db.retire_failed_known_upload_claim(&record)?;
             if db
                 .pending_delete_for_local_id(&record.metadata.remote_id)?
                 .is_some()
             {
                 return Ok(false);
             }
-            if backend.is_conflict_error(&err) {
-                db.mark_state(&record.metadata.remote_id, FileState::Conflict)?;
+            // A deleted/replaced cloud identity cannot be fixed by retrying its
+            // ID forever, or by overwriting a new same-name item. Confirm that
+            // exact ID is absent, then preserve these edits as a separate copy.
+            let missing_target = backend.is_not_found_error(&err)
+                && if let Some(id) = record.cloud_remote_id.as_deref() {
+                    backend.get_metadata(id)?.is_none()
+                } else {
+                    false
+                };
+            if backend.is_conflict_error(&err) || missing_target {
+                if !db.mark_upload_conflict(&record)? {
+                    return Ok(false);
+                }
                 let conflict_record = db
                     .get_by_remote_id(&record.metadata.remote_id)?
                     .unwrap_or(record.clone());
@@ -213,7 +249,7 @@ pub fn recover_dirty_record<B: CloudBackend>(
                 } else {
                     FileState::Dirty
                 };
-                db.mark_state(&record.metadata.remote_id, state)?;
+                db.finish_failed_upload(&record, state)?;
             }
             eprintln!(
                 "twodrive: dirty upload remains queued for {}: {err:#}",
@@ -278,6 +314,18 @@ pub(crate) fn recover_pending_delete_id<B: CloudBackend>(
     if !delete.retry_due(twodrive_core::now_unix()) {
         return Ok(false);
     }
+    // A delayed upload acknowledgement can outlive its local identity. Its
+    // cleanup must not delete an ID now owned by another live local record.
+    // Recheck persisted old cleanup tasks as well as guarding new insertions.
+    if let Some(id) = delete.cloud_remote_id.as_deref()
+        && db.get_by_cloud_remote_id(id)?.is_some()
+    {
+        if delete.local_id.is_none() {
+            db.remove_pending_delete(&delete.remote_id)?;
+            return Ok(true);
+        }
+        return Ok(false);
+    }
     let result = (|| -> anyhow::Result<bool> {
         // File locks also protect a transfer/handle owned by another process. Claim
         // all retained cache files before remote deletion or unknown-upload replay.
@@ -336,7 +384,7 @@ pub(crate) fn recover_pending_delete_id<B: CloudBackend>(
                 Err(err) => return Err(err.into()),
             }
         }
-        db.remove_pending_delete(&delete.remote_id)?;
+        db.complete_pending_delete(&delete.remote_id)?;
         Ok(true)
     })();
     if let Err(error) = &result {
@@ -397,6 +445,9 @@ pub(crate) fn recover_pending_metadata_record<B: CloudBackend>(
     let Some(record) = db.get_by_remote_id(&operation.local_id)? else {
         return Ok(false);
     };
+    if db.excludes_upload(&record) {
+        return Ok(false);
+    }
     // A queued snapshot may predate a local parent rename. Never replay its
     // old path, or let a child create a destination before the parent moves.
     if record.metadata.path != operation.path
@@ -424,19 +475,40 @@ pub(crate) fn recover_pending_metadata_record<B: CloudBackend>(
 }
 
 pub(crate) fn recover_interrupted_writes(db: &Database) -> anyhow::Result<()> {
-    // Only at startup: there are no live writers yet. Keep every byte left in cache.
+    // Only at startup: there are no live writers. Keep every cached byte.
+    db.retire_interrupted_known_upload_claims()?;
     for record in db.all_records()? {
-        if record.state == FileState::Writing
-            && let Some(path) = record.cache_path
+        if record.metadata.is_dir {
+            continue;
+        }
+        let excluded = db.excludes_file_name(&record.metadata.name);
+        if excluded {
+            // Also migrate legacy owner files that used to retry as normal uploads.
+            if let Some(path) = &record.cache_path
+                && let Ok(metadata) = fs::metadata(path)
+            {
+                db.mark_state(&record.metadata.remote_id, FileState::LocalOnly)?;
+                db.mark_dirty_with_size(&record.metadata.remote_id, metadata.len())?;
+            }
+        } else if (record.state == FileState::Writing || record.state == FileState::LocalOnly)
+            && let Some(path) = &record.cache_path
             && let Ok(metadata) = fs::metadata(path)
         {
+            db.mark_state(&record.metadata.remote_id, FileState::Dirty)?;
             db.mark_dirty_with_size(&record.metadata.remote_id, metadata.len())?;
+            if record.cloud_remote_id.is_some() {
+                db.move_subtree_and_queue(&record.metadata.remote_id, &record.metadata.path)?;
+            }
         }
     }
     Ok(())
 }
 
-pub(crate) fn enqueue_recovery(db: &Database, sender: &UploadQueue) -> anyhow::Result<()> {
+pub(crate) fn enqueue_recovery(
+    db: &Database,
+    sender: &UploadQueue,
+    include_pins: bool,
+) -> anyhow::Result<()> {
     for delete in db
         .pending_deletes()?
         .into_iter()
@@ -446,16 +518,25 @@ pub(crate) fn enqueue_recovery(db: &Database, sender: &UploadQueue) -> anyhow::R
     }
     let mut queued = HashSet::new();
     for operation in db.pending_metadata_operations()? {
+        if db
+            .get_by_remote_id(&operation.local_id)?
+            .as_ref()
+            .is_some_and(|record| db.excludes_upload(record))
+        {
+            continue;
+        }
         queued.insert(operation.local_id.clone());
         sender.send(UploadCommand::Upload(operation.local_id))?;
     }
     for record in db.all_records()? {
-        if (matches!(
-            record.state,
-            FileState::Dirty | FileState::Uploading | FileState::Conflict
-        ) || (!record.metadata.is_dir
-            && record.effective_pinned()
-            && !has_existing_cache(&record)))
+        if !db.excludes_upload(&record)
+            && (matches!(
+                record.state,
+                FileState::Dirty | FileState::Uploading | FileState::Conflict
+            ) || (include_pins
+                && !record.metadata.is_dir
+                && record.effective_pinned()
+                && !has_existing_cache(&record)))
             && queued.insert(record.metadata.remote_id.clone())
         {
             sender.send(UploadCommand::Upload(record.metadata.remote_id))?;

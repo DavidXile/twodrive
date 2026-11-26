@@ -6,12 +6,22 @@ import threading
 import time
 import json
 import sys
+import base64
+import hashlib
+import fcntl
+from pathlib import Path
+import re
+import stat
+import urllib.request
 
 import gi
 gi.require_version("Nautilus", "4.0")
 from gi.repository import Gio, GLib, GObject, Nautilus
 
 STATUS_CACHE = {}
+DAV_ONLY = Path(__file__).name == "twodrive_dav_nautilus.py"
+DAV_CONTROL = "user.twodrive.dav-controls"
+DAV_CONTROL_KEYS = set()
 STATUS_CACHE_TTL = 2.0
 TRANSIENT_STATES = {}
 TRANSIENT_TTL = 60.0
@@ -29,6 +39,7 @@ PATH_READ_IN_PROGRESS = False
 PATH_READ_QUEUED = False
 STATE_LOCK = threading.Lock()
 LOG_PATH = os.path.expanduser("~/.local/state/twodrive/nautilus.log")
+PROC_ROOT = Path("/proc")
 
 
 def twodrive_bin():
@@ -39,13 +50,58 @@ def mount_dir():
     return os.path.expanduser("~/TwoDrive/OneDrive")
 
 
-def cloud_path_from_local_path(path):
-    root = os.path.abspath(mount_dir())
+def dav_state_dir():
+    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    return data / "twodrive-dav/state"
+
+
+def local_json(path, limit=1048576):
+    with open(path, "rb") as handle:
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("local metadata too large")
+    return json.loads(data)
+
+
+def dav_profiles():
+    # Helper process only. Never read configuration or probe FUSE on the UI thread.
+    try:
+        profiles = local_json(dav_state_dir() / "profiles.json")["profiles"]
+        return [p for p in profiles if isinstance(p, dict)
+                and re.fullmatch(r"[a-zA-Z0-9_-]{1,256}", p.get("id", ""))
+                and isinstance(p.get("revision"), str)
+                and isinstance(p.get("mount_path"), str)
+                and p["mount_path"].startswith("/")
+                and os.path.normpath(p["mount_path"]) == p["mount_path"]
+                and p["mount_path"] != "/"]
+    except (OSError, ValueError, TypeError, KeyError):
+        return []
+
+
+def dav_key(profile, path):
+    return "dav:" + json.dumps([profile["id"], profile["revision"],
+                               profile["mount_path"], path], separators=(",", ":"))
+
+
+def dav_path(path, profiles):
+    for profile in sorted(profiles, key=lambda p: len(p["mount_path"]), reverse=True):
+        root = profile["mount_path"]
+        if path == root or path.startswith(root + "/"):
+            return dav_key(profile, path[len(root):] or "/")
+    return None
+
+
+def cloud_path_from_local_path(path, profiles=None):
+    root = None if DAV_ONLY else os.path.abspath(mount_dir())
     resolved = os.path.abspath(path)
+    profiles = dav_profiles() if profiles is None else profiles
     # Called by the helper process only: even readlink outside our mount can
     # block on another filesystem. Stop as soon as a shortcut enters our mount.
     for _ in range(40):
-        if resolved == root or resolved.startswith(root + os.sep):
+        key = dav_path(resolved, profiles)
+        if key:
+            return key
+        if root and (resolved == root or resolved.startswith(root + os.sep)):
             break
         parts = resolved.strip(os.sep).split(os.sep)
         prefix = os.sep
@@ -61,6 +117,8 @@ def cloud_path_from_local_path(path):
             break
         else:
             break
+    if root is None:
+        return None
     try:
         if os.path.commonpath((resolved, root)) != root:
             return None
@@ -77,10 +135,10 @@ def cloud_path(file_info):
     if not path:
         return None
     path = os.path.abspath(path)
-    root = os.path.abspath(mount_dir())
-    if path == root:
+    root = None if DAV_ONLY else os.path.abspath(mount_dir())
+    if root and path == root:
         return "/"
-    if path.startswith(root + os.sep):
+    if root and path.startswith(root + os.sep):
         return "/" + os.path.relpath(path, root)
     cached = PATH_CACHE.get(path)
     if cached and time.monotonic() - cached[0] < PATH_CACHE_TTL:
@@ -199,13 +257,14 @@ def file_display_state(state, release_pending, effective_pinned=False, cache_pat
 
 
 def emblems_for_state(state):
+    prefix = "emblem-twodrive-dav-" if DAV_ONLY else "emblem-twodrive-"
     if state == "pin_pending":
-        return ["emblem-twodrive-cloud", "emblem-twodrive-pinned"]
+        return [prefix + "cloud", prefix + "pinned"]
     if state == "uploading_release_pending":
-        return ["emblem-twodrive-cloud", "emblem-twodrive-syncing"]
+        return [prefix + "cloud", prefix + "syncing"]
     emblem = {
         "online_only": "emblem-twodrive-cloud",
-        "hydrating": "emblem-twodrive-syncing",
+        "hydrating": "emblem-twodrive-downloading",
         "writing": "emblem-twodrive-syncing",
         "dirty": "emblem-twodrive-syncing",
         "uploading": "emblem-twodrive-syncing",
@@ -215,7 +274,7 @@ def emblems_for_state(state):
         "conflict": "emblem-twodrive-error",
         "error": "emblem-twodrive-error",
     }.get(state)
-    return [emblem] if emblem else []
+    return [prefix + emblem.removeprefix("emblem-twodrive-")] if emblem else []
 
 
 def run_local_async(args, callback):
@@ -263,7 +322,8 @@ def selected_paths(files):
     seen = set()
     for file_info in files:
         path = cloud_path(file_info)
-        if path and path not in seen:
+        # DAV profiles have their own engine. Do not invoke the legacy CLI on them.
+        if path and not path.startswith("dav:") and path not in seen:
             selected.append((path, file_info))
             seen.add(path)
     return selected
@@ -349,12 +409,15 @@ def status_for(path):
     return data
 
 
-def db_states_for(paths):
+def db_states_for(paths, controls=None):
     if not paths:
         return {}
 
+    states = dav_states_for([p for p in paths if p.startswith("dav:")], controls=controls)
+    paths = [p for p in paths if not p.startswith("dav:")]
+    if not paths:
+        return states
     db_path = os.path.expanduser("~/.local/share/twodrive/twodrive.sqlite3")
-    states = {}
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.05)
         for index in range(0, len(paths), 200):
@@ -370,6 +433,269 @@ def db_states_for(paths):
         conn.close()
     except Exception as exc:
         log(f"state poll failed: {exc}")
+    return states
+
+
+def mounted_filesystems():
+    def unescape(value):
+        return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), value)
+    result = {}
+    for line in Path("/proc/self/mountinfo").read_text().splitlines():
+        left, right = line.split(" - ", 1)
+        fields = right.split()
+        result[unescape(left.split()[4])] = (fields[0], unescape(fields[1]))
+    return result
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
+def rc_read(env, operation):
+    # Only authenticated read-only local IPC. Never use proxies, redirects,
+    # cloud operations or credentials in a URL/log message.
+    if operation not in {"core/pid", "core/stats", "mount/listmounts"}:
+        raise ValueError("unsupported local status operation")
+    addr = env.get("RCLONE_RC_ADDR", "")
+    if not re.fullmatch(r"127\.0\.0\.1:[0-9]{1,5}", addr):
+        raise ValueError("invalid local status address")
+    user, password = env.get("RCLONE_RC_USER"), env.get("RCLONE_RC_PASS")
+    if not user or not password:
+        raise ValueError("missing local status authentication")
+    auth = base64.b64encode(f"{user}:{password}".encode()).decode()
+    request = urllib.request.Request("http://" + addr + "/" + operation, data=b"{}",
+                                     headers={"Authorization": "Basic " + auth,
+                                              "Content-Type": "application/json"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    with opener.open(request, timeout=0.35) as response:
+        data = response.read(65537)
+    if len(data) > 65536:
+        raise ValueError("local status too large")
+    return json.loads(data)
+
+
+def running_dav_engine_directory(state):
+    # An update can move the runtime directory before the old engine exits.
+    # The process holding this state's exclusive lock identifies that runtime.
+    try:
+        info = (state / "run.lock").lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            return None
+        lock_id = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+        for line in (PROC_ROOT / "locks").read_text().splitlines():
+            fields = line.split()
+            if len(fields) < 6 or fields[1:4] != ["FLOCK", "ADVISORY", "WRITE"]:
+                continue
+            major, minor, inode = fields[5].split(":")
+            if (int(major, 16), int(minor, 16), int(inode)) != lock_id:
+                continue
+            if not fields[4].isdigit():
+                return None
+            owner = PROC_ROOT / fields[4]
+            if owner.stat().st_uid != os.getuid():
+                return None
+            executable = Path(os.readlink(owner / "exe"))
+            if not executable.is_absolute() or executable.name != "twodrive-dav-engine":
+                return None
+            args = (owner / "cmdline").read_bytes().split(b"\0")
+            if any(flag == b"--state" and value == os.fsencode(state)
+                   for flag, value in zip(args, args[1:])):
+                return executable.parent
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def bridge_candidates(cache_root):
+    state = dav_state_dir()
+    directories = (state.parent / "runtime", running_dav_engine_directory(state))
+    executables = {str(directory / name) for directory in directories if directory is not None
+                   for name in ("rclone", "rclone-mount")}
+    executables.update({"/usr/lib/twodrive-dav/rclone", "/usr/lib/twodrive-dav/rclone-mount"})
+    for process in PROC_ROOT.iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            if process.stat().st_uid != os.getuid() or os.readlink(process / "exe") not in executables:
+                continue
+            env = dict(item.decode().split("=", 1) for item in
+                       (process / "environ").read_bytes().split(b"\0") if b"=" in item)
+            if env.get("RCLONE_CACHE_DIR") != str(cache_root):
+                continue
+            yield int(process.name), env
+        except (OSError, ValueError, TypeError):
+            continue
+
+
+def bridge_status(cache_root, mount_path):
+    for pid, env in bridge_candidates(cache_root):
+        try:
+            if rc_read(env, "core/pid").get("pid") != pid:
+                continue
+            live_mounts = rc_read(env, "mount/listmounts").get("mountPoints", [])
+            active = [m.get("Fs") for m in live_mounts if m.get("MountPoint") == mount_path]
+            if len(active) != 1 or not isinstance(active[0], str):
+                continue
+            # The pinned component names VFS cache directories after this
+            # active remote. vfs/stats would walk and lock the directory tree.
+            if not re.fullmatch(r"TWODRIVE(?:\{[A-Za-z0-9_+\-=]+\})?:", active[0]):
+                continue
+            namespace = active[0][:-1]
+            data, meta = cache_root / "vfs" / namespace, cache_root / "vfsMeta" / namespace
+            # Transfers identify active downloads; Dirty metadata takes priority
+            # for pending uploads. Partial, idle caches remain cloud-only.
+            try:
+                downloads = {t["name"] for t in rc_read(env, "core/stats").get("transferring", [])
+                             if isinstance(t.get("name"), str)}
+            except (OSError, ValueError, TypeError, KeyError):
+                downloads = set()
+            return data, meta, downloads
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return None
+
+
+def regular_local_file(path, root):
+    # All paths are private local cache paths, never mounted cloud paths.
+    relative = path.relative_to(root)
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if stat.S_ISLNK(current.lstat().st_mode):
+            raise ValueError("cache symlink")
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("not a cache file")
+    return info
+
+
+def bridge_file_state(path, cache):
+    data_root, meta_root, downloads = cache
+    relative = path.lstrip("/")
+    try:
+        metadata_path = meta_root / relative
+        regular_local_file(metadata_path, meta_root.parent.parent)
+        metadata = local_json(metadata_path, 65536)
+        if metadata.get("Dirty") is True:
+            return "uploading"
+        if relative in downloads:
+            return "hydrating"
+        if metadata.get("Dirty") is not False:
+            return "unknown"
+        size = metadata["Size"]
+        if type(size) is not int or size < 0:
+            return "unknown"
+        info = regular_local_file(data_root / relative, data_root.parent.parent)
+        if info.st_size != size or not metadata.get("Fingerprint"):
+            return "online_only"
+        end = 0
+        ranges = metadata.get("Rs") or []
+        if not isinstance(ranges, list):
+            return "unknown"
+        for item in sorted(ranges, key=lambda r: r["Pos"]):
+            start, length = item["Pos"], item["Size"]
+            if type(start) is not int or type(length) is not int or start < 0 or length < 0:
+                return "unknown"
+            if start > end:
+                break
+            end = max(end, start + length)
+        return "cached" if end >= size else "online_only"
+    except (OSError, ValueError, TypeError, KeyError):
+        return "hydrating" if relative in downloads else "online_only"
+
+
+def native_states(mount, paths, *, offline=False):
+    states = {}
+    with sqlite3.connect((mount / "mount.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=0.05) as conn:
+        for key, path in paths:
+            # Native FUSE owns a synthetic root; it need not be a files row.
+            # Root badges still reflect pending/error work, never full hydration.
+            if path == "/":
+                state = directory_state_for(conn, path, "online_only")
+                states[key] = state if state in {"error", "uploading", "uploading_release_pending", "pin_pending"} and not offline else "online_only"
+                continue
+            row = conn.execute("""SELECT state,is_dir,release_pending,pin_explicit,
+                                  pin_origin_remote_id,cache_path,size FROM files WHERE path=?""",
+                               (path,)).fetchone()
+            if not row:
+                continue
+            state, is_dir, release, pin, origin, cache, size = row
+            if offline and (is_dir or state not in {"cached", "pinned"}):
+                states[key] = "online_only"
+                continue
+            if is_dir:
+                state = directory_state_for(conn, path, state)
+                # A cached child does not mean the entire folder is offline.
+                states[key] = state if state in {"error", "uploading", "uploading_release_pending", "pin_pending"} else "online_only"
+                continue
+            if state in {"cached", "synced", "pinned"}:
+                try:
+                    root = mount / "cache"
+                    if (not cache or (offline and Path(cache).parent != root)
+                            or regular_local_file(Path(cache), root).st_size != size):
+                        cache = None
+                except (OSError, ValueError):
+                    cache = None
+                if not cache:
+                    state = "online_only"
+            if offline:
+                states[key] = state
+            else:
+                states[key] = file_display_state(state, release, bool(pin) or origin is not None, cache)
+    return states
+
+
+def dav_states_for(keys, *, controls=None):
+    if not keys:
+        return {}
+    # Explicit unknown removes obsolete badges on logout, rebind or unmount.
+    states = dict.fromkeys(keys, "unknown")
+    profiles = {p["id"]: p for p in dav_profiles()}
+    grouped = {}
+    for key in keys:
+        try:
+            ident, revision, root, path = json.loads(key[4:])
+            p = profiles[ident]
+            if (revision != p["revision"] or root != p["mount_path"] or not isinstance(path, str)
+                    or not path.startswith("/") or path.startswith("//") or "\0" in path
+                    or os.path.normpath(path) != path):
+                continue
+            grouped.setdefault(ident, []).append((key, path))
+        except (ValueError, TypeError, KeyError):
+            continue
+    mounts = mounted_filesystems()
+    for ident, paths in grouped.items():
+        p = profiles[ident]
+        try:
+            session = local_json(dav_state_dir() / f"session-{ident}.json")
+            if session["revision"] != p["revision"] or session["kind"] != p["kind"]:
+                continue
+            mount = dav_state_dir() / f"mount-{ident}"
+            kind, source = mounts.get(p["mount_path"], (None, None))
+            if kind == "fuse" and source in {"twodrive", "twodrive-dev", "twodrive-offline"}:
+                if local_json(mount / "binding.json")["provider"] == session["binding"]:
+                    states.update(native_states(mount, paths, offline=source == "twodrive-offline"))
+                    if controls is not None and source == "twodrive":
+                        try:
+                            supported = os.getxattr(p["mount_path"], DAV_CONTROL, follow_symlinks=False) == b"1"
+                        except OSError:
+                            supported = False
+                        if supported:
+                            controls.update(key for key, path in paths if path != "/" and states[key] != "unknown")
+            elif kind == "fuse" and source.startswith("twodrive-native-"):
+                owner = local_json(mount / "linux-readonly" / "native-owner.json")
+                if owner == {"source": source, "binding": session["binding"], "path": p["mount_path"]}:
+                    # The worker's verified content cache lasts only for this mount.
+                    states.update({key: "online_only" for key, _path in paths})
+            elif kind == "fuse.rclone" and source.startswith("twodrive-ro-"):
+                digest = hashlib.sha256(session["binding"].encode()).hexdigest()
+                cache = bridge_status(mount / "linux-accounts" / digest / "vfs", p["mount_path"])
+                if cache:
+                    states.update({key: bridge_file_state(path, cache) for key, path in paths})
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+            # Missing or mismatched local state never means safely downloaded.
+            pass
     return states
 
 
@@ -398,7 +724,7 @@ def read_helper_async(paths, callback, operation):
         process.force_exit()
         return False
 
-    timer = GLib.timeout_add_seconds(5, timeout)
+    timer = GLib.timeout_add_seconds(3600 if operation == "--dav-action" else 5, timeout)
 
     def finished(source, result):
         nonlocal timer
@@ -411,7 +737,13 @@ def read_helper_async(paths, callback, operation):
             if not source.get_successful():
                 raise RuntimeError(error.strip() or "state reader exited unsuccessfully")
             states = json.loads(output)
+            if operation == "--read-states":
+                DAV_CONTROL_KEYS.intersection_update(TRACKED_FILES)
+                DAV_CONTROL_KEYS.difference_update(paths)
+                DAV_CONTROL_KEYS.update(states["controls"])
+                states = states["states"]
         except Exception as exc:
+            states = {}
             log(f"state reader failed: {exc}")
         callback(states)
 
@@ -500,7 +832,7 @@ def refresh_tracked_states(db_states):
             if state != entry.get("state"):
                 entry["state"] = state
                 refresh_targets.append(file_info)
-                log(f"state changed path={path} state={state}")
+                log(f"state changed path={'dav-item' if path.startswith('dav:') else path} state={state}")
             STATUS_CACHE[path] = (now, {"state": state})
 
     for file_info in refresh_targets:
@@ -629,7 +961,68 @@ def run_action(action, paths, file_infos):
     run_next(0)
 
 
+def apply_dav_action(key, root, path, action):
+    # O_PATH takes a reference to the selected inode without opening its contents.
+    # Recheck the account binding after obtaining the descriptors. A remount or
+    # nested filesystem must never redirect a cache action to another account.
+    root_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        target_fd = os.open(path.lstrip("/") or ".", os.O_PATH | os.O_NOFOLLOW, dir_fd=root_fd)
+        try:
+            def mount_id(fd):
+                info = Path(f"/proc/self/fdinfo/{fd}").read_text()
+                return next(line for line in info.splitlines() if line.startswith("mnt_id:"))
+            controls = set()
+            dav_states_for([key], controls=controls)
+            current_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                if key not in controls or not mount_id(root_fd) == mount_id(target_fd) == mount_id(current_fd):
+                    raise OSError("mount changed")
+            finally:
+                os.close(current_fd)
+            target = f"/proc/self/fd/{target_fd}"
+            if stat.S_ISLNK(os.fstat(target_fd).st_mode) or os.getxattr(target, DAV_CONTROL) != b"1":
+                raise OSError("unsupported cache action")
+            value = action if action == "sync" else f"{action}:{os.fstat(target_fd).st_ino}"
+            os.setxattr(f"/proc/self/fd/{root_fd}", DAV_CONTROL, value.encode("ascii"))
+        finally:
+            os.close(target_fd)
+    finally:
+        os.close(root_fd)
+
+
+def dav_action(request):
+    action, keys = request["action"], request["keys"]
+    if action not in {"status", "release", "pin", "unpin", "sync"} or not 1 <= len(keys) <= 500:
+        raise ValueError("Invalid DAV cache action")
+    controls = set()
+    states = dav_states_for(keys, controls=controls)
+    messages = []
+    synced = set()
+    for key in keys:
+        _id, _revision, root, path = json.loads(key[4:])
+        name = os.path.basename(path) or "/"
+        if action == "status":
+            messages.append(f"{name}: {states.get(key, 'unknown').replace('_', ' ')}")
+            continue
+        if key not in controls:
+            messages.append(f"{name}: mount no longer supports this action")
+            continue
+        if action == "sync" and root in synced:
+            continue
+        try:
+            apply_dav_action(key, root, "/" if action == "sync" else path, action)
+            if action == "sync":
+                synced.add(root)
+            messages.append(f"{name}: request accepted")
+        except OSError as error:
+            messages.append(f"{name}: {error.strerror or 'mount operation failed'}")
+    return {"messages": messages}
+
+
 class TwoDriveExtension(GObject.GObject, Nautilus.MenuProvider, Nautilus.InfoProvider):
+    if DAV_ONLY:
+        __gtype_name__ = "TwoDriveDavExtension"
     # Use the synchronous provider entry point. nautilus-python 4.0 passes
     # *handle to update_file_info_full but never assigns a unique operation
     # handle back to Nautilus. IN_PROGRESS can therefore leave a NULL handle
@@ -638,6 +1031,11 @@ class TwoDriveExtension(GObject.GObject, Nautilus.MenuProvider, Nautilus.InfoPro
 
     def get_file_items(self, files):
         if not files:
+            return []
+        dav_files = [(key, info) for info in files if (key := cloud_path(info)) and key.startswith("dav:")]
+        if DAV_ONLY and dav_files and len(dav_files) == len(files):
+            return self.dav_items(dav_files)
+        if DAV_ONLY:
             return []
         local_paths = []
         for file_info in files:
@@ -678,6 +1076,29 @@ class TwoDriveExtension(GObject.GObject, Nautilus.MenuProvider, Nautilus.InfoPro
             items.append(item)
         return items
 
+    def dav_items(self, selected):
+        keys, files = zip(*selected)
+        if any(STATUS_CACHE.get(key, (0, {}))[1].get("state", "unknown") == "unknown" for key in keys):
+            return []
+        actions = ["status"]
+        if all(key in DAV_CONTROL_KEYS for key in keys):
+            actions = ["release", "pin", "unpin", "sync", "status"]
+        items = []
+        for action in actions:
+            title = action_title(action)
+            item = Nautilus.MenuItem(name="TwoDriveDav" + action.title(), label=title,
+                                     tip="TwoDrive " + title)
+            item.connect("activate", self.activate_dav, action, keys, files)
+            items.append(item)
+        return items
+
+    def activate_dav(self, _item, action, keys, files):
+        def finished(result):
+            messages = result.get("messages") or ["The mount did not confirm the request."]
+            notify("TwoDrive " + action_title(action), "\n".join(messages[:20]))
+            schedule_refreshes(files)
+        read_helper_async({"action": action, "keys": keys}, finished, "--dav-action")
+
     def copy_paths(self, _item, paths):
         try:
             import gi
@@ -711,7 +1132,17 @@ class TwoDriveExtension(GObject.GObject, Nautilus.MenuProvider, Nautilus.InfoPro
         return Nautilus.OperationResult.COMPLETE
 
 
+if DAV_ONLY:
+    # nautilus-python registers its wrapper type from the Python class name.
+    TwoDriveExtension.__name__ = "TwoDriveDavExtension"
+
+
 if __name__ == "__main__" and sys.argv[1:] == ["--read-states"]:
-    print(json.dumps(db_states_for(json.load(sys.stdin))))
+    controls = set()
+    states = db_states_for(json.load(sys.stdin), controls=controls)
+    print(json.dumps({"states": states, "controls": sorted(controls)}))
 elif __name__ == "__main__" and sys.argv[1:] == ["--resolve-paths"]:
-    print(json.dumps({path: cloud_path_from_local_path(path) for path in json.load(sys.stdin)}))
+    profiles = dav_profiles()
+    print(json.dumps({path: cloud_path_from_local_path(path, profiles) for path in json.load(sys.stdin)}))
+elif __name__ == "__main__" and sys.argv[1:] == ["--dav-action"]:
+    print(json.dumps(dav_action(json.load(sys.stdin))))

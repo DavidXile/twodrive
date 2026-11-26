@@ -5,6 +5,7 @@ use super::paths::{encode_graph_path, percent_encode_path_segment};
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{CONTENT_RANGE, IF_MATCH};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -97,6 +98,24 @@ pub(super) struct PersistedUploadSession {
     pub(super) source_modified_unix: i64,
     pub(super) remote_id: Option<String>,
     pub(super) if_match: Option<String>,
+    #[serde(default)]
+    pub(super) create_only: bool,
+    #[serde(default)]
+    pub(super) source_digest: Option<String>,
+}
+
+pub(super) fn source_digest(path: &Path) -> anyhow::Result<String> {
+    let mut source = fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let count = source.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,10 +160,14 @@ pub(super) fn uses_upload_session(size: u64) -> bool {
     size > SIMPLE_UPLOAD_MAX
 }
 
+#[cfg(test)]
 pub(super) fn upload_session_request_body() -> serde_json::Value {
+    upload_session_request_body_for(false)
+}
+pub(super) fn upload_session_request_body_for(create_only: bool) -> serde_json::Value {
     serde_json::json!({
         "item": {
-            "@microsoft.graph.conflictBehavior": "replace"
+            "@microsoft.graph.conflictBehavior": if create_only { "fail" } else { "replace" }
         }
     })
 }

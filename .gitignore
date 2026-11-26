@@ -1,12 +1,24 @@
 /target/
 target/
 /dist/
+/debian/.debhelper/
+/debian/cargo-target/
+/debian/twodrive/
+/debian/twodrive-dbgsym/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/*.substvars
+/debian/*.debhelper
 
 # Local twodrive runtime/config artifacts. Real config may contain a local
 # Azure app id and tokens must never enter the repository.
 config.toml
 tokens.json
 *.tokens.json
+client_secret*.json
+google-client.json
+google-tokens.json
+google-intent-*.json
 .config/twodrive/config.toml
 .config/twodrive/tokens.json
 twodrive.sqlite3
@@ -47,3 +59,16 @@ trusted.json
 
 # Cargo build settings are not runtime account configuration.
 !/.cargo/config.toml
+
+# Private desktop state, credentials and local validation output.
+/state/
+/accounts/
+/profiles.json
+/session-*.json
+/*.secret
+/observer.env
+/outputs/
+/validation-logs/
+/private-validation/
+*.sqlite3
+*.sqlite3-*

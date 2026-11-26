@@ -40,7 +40,7 @@ ones; it does not convert Windows or portable tar archives into Debian packages.
 
 ## Stable 0.2.14-2
 
-The production Rust sources, Cargo.lock, Python desktop helper logic, service and
+The application Rust sources, Cargo.lock, Python desktop helper logic, service and
 .desktop files are unchanged from stable `main` 7eb7f3d. This is a Debian
 packaging revision, not a sync-engine feature release; the CLI still reports
 0.2.14. debhelper may normalize Python shebangs to /usr/bin/python3. The native SQLite dependency is linked from the distribution and checked
@@ -59,6 +59,25 @@ review of remaining native convenience copies, licensing review, sponsorship,
 and clean Debian distribution build/autopkgtest/piuparts validation.
 
 See [build instructions](../debian/README.source) and
+[stable incident and verification record](https://github.com/LumiaBlack51/twodrive/blob/main/doc/incidents.md).
+Validation and delivery results are added below only after execution.
+
+## Development 0.1.6
+
+Development uses the same complete source-package preparation and debhelper
+build path as main. The GNOME package version is `0.2.14+dev0.1.6-1`; its
+separate upstream version prevents reusing a stable original tarball for different
+Development sources. The GNOME CLI version remains 0.2.14. The Flutter desktop
+is supplied as portable Linux/Windows bundles and an unsigned test MSIX.
+
+The build retains a locked vendor component and third-party license texts,
+uses a fresh Cargo home offline, checks all source/binary manifests, and tests
+upgrade, removal and purge with synthetic account/cache/recovery sentinels.
+Ubuntu CI explicitly records its newer rustup compiler dependency-check bypass;
+this upstream distribution is not an official Debian archive upload. Normal
+Debian builds must satisfy all declared Build-Depends. See the
+[0.1.6 release record](development-0.1.6.md).
+
 [incident and verification record](incidents.md#td-20261015-11stable-main-debian-打包流程与用户安装兼容性迁移).
 Final validation completed: 171 default Rust tests, 25 Nautilus, 4 Settings,
 6 release-guard tests, strict Clippy/formatting, seven explicit FUSE regressions,

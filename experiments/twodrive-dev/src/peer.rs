@@ -11,7 +11,7 @@ use http_body_util::{BodyExt, Full, Limited, combinators::UnsyncBoxBody};
 use hyper::{body::Incoming, service::service_fn};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use iroh::{
-    Endpoint, EndpointAddr, RelayMode,
+    Endpoint, EndpointAddr, RelayMode, SecretKey, Watcher,
     endpoint::{Connection, RecvStream, SendStream, presets},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -41,6 +41,8 @@ pub struct Network {
     pub relays: Vec<String>,
     pub no_relay: bool,
     pub relay_only: bool,
+    pub route: crate::network::RouteMode,
+    pub interface: Option<String>,
 }
 
 pub async fn endpoint(state: &State, network: &Network) -> anyhow::Result<Endpoint> {
@@ -48,22 +50,37 @@ pub async fn endpoint(state: &State, network: &Network) -> anyhow::Result<Endpoi
         !(network.no_relay && (network.relay_only || !network.relays.is_empty())),
         "--no-relay cannot be combined with relay options"
     );
+    for value in &network.relays {
+        let url = url::Url::parse(value)?;
+        ensure!(
+            url.scheme() == "https" && url.username().is_empty() && url.password().is_none(),
+            "custom relays require HTTPS without credentials"
+        );
+    }
+    // State/configuration errors must not be mislabeled as routing failures.
+    let secret = state.identity()?;
+    match bind_endpoint(&secret, network).await {
+        Ok(endpoint) => Ok(endpoint),
+        Err(_) if network.route == crate::network::RouteMode::Auto => {
+            eprintln!(
+                "network: route=system/proxy fallback; physical setup or relay registration failed"
+            );
+            let mut fallback = network.clone();
+            fallback.route = crate::network::RouteMode::System;
+            bind_endpoint(&secret, &fallback).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn bind_endpoint(secret: &SecretKey, network: &Network) -> anyhow::Result<Endpoint> {
     let mut builder = if network.no_relay {
         Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled)
     } else if !network.relays.is_empty() {
         let relays = network
             .relays
             .iter()
-            .map(|value| {
-                let url = url::Url::parse(value)?;
-                ensure!(
-                    url.scheme() == "https"
-                        && url.username().is_empty()
-                        && url.password().is_none(),
-                    "custom relays require HTTPS without credentials"
-                );
-                Ok(value.parse()?)
-            })
+            .map(|value| Ok(value.parse()?))
             .collect::<anyhow::Result<Vec<_>>>()?;
         Endpoint::builder(presets::Minimal).relay_mode(RelayMode::custom(relays))
     } else {
@@ -72,12 +89,21 @@ pub async fn endpoint(state: &State, network: &Network) -> anyhow::Result<Endpoi
     if network.relay_only {
         builder = builder.clear_ip_transports();
     }
+    builder = crate::network::configure(
+        builder,
+        network.route,
+        network.interface.as_deref(),
+        !network.no_relay && network.relays.is_empty(),
+        network.relay_only,
+        &network.relays,
+    )
+    .await?;
     let transport = iroh::endpoint::QuicTransportConfig::builder()
         .max_concurrent_bidi_streams(64u32.into())
         .max_concurrent_uni_streams(0u32.into())
         .build();
     let endpoint = builder
-        .secret_key(state.identity()?)
+        .secret_key(secret.clone())
         .alpns(vec![ALPN.to_vec()])
         .transport_config(transport)
         .bind()
@@ -87,12 +113,193 @@ pub async fn endpoint(state: &State, network: &Network) -> anyhow::Result<Endpoi
             .await
             .is_err()
     {
-        endpoint.close().await;
+        registration_diagnostics(&endpoint).await;
+        crate::network::close_failed(endpoint).await;
         anyhow::bail!(
             "relay registration timed out; check outbound connectivity or use --no-relay for LAN testing"
         );
     }
     Ok(endpoint)
+}
+
+// Report bounded categories and counts, never arbitrary upstream error text:
+// proxy URLs and server messages can contain credentials or tokens.
+fn error_categories(error: &(dyn std::error::Error + 'static)) -> Vec<String> {
+    let mut categories = Vec::new();
+    let mut current = Some(error);
+    while let Some(error) = current {
+        let message = error.to_string().to_ascii_lowercase();
+        let category = if let Some(io) = error.downcast_ref::<std::io::Error>() {
+            format!("io({:?},os={:?})", io.kind(), io.raw_os_error())
+        } else if message.contains("nxdomain") {
+            "dns_nxdomain".into()
+        } else if message.contains("no nameservers configured") {
+            "dns_no_nameservers".into()
+        } else if message.contains("no nameserver returned") {
+            "dns_no_usable_response".into()
+        } else if message.contains("servfail") {
+            "dns_servfail".into()
+        } else if message.contains("refused") {
+            "refused".into()
+        } else if message.contains("malformed dns") {
+            "dns_invalid_response".into()
+        } else if ["dns", "resolve", "lookup", "query"]
+            .iter()
+            .any(|word| message.contains(word))
+        {
+            "dns".into()
+        } else if ["tls", "certificate"]
+            .iter()
+            .any(|word| message.contains(word))
+        {
+            "tls".into()
+        } else if message.contains("proxy") {
+            "proxy".into()
+        } else if message.contains("timeout") || message.contains("timed out") {
+            "timeout".into()
+        } else if message.contains("handshake") {
+            "handshake".into()
+        } else if message.contains("connect") {
+            "connect".into()
+        } else {
+            "other".into()
+        };
+        categories.push(category);
+        if categories.len() == 8 {
+            break;
+        }
+        current = error.source();
+    }
+    categories
+}
+
+async fn registration_diagnostics(endpoint: &Endpoint) {
+    let relays = endpoint.home_relay_status().get();
+    eprintln!(
+        "network: registration diagnostic home_relays={}",
+        relays.len()
+    );
+    for (index, relay) in relays.iter().enumerate() {
+        let error = relay.last_error().map(|error| error_categories(error));
+        eprintln!(
+            "network: registration diagnostic relay_index={index} connected={} errors={error:?}",
+            relay.is_connected()
+        );
+    }
+    let Ok(resolver) = endpoint.dns_resolver() else {
+        return;
+    };
+    // A fixed public name avoids printing custom URLs, credentials or tokens.
+    let host = iroh::defaults::prod::AP_RELAY_HOSTNAME;
+    let budget = Duration::from_secs(3);
+    let (v4, v6) = tokio::join!(
+        tokio::time::timeout(budget, resolver.lookup_ipv4(host, budget)),
+        tokio::time::timeout(budget, resolver.lookup_ipv6(host, budget)),
+    );
+    let v4 = match v4 {
+        Ok(Ok(addresses)) => {
+            let addresses: Vec<_> = addresses.collect();
+            let fake = addresses
+                .iter()
+                .filter(|ip| matches!(ip, std::net::IpAddr::V4(ip) if ip.octets()[0] == 198 && matches!(ip.octets()[1], 18 | 19)))
+                .count();
+            format!("records={} fake_ip={fake}", addresses.len())
+        }
+        Ok(Err(error)) => format!("error={:?}", error_categories(&error)),
+        Err(_) => "timeout".into(),
+    };
+    let v6 = match v6 {
+        Ok(Ok(addresses)) => format!("records={}", addresses.count()),
+        Ok(Err(error)) => format!("error={:?}", error_categories(&error)),
+        Err(_) => "timeout".into(),
+    };
+    eprintln!("network: registration diagnostic aps_dns_a={v4} aps_dns_aaaa={v6}");
+    // Contrast the dependency's raw DNS resolver with the operating system's
+    // native resolver. A detached native lookup cannot stall endpoint teardown.
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let started = std::thread::Builder::new().name("td-dns-diagnostic".into()).spawn(move || {
+        use std::net::ToSocketAddrs;
+        let result = match (host, 443).to_socket_addrs() {
+            Ok(addresses) => {
+                let addresses: Vec<_> = addresses.collect();
+                let v4 = addresses.iter().filter(|a| a.is_ipv4()).count();
+                let fake = addresses.iter().filter(|a| matches!(a.ip(), std::net::IpAddr::V4(ip) if ip.octets()[0] == 198 && matches!(ip.octets()[1], 18 | 19))).count();
+                format!("records={} ipv4={v4} fake_ip={fake}", addresses.len())
+            }
+            Err(error) => format!("error={:?}", error_categories(&error)),
+        };
+        let _ = send.send(result);
+    });
+    let native = if started.is_err() {
+        "thread_unavailable".into()
+    } else {
+        match tokio::time::timeout(budget, receive).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => "lookup_unavailable".into(),
+            Err(_) => "timeout".into(),
+        }
+    };
+    eprintln!("network: registration diagnostic native_aps_dns={native}");
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::error_categories;
+
+    #[test]
+    fn diagnostics_keep_io_code_without_upstream_secrets() {
+        let secret_error = n0_error::AnyError::from_string(
+            "proxy failed for https://user:private-password@proxy.test/?token=private-token".into(),
+        );
+        assert_eq!(error_categories(&secret_error), ["proxy"]);
+        let os_error = std::io::Error::from_raw_os_error(10061);
+        let categories = error_categories(&os_error);
+        assert!(categories[0].contains("10061"));
+        assert!(!categories[0].contains("private-"));
+        assert_eq!(
+            error_categories(&n0_error::AnyError::from_string(
+                "domain name does not exist (NXDOMAIN)".into()
+            )),
+            ["dns_nxdomain"]
+        );
+        assert_eq!(
+            error_categories(&n0_error::AnyError::from_string(
+                "no nameserver returned a usable response".into()
+            )),
+            ["dns_no_usable_response"]
+        );
+    }
+}
+
+/// Retry a failed transport before sending authorization or consuming an invite.
+pub async fn connect_client(
+    state: &State,
+    network: &Network,
+    address: EndpointAddr,
+) -> anyhow::Result<(Endpoint, PeerClient)> {
+    let endpoint = endpoint(state, network).await?;
+    let client = PeerClient::new(endpoint.clone(), address.clone());
+    match client.connection().await {
+        Ok(_) => Ok((endpoint, client)),
+        Err(error) => {
+            endpoint.close().await;
+            if network.route != crate::network::RouteMode::Auto {
+                return Err(error);
+            }
+            eprintln!(
+                "network: route=system/proxy fallback; peer transport connection failed; authorization has not been sent"
+            );
+            let mut fallback = network.clone();
+            fallback.route = crate::network::RouteMode::System;
+            let endpoint = self::endpoint(state, &fallback).await?;
+            let client = PeerClient::new(endpoint.clone(), address);
+            if let Err(error) = client.connection().await {
+                endpoint.close().await;
+                return Err(error);
+            }
+            Ok((endpoint, client))
+        }
+    }
 }
 
 pub struct QuicIo {
@@ -258,7 +465,11 @@ pub async fn serve(
     max_upload: u64,
 ) -> anyhow::Result<()> {
     prepare_share(&endpoint, &state, root, writable)?;
-    let dav = handler(root)?;
+    let fs = CapFs::new(root)?;
+    let dav = DavHandler::builder()
+        .filesystem(Box::new(fs.clone()))
+        .locksystem(MemLs::new())
+        .build_handler();
     let connections = Arc::new(Semaphore::new(32));
     let streams = Arc::new(Semaphore::new(64));
     let mutations = Arc::new(Mutex::new(()));
@@ -268,6 +479,7 @@ pub async fn serve(
             continue;
         };
         let state = state.clone();
+        let fs = fs.clone();
         let dav = dav.clone();
         let streams = streams.clone();
         let mutations = mutations.clone();
@@ -283,6 +495,7 @@ pub async fn serve(
                     break;
                 };
                 let state = state.clone();
+                let fs = fs.clone();
                 let dav = dav.clone();
                 let id = id.clone();
                 let mutations = mutations.clone();
@@ -302,6 +515,7 @@ pub async fn serve(
                     }
                     let service = service_fn(move |request: Request<Incoming>| {
                         let state = state.clone();
+                        let fs = fs.clone();
                         let dav = dav.clone();
                         let id = id.clone();
                         let mutations = mutations.clone();
@@ -312,7 +526,7 @@ pub async fn serve(
                             if !writable
                                 && !matches!(
                                     request.method().as_str(),
-                                    "GET" | "HEAD" | "OPTIONS" | "PROPFIND"
+                                    "GET" | "HEAD" | "OPTIONS" | "PROPFIND" | "TD-SIGNATURE"
                                 )
                             {
                                 return Ok(dav_error(StatusCode::FORBIDDEN));
@@ -327,14 +541,25 @@ pub async fn serve(
                             {
                                 return Ok(dav_error(StatusCode::FORBIDDEN));
                             }
-                            if request.headers().contains_key("Content-Range")
-                                || request.method().as_str() == "PATCH"
-                            {
+                            if request.headers().contains_key("Content-Range") {
                                 return Ok(dav_error(StatusCode::NOT_IMPLEMENTED));
                             }
                             // This covers chunked bodies too; partial writes never commit.
                             let _guard = mutations.lock().await;
-                            Ok(handle_limited(dav, request, max_upload).await)
+                            if matches!(request.method().as_str(), "TD-SIGNATURE" | "PATCH") {
+                                return Ok(
+                                    crate::delta_http::handle(dav, fs, request, max_upload).await
+                                );
+                            }
+                            let options = request.method() == http::Method::OPTIONS;
+                            let mut response = handle_limited(dav, request, max_upload).await;
+                            if options && response.status().is_success() {
+                                response.headers_mut().insert(
+                                    "Accept-Patch",
+                                    crate::delta::MEDIA_TYPE.parse().unwrap(),
+                                );
+                            }
+                            Ok(response)
                         }
                     });
                     let _ = hyper::server::conn::http1::Builder::new()
@@ -427,6 +652,13 @@ impl PeerClient {
             self.address.id,
             transport(&connection)
         );
+        if let Some(path) = connection.paths().iter().find(|path| path.is_selected()) {
+            println!(
+                "Selected path: {} RTT: {:.1} ms",
+                path.remote_addr(),
+                path.rtt().as_secs_f64() * 1000.0
+            );
+        }
         Ok(())
     }
     pub async fn forward(&self, request: Request<Incoming>) -> anyhow::Result<Response<ProxyBody>> {
@@ -549,7 +781,18 @@ pub async fn gateway(
                     // Never replay a mutation on transport failure; the caller decides retry.
                     Ok(match client.forward(request).await {
                         Ok(response) => response,
-                        Err(_) => proxy_error(StatusCode::BAD_GATEWAY),
+                        Err(error) => {
+                            let category =
+                                if error.chain().any(|e| e.is::<tokio::time::error::Elapsed>()) {
+                                    "timeout"
+                                } else if error.chain().any(|e| e.is::<hyper::Error>()) {
+                                    "http"
+                                } else {
+                                    "transport"
+                                };
+                            eprintln!("network: peer request failed; category={category}");
+                            proxy_error(StatusCode::BAD_GATEWAY)
+                        }
                     })
                 }
             });

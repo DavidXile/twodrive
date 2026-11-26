@@ -1,0 +1,793 @@
+{
+  "date": "2026-10-13",
+  "product": "TwoDrive Development",
+  "local": {
+    "mode": "local-WebDAV",
+    "checks": {
+      "private_profiles": true,
+      "connect": true,
+      "connection_affinity_enforced": true,
+      "roundtrip_bytes": 2097356,
+      "roundtrip_sha256": "25e13b8004eab67ba7723f8ff39dd3b180edd968c2902d3e0ed47e9a74723b65",
+      "shallow_directory": true,
+      "no_clobber": true,
+      "traversal_rejected": true,
+      "rename": true,
+      "progress_events": 3,
+      "fuse_read": true,
+      "existing_mount_not_adopted": true,
+      "fuse_write": true,
+      "fuse_pause_preserves_and_resumes_pending_write": true,
+      "cache_cleared": true,
+      "backup_committed_upload_recovery_by_hash": true,
+      "backup_conflict_preserves_remote": true,
+      "folder_backup_create_update_pause_resume_symlink_guard": true,
+      "remote_test_removed": true,
+      "readonly_enforced": true,
+      "autostart_toggle_isolated_default_off": true
+    },
+    "passed": true
+  },
+  "windows": {
+    "mode": "actual-paired-Windows",
+    "checks": {
+      "private_profiles": true,
+      "connect": true,
+      "connection_affinity_enforced": true,
+      "roundtrip_bytes": 2097356,
+      "roundtrip_sha256": "25e13b8004eab67ba7723f8ff39dd3b180edd968c2902d3e0ed47e9a74723b65",
+      "shallow_directory": true,
+      "no_clobber": true,
+      "traversal_rejected": true,
+      "rename": true,
+      "progress_events": 6,
+      "fuse_read": true,
+      "fuse_write": true,
+      "fuse_pause_preserves_and_resumes_pending_write": true,
+      "cache_cleared": true,
+      "backup_committed_upload_recovery_by_hash": true,
+      "backup_conflict_preserves_remote": true,
+      "folder_backup_create_update_pause_resume_symlink_guard": true,
+      "remote_test_removed": true,
+      "autostart_toggle_isolated_default_off": true
+    },
+    "passed": true
+  },
+  "routes": [
+    {
+      "mode": "direct",
+      "connected": true,
+      "seconds": 2.53,
+      "network": [
+        "network: route=physical interface=wlo1 fallback=disabled"
+      ]
+    },
+    {
+      "mode": "system",
+      "connected": true,
+      "seconds": 3.38,
+      "network": [
+        "network: route=system/proxy; physical bypass disabled"
+      ]
+    },
+    {
+      "mode": "auto",
+      "connected": true,
+      "seconds": 2.8,
+      "network": [
+        "network: route=physical interface=wlo1 fallback=reported-system/proxy"
+      ]
+    }
+  ],
+  "native": {
+    "tray_registered": true,
+    "dbus_activate_panel": true,
+    "panel_logical_size": [
+      390,
+      570
+    ],
+    "display_scale": 2,
+    "application_quit_exit_code": 0,
+    "event_test_boundary": "Synthetic EnterNotify/primary press/release through the GTK tray window, matching GNOME forwarding; not hardware pointer injection.",
+    "gnome_host": "GTK XEmbed compatibility for the host that reserves SNI activation for double click",
+    "position_stable": true,
+    "window_manager_settling_checked_ms": 400,
+    "gnome_pointer_anchor_regression": {
+      "single_click_roundtrips": [
+        {
+          "expected": "IsViewable",
+          "ms": 42,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsViewable"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsUnMapped",
+          "ms": 4,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsUnMapped"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsViewable",
+          "ms": 32,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsViewable"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsUnMapped",
+          "ms": 5,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsUnMapped"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsViewable",
+          "ms": 33,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsViewable"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsUnMapped",
+          "ms": 5,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsUnMapped"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        }
+      ],
+      "settling_ms": 400,
+      "stable": true,
+      "pointer_anchor_verified": true,
+      "host_event_root": "icon-local center"
+    },
+    "earlier_position_boundary_correction": "Earlier stable synthetic event coordinates did not verify the GNOME clone position; the later regression verifies the live pointer anchor and mapped window coordinates.",
+    "installed_full_rectangle_regression": {
+      "single_click_roundtrips": [
+        {
+          "expected": "IsViewable",
+          "ms": 54,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsViewable"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsUnMapped",
+          "ms": 4,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsUnMapped"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsViewable",
+          "ms": 44,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsViewable"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsUnMapped",
+          "ms": 4,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsUnMapped"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsViewable",
+          "ms": 28,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsViewable"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsUnMapped",
+          "ms": 4,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsUnMapped"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        }
+      ],
+      "settling_ms": 400,
+      "stable": true,
+      "pointer_anchor_verified": true,
+      "host_event_root": "icon-local center"
+    },
+    "isolated_full_rectangle_regression": {
+      "single_click_roundtrips": [
+        {
+          "expected": "IsViewable",
+          "ms": 36,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsViewable"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsUnMapped",
+          "ms": 4,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsUnMapped"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsViewable",
+          "ms": 32,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsViewable"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsUnMapped",
+          "ms": 4,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsUnMapped"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsViewable",
+          "ms": 31,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsViewable"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        },
+        {
+          "expected": "IsUnMapped",
+          "ms": 4,
+          "geometry": {
+            "Absolute upper-left X": "936",
+            "Absolute upper-left Y": "88",
+            "Width": "780",
+            "Height": "1140",
+            "Map State": "IsUnMapped"
+          },
+          "pointer": [
+            1676,
+            1267
+          ]
+        }
+      ],
+      "settling_ms": 400,
+      "stable": true,
+      "pointer_anchor_verified": true,
+      "host_event_root": "icon-local center"
+    },
+    "full_rectangle_regression_old_failed": true,
+    "installed_size": "780x1140 physical pixels / 390x570 logical pixels",
+    "earlier_single_click_event_roundtrips": [
+      {
+        "expected": "IsViewable",
+        "ms": 50,
+        "geometry": {
+          "Absolute upper-left X": "1140",
+          "Absolute upper-left Y": "546",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsViewable"
+        }
+      },
+      {
+        "expected": "IsUnMapped",
+        "ms": 4,
+        "geometry": {
+          "Absolute upper-left X": "1140",
+          "Absolute upper-left Y": "546",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsUnMapped"
+        }
+      },
+      {
+        "expected": "IsViewable",
+        "ms": 36,
+        "geometry": {
+          "Absolute upper-left X": "1140",
+          "Absolute upper-left Y": "546",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsViewable"
+        }
+      },
+      {
+        "expected": "IsUnMapped",
+        "ms": 3,
+        "geometry": {
+          "Absolute upper-left X": "1140",
+          "Absolute upper-left Y": "546",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsUnMapped"
+        }
+      },
+      {
+        "expected": "IsViewable",
+        "ms": 33,
+        "geometry": {
+          "Absolute upper-left X": "1140",
+          "Absolute upper-left Y": "546",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsViewable"
+        }
+      },
+      {
+        "expected": "IsUnMapped",
+        "ms": 4,
+        "geometry": {
+          "Absolute upper-left X": "1140",
+          "Absolute upper-left Y": "546",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsUnMapped"
+        }
+      }
+    ],
+    "earlier_installed_event_roundtrips": [
+      {
+        "expected": "IsViewable",
+        "ms": 54,
+        "geometry": {
+          "Absolute upper-left X": "110",
+          "Absolute upper-left Y": "130",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsViewable"
+        }
+      },
+      {
+        "expected": "IsUnMapped",
+        "ms": 2,
+        "geometry": {
+          "Absolute upper-left X": "110",
+          "Absolute upper-left Y": "130",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsUnMapped"
+        }
+      },
+      {
+        "expected": "IsViewable",
+        "ms": 33,
+        "geometry": {
+          "Absolute upper-left X": "110",
+          "Absolute upper-left Y": "130",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsViewable"
+        }
+      },
+      {
+        "expected": "IsUnMapped",
+        "ms": 5,
+        "geometry": {
+          "Absolute upper-left X": "110",
+          "Absolute upper-left Y": "130",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsUnMapped"
+        }
+      },
+      {
+        "expected": "IsViewable",
+        "ms": 33,
+        "geometry": {
+          "Absolute upper-left X": "110",
+          "Absolute upper-left Y": "130",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsViewable"
+        }
+      },
+      {
+        "expected": "IsUnMapped",
+        "ms": 6,
+        "geometry": {
+          "Absolute upper-left X": "110",
+          "Absolute upper-left Y": "130",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsUnMapped"
+        }
+      }
+    ],
+    "single_click_event_roundtrips": [
+      {
+        "expected": "IsViewable",
+        "ms": 54,
+        "geometry": {
+          "Absolute upper-left X": "936",
+          "Absolute upper-left Y": "88",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsViewable"
+        },
+        "pointer": [
+          1676,
+          1267
+        ]
+      },
+      {
+        "expected": "IsUnMapped",
+        "ms": 4,
+        "geometry": {
+          "Absolute upper-left X": "936",
+          "Absolute upper-left Y": "88",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsUnMapped"
+        },
+        "pointer": [
+          1676,
+          1267
+        ]
+      },
+      {
+        "expected": "IsViewable",
+        "ms": 44,
+        "geometry": {
+          "Absolute upper-left X": "936",
+          "Absolute upper-left Y": "88",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsViewable"
+        },
+        "pointer": [
+          1676,
+          1267
+        ]
+      },
+      {
+        "expected": "IsUnMapped",
+        "ms": 4,
+        "geometry": {
+          "Absolute upper-left X": "936",
+          "Absolute upper-left Y": "88",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsUnMapped"
+        },
+        "pointer": [
+          1676,
+          1267
+        ]
+      },
+      {
+        "expected": "IsViewable",
+        "ms": 28,
+        "geometry": {
+          "Absolute upper-left X": "936",
+          "Absolute upper-left Y": "88",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsViewable"
+        },
+        "pointer": [
+          1676,
+          1267
+        ]
+      },
+      {
+        "expected": "IsUnMapped",
+        "ms": 4,
+        "geometry": {
+          "Absolute upper-left X": "936",
+          "Absolute upper-left Y": "88",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsUnMapped"
+        },
+        "pointer": [
+          1676,
+          1267
+        ]
+      }
+    ],
+    "latest_installed_event_roundtrips": [
+      {
+        "expected": "IsViewable",
+        "ms": 54,
+        "geometry": {
+          "Absolute upper-left X": "936",
+          "Absolute upper-left Y": "88",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsViewable"
+        },
+        "pointer": [
+          1676,
+          1267
+        ]
+      },
+      {
+        "expected": "IsUnMapped",
+        "ms": 4,
+        "geometry": {
+          "Absolute upper-left X": "936",
+          "Absolute upper-left Y": "88",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsUnMapped"
+        },
+        "pointer": [
+          1676,
+          1267
+        ]
+      },
+      {
+        "expected": "IsViewable",
+        "ms": 44,
+        "geometry": {
+          "Absolute upper-left X": "936",
+          "Absolute upper-left Y": "88",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsViewable"
+        },
+        "pointer": [
+          1676,
+          1267
+        ]
+      },
+      {
+        "expected": "IsUnMapped",
+        "ms": 4,
+        "geometry": {
+          "Absolute upper-left X": "936",
+          "Absolute upper-left Y": "88",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsUnMapped"
+        },
+        "pointer": [
+          1676,
+          1267
+        ]
+      },
+      {
+        "expected": "IsViewable",
+        "ms": 28,
+        "geometry": {
+          "Absolute upper-left X": "936",
+          "Absolute upper-left Y": "88",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsViewable"
+        },
+        "pointer": [
+          1676,
+          1267
+        ]
+      },
+      {
+        "expected": "IsUnMapped",
+        "ms": 4,
+        "geometry": {
+          "Absolute upper-left X": "936",
+          "Absolute upper-left Y": "88",
+          "Width": "780",
+          "Height": "1140",
+          "Map State": "IsUnMapped"
+        },
+        "pointer": [
+          1676,
+          1267
+        ]
+      }
+    ]
+  },
+  "autostart_enabled": false,
+  "stable_daemon_restarted": false,
+  "limitations": [
+    "OneDrive and Google Drive provider integration not implemented in this frontend",
+    "Wayland and other desktop hosts not verified",
+    "initial Windows HTTP 502 deeper cause unconfirmed",
+    "recovery intent reconstructed in isolated state; no machine power-loss test",
+    "Physical Windows GUI not tested; Windows native CI uses owned windows and notification messages",
+    "Multiple monitors and hardware mouse input not covered by native fixture"
+  ],
+  "deployment": {
+    "installed": true,
+    "gateway_propfind_status": 207,
+    "tray_provider": "TwoDrive",
+    "configured_device_name": "Windows",
+    "autostart_enabled": false,
+    "stable_daemon_pid": 2306,
+    "stable_daemon_restarts": 0
+  },
+  "flutter": {
+    "analyzer": true,
+    "tests": 9,
+    "native_linux_release_build": true,
+    "regression_old_initialization_failed": true,
+    "regression_old_small_layout_failed": true
+  },
+  "ci": {
+    "shared_flutter_windows_and_backend": {
+      "commit": "7632033f0f60dbfee3c381d426493d697b33d8a1",
+      "runs": [
+        38351595568,
+        38351595592,
+        38351595588,
+        38351595574
+      ],
+      "conclusion": "success"
+    },
+    "linux_final_native_rectangle": {
+      "commit": "3f2470afacc3af51d7972ab61eaa5a0b2f681f6e",
+      "run": 38354827650,
+      "job": 115155156191,
+      "conclusion": "success",
+      "windows_job": "not requested; Windows source unchanged"
+    },
+    "latest_windows_native": {
+      "commit": "a1060fa097658c0491afb1d39c96da7c325ff663",
+      "run": 38353525532,
+      "job": 115151081109,
+      "conclusion": "success",
+      "native_tray_smoke": "success",
+      "final_linux_fix_does_not_change_windows_sources": true
+    }
+  },
+  "cleanup": {
+    "build_allocated_bytes_removed": 12036763648,
+    "temporary_allocated_bytes_removed": 1155072,
+    "build_paths_removed": [
+      "target",
+      "experiments/twodrive-dev/target",
+      "apps/dav/build",
+      "apps/dav/.dart_tool",
+      "apps/dav/linux/flutter/ephemeral",
+      "apps/dav/.flutter-plugins-dependencies",
+      "scripts/__pycache__",
+      "apps/dav/.idea",
+      "apps/dav/twodrive_dav.iml",
+      "apps/dav/windows/flutter/ephemeral",
+      "experiments/twodrive-dev/scripts/__pycache__",
+      "packaging/nautilus/__pycache__"
+    ],
+    "temporary_paths_removed_count": 50,
+    "empty_obsolete_mount_directory_removed": true,
+    "disk_available_before_bytes": 412170596352,
+    "disk_available_after_bytes": 424207507456,
+    "installed_runtime_and_pairing_preserved": true,
+    "global_toolchain_caches_preserved": true,
+    "remote_disposable_payloads_removed": "verified in actual paired Windows tests; no new remote payloads in final tray regressions",
+    "failed_diagnostic_artifact_removed": 11790686817,
+    "temporary_paths_remaining_count": 0
+  }
+}

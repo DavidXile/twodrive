@@ -6,22 +6,221 @@ use crate::paths::{cloud_name, normalize_cloud_path, parent_cloud_path};
 use crate::{FileRecord, FileState, MetadataEntry, now_unix};
 
 impl Database {
+    /// Publish the acknowledged recovery copy before retiring only the exact
+    /// conflicted generation. A concurrent new save/move must remain pending.
+    pub fn complete_missing_conflict_upload(
+        &self,
+        original: &FileRecord,
+        uploaded: &MetadataEntry,
+        cache_path: &Path,
+    ) -> anyhow::Result<bool> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let present = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM files WHERE remote_id = ?1)
+             AND NOT EXISTS(SELECT 1 FROM pending_deletes WHERE local_id = ?1)",
+            params![original.metadata.remote_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !present {
+            return Ok(false);
+        }
+        let copy_id = tx
+            .query_row(
+                "SELECT remote_id FROM files WHERE cloud_remote_id = ?1",
+                params![uploaded.remote_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| uploaded.remote_id.clone());
+        anyhow::ensure!(
+            copy_id != original.metadata.remote_id,
+            "recovery copy reused the missing identity"
+        );
+        let copy_delete: Option<String> = tx.query_row(
+            "SELECT remote_id FROM pending_deletes WHERE cloud_remote_id=?1 OR remote_id=?1 LIMIT 1",
+            params![uploaded.remote_id], |row| row.get(0)).optional()?;
+        let already_deleted: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM completed_cloud_deletes WHERE cloud_remote_id=?1)",
+            params![uploaded.remote_id],
+            |row| row.get(0),
+        )?;
+        if let Some(deleted_id) = copy_delete {
+            // This is the COPY's deletion intent, not the original's. Never
+            // recreate it or clear an unrelated newer upload on its tombstone.
+            let settled = tx.execute(
+                "UPDATE pending_deletes SET cache_path=COALESCE(cache_path,?2),
+                uploaded_path=COALESCE(uploaded_path,?3) WHERE remote_id=?1",
+                params![deleted_id, cache_path.to_string_lossy(), uploaded.path],
+            )?;
+            anyhow::ensure!(settled == 1, "recovery copy deletion settlement rejected");
+        } else if !already_deleted {
+            let existing = self.query_record(&tx,
+                "SELECT remote_id,path,parent_path,name,is_dir,size,modified_unix,etag,state,cache_path,cache_accessed_unix,pin_explicit,pin_origin_remote_id,pin_inheritance_blocked,cloud_remote_id,local_mode FROM files WHERE remote_id=?1",
+                params![copy_id])?;
+            if let Some(copy) = &existing {
+                anyhow::ensure!(
+                    !copy.metadata.is_dir
+                        && copy.cloud_remote_id.as_deref() == Some(uploaded.remote_id.as_str()),
+                    "recovery copy identity changed"
+                );
+                anyhow::ensure!(
+                    matches!(
+                        copy.state,
+                        FileState::OnlineOnly
+                            | FileState::Cached
+                            | FileState::Pinned
+                            | FileState::Hydrating
+                    ),
+                    "recovery copy has a protected local generation"
+                );
+            }
+            let same_version = existing.as_ref().is_none_or(|copy| {
+                copy.metadata.etag == uploaded.etag && copy.metadata.size == uploaded.size
+            });
+            if same_version {
+                tx.execute(
+                    "INSERT OR IGNORE INTO retired_cache(cache_path)
+                     SELECT cache_path FROM files WHERE remote_id=?1
+                       AND cache_path IS NOT NULL AND cache_path<>?2",
+                    params![copy_id, cache_path.to_string_lossy()],
+                )?;
+                let published = tx.execute(
+                    "INSERT INTO files(remote_id,cloud_remote_id,path,parent_path,name,
+                        is_dir,size,modified_unix,etag,state,cache_path,cache_accessed_unix,local_mode)
+                     VALUES(?1,?2,?3,?4,?5,0,?6,?7,?8,'cached',?9,?10,?11)
+                     ON CONFLICT(remote_id) DO UPDATE SET
+                        state=CASE WHEN files.pin_explicit=1 OR files.pin_origin_remote_id IS NOT NULL
+                            THEN 'pinned' ELSE 'cached' END,
+                        cache_path=excluded.cache_path,cache_accessed_unix=excluded.cache_accessed_unix,
+                        download_generation=files.download_generation+1",
+                    params![copy_id,uploaded.remote_id,uploaded.path,uploaded.parent_path,
+                        uploaded.name,uploaded.size as i64,original.metadata.modified_unix,
+                        uploaded.etag,cache_path.to_string_lossy(),now_unix(),original.local_mode])?;
+                anyhow::ensure!(published == 1, "recovery copy publication rejected");
+            }
+            // A different observed version is opaque, not permission to roll it
+            // back. Preserve its metadata/cache and retire only the acknowledged
+            // original claim below. The unattached old cache remains recoverable.
+        }
+        // Completed deletion evidence survives queue removal and restarts. It
+        // suppresses only this late receipt, not a later ordinary delta import
+        // of an intentionally restored cloud object.
+        tx.execute(
+            "DELETE FROM files WHERE remote_id = ?1 AND state = 'conflict'
+               AND cache_path IS ?2 AND cloud_remote_id IS ?3
+               AND size = ?4 AND modified_unix = ?5 AND etag = ?6
+               AND upload_path = ?7 AND upload_cache_path IS ?2 AND upload_target_id IS NULL
+               AND NOT EXISTS(SELECT 1 FROM pending_metadata_operations WHERE local_id = ?1)",
+            params![
+                original.metadata.remote_id,
+                cache_path.to_string_lossy(),
+                original.cloud_remote_id,
+                original.metadata.size as i64,
+                original.metadata.modified_unix,
+                original.metadata.etag,
+                uploaded.path
+            ],
+        )?;
+        // If a newer local generation kept this row, retire just the failed
+        // generation's acknowledged claim, never its newer cache or state.
+        tx.execute(
+            "UPDATE files SET upload_path = NULL, upload_target_id = NULL, upload_cache_path = NULL
+             WHERE remote_id = ?1 AND upload_path = ?2 AND upload_cache_path IS ?3
+               AND upload_target_id IS NULL",
+            params![
+                original.metadata.remote_id,
+                uploaded.path,
+                cache_path.to_string_lossy()
+            ],
+        )?;
+        tx.commit()?;
+        self.recompute_pin_inheritance()?;
+        Ok(true)
+    }
+
     pub fn upsert_metadata(&self, entry: &MetadataEntry) -> anyhow::Result<()> {
-        self.upsert_metadata_entries([entry], false)
+        self.upsert_metadata_entries([entry], false, None)
+            .map(|_| ())
     }
 
     pub fn upsert_metadata_batch<'a>(
         &self,
         entries: impl IntoIterator<Item = &'a MetadataEntry>,
     ) -> anyhow::Result<()> {
-        self.upsert_metadata_entries(entries, true)
+        self.upsert_metadata_entries(entries, true, None)
+            .map(|_| ())
+    }
+
+    pub fn has_directory_metadata(&self, path: &str) -> anyhow::Result<bool> {
+        let conn = self.connect()?;
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_state WHERE key=?1)",
+            params![format!("directory:{}", normalize_cloud_path(path))],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Reserve an ordered fetch generation before starting cloud IO. SQLite,
+    /// rather than an in-process gate, coordinates desktop and FUSE owners.
+    pub fn begin_directory_refresh(&self, path: &str) -> anyhow::Result<i64> {
+        let key = format!("directory-request:{}", normalize_cloud_path(path));
+        let mut conn = self.connect()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let previous: Option<String> = tx
+            .query_row(
+                "SELECT value FROM app_state WHERE key=?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let generation = previous
+            .map(|v| v.parse::<i64>())
+            .transpose()?
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("directory generation exhausted"))?;
+        tx.execute(
+            "INSERT INTO app_state(key,value) VALUES(?1,?2)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, generation.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(generation)
+    }
+
+    /// Commit a complete shallow listing while preserving local work and tombstones.
+    pub fn reconcile_directory_metadata(
+        &self,
+        path: &str,
+        entries: &[MetadataEntry],
+        generation: i64,
+    ) -> anyhow::Result<bool> {
+        let path = normalize_cloud_path(path);
+        let mut paths = std::collections::HashSet::new();
+        let mut ids = std::collections::HashSet::new();
+        for entry in entries {
+            anyhow::ensure!(
+                entry.path != path
+                    && parent_cloud_path(&entry.path) == path
+                    && !entry.remote_id.is_empty()
+                    && entry.parent_path == path
+                    && entry.name == cloud_name(&entry.path)
+                    && normalize_cloud_path(&entry.path) == entry.path
+                    && paths.insert(entry.path.clone())
+                    && ids.insert(entry.remote_id.clone()),
+                "invalid or duplicate shallow directory entry"
+            );
+        }
+        self.upsert_metadata_entries(entries, true, Some((&path, &paths, generation)))
     }
 
     fn upsert_metadata_entries<'a>(
         &self,
         entries: impl IntoIterator<Item = &'a MetadataEntry>,
         block_new_pin_inheritance: bool,
-    ) -> anyhow::Result<()> {
+        directory: Option<(&str, &std::collections::HashSet<String>, i64)>,
+    ) -> anyhow::Result<bool> {
         // Keep identity resolution, local-generation protection and cache
         // invalidation in one writer transaction for both import paths.
         let _writer = self
@@ -30,6 +229,24 @@ impl Database {
             .map_err(|_| anyhow::anyhow!("metadata write lock is poisoned"))?;
         let mut conn = self.connect()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some((parent, _, generation)) = directory {
+            anyhow::ensure!(generation > 0, "invalid directory generation");
+            let committed: Option<String> = tx
+                .query_row(
+                    "SELECT value FROM app_state WHERE key=?1",
+                    params![format!("directory-committed:{parent}")],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if committed
+                .map(|v| v.parse::<i64>())
+                .transpose()?
+                .unwrap_or(0)
+                >= generation
+            {
+                return Ok(false);
+            }
+        }
         for entry in entries {
             let pending_delete = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM pending_deletes WHERE remote_id = ?1 OR cloud_remote_id = ?1 OR path = ?2 OR upload_path = ?2 OR uploaded_path = ?2)",
@@ -46,8 +263,19 @@ impl Database {
                     params![entry.remote_id],
                     |row| row.get::<_, String>(0),
                 )
-                .optional()?
-                .unwrap_or_else(|| entry.remote_id.clone());
+                .optional()?;
+            let local_id = match local_id {
+                Some(id) => id,
+                None if directory.is_some() => tx
+                    .query_row(
+                        "SELECT remote_id FROM files WHERE path=?1",
+                        params![entry.path],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .unwrap_or_else(|| entry.remote_id.clone()),
+                None => entry.remote_id.clone(),
+            };
             let pending_metadata = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM pending_metadata_operations op
                  JOIN files ancestor ON ancestor.remote_id = op.local_id
@@ -69,7 +297,7 @@ impl Database {
                     SELECT 1 FROM files
                     WHERE path = ?1
                       AND remote_id <> ?2
-                      AND state IN ('writing', 'dirty', 'uploading', 'conflict')
+                      AND state IN ('local_only', 'writing', 'dirty', 'uploading', 'conflict', 'error')
                 )
                 "#,
                 params![entry.path, local_id],
@@ -80,7 +308,7 @@ impl Database {
                 SELECT EXISTS(
                     SELECT 1 FROM files
                     WHERE remote_id = ?1
-                      AND state IN ('writing', 'dirty', 'uploading', 'conflict')
+                      AND state IN ('local_only', 'writing', 'dirty', 'uploading', 'conflict', 'error')
                 )
                 "#,
                 params![local_id],
@@ -195,8 +423,47 @@ impl Database {
                 }
             }
         }
+        if let Some((parent, present, generation)) = directory {
+            tx.execute("INSERT INTO app_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![format!("directory:{parent}"), now_unix().to_string()])?;
+            tx.execute("INSERT INTO app_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![format!("directory-committed:{parent}"),generation.to_string()])?;
+            let children = {
+                let mut stmt =
+                    tx.prepare("SELECT remote_id, path FROM files WHERE parent_path=?1")?;
+                stmt.query_map(params![parent], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            };
+            for (id, path) in children {
+                if present.contains(&path) {
+                    continue;
+                }
+                // Preserve the whole absent subtree if any local generation or
+                // durable namespace operation still needs it. SQL runs under
+                // the same writer transaction as metadata import.
+                let protected: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM files f WHERE
+                    (f.path=?1 OR substr(f.path,1,length(?1)+1)=?1||'/')
+                    AND (f.state IN ('local_only','writing','dirty','uploading','conflict','error')
+                        OR EXISTS(SELECT 1 FROM pending_metadata_operations op WHERE op.local_id=f.remote_id)))
+                    OR EXISTS(SELECT 1 FROM pending_deletes d WHERE d.path=?1 OR substr(d.path,1,length(?1)+1)=?1||'/')
+                    OR EXISTS(SELECT 1 FROM pending_metadata_operations op JOIN files f ON f.remote_id=op.local_id
+                        WHERE ?1=f.path OR substr(?1,1,length(f.path)+1)=f.path||'/')",params![path],|row|row.get(0))?;
+                if protected {
+                    continue;
+                }
+                tx.execute("INSERT OR IGNORE INTO retired_cache(cache_path) SELECT cache_path FROM files
+                    WHERE (path=?1 OR substr(path,1,length(?1)+1)=?1||'/') AND cache_path IS NOT NULL",params![path])?;
+                tx.execute(
+                    "DELETE FROM files WHERE remote_id=?1 OR substr(path,1,length(?2)+1)=?2||'/'",
+                    params![id, path],
+                )?;
+            }
+        }
         tx.commit()?;
-        self.recompute_pin_inheritance()
+        self.recompute_pin_inheritance()?;
+        Ok(true)
     }
 
     pub fn bind_cloud_identity(
@@ -244,6 +511,39 @@ impl Database {
             .is_none_or(|remote_id| remote_id == uploaded.remote_id);
         let needs_cloud_move = current.metadata.path != normalize_cloud_path(requested_path)
             && current.cloud_remote_id.is_none();
+        if current.cloud_remote_id.is_none() {
+            // A first PUT can be visible to delta before its acknowledgement.
+            // If the user has already renamed the unbound local record, delta
+            // may import a clean alias at the old name. Coalesce only an exact
+            // server echo, never another edited/pinned/moving local identity.
+            let alias: Option<(String, Option<String>)> = tx
+                .query_row(
+                    "SELECT remote_id, cache_path FROM files
+                 WHERE cloud_remote_id = ?1 AND remote_id <> ?2 AND path = ?3
+                   AND etag = ?4 AND size = ?5 AND is_dir = 0 AND pin_explicit = 0
+                   AND state IN ('online_only', 'cached', 'pinned', 'hydrating')
+                   AND NOT EXISTS(SELECT 1 FROM pending_metadata_operations op
+                       WHERE op.local_id = files.remote_id)",
+                    params![
+                        uploaded.remote_id,
+                        local_id,
+                        normalize_cloud_path(requested_path),
+                        uploaded.etag,
+                        uploaded.size as i64
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((alias_id, cache)) = alias {
+                if let Some(cache) = cache {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO retired_cache(cache_path) VALUES (?1)",
+                        params![cache],
+                    )?;
+                }
+                tx.execute("DELETE FROM files WHERE remote_id = ?1", params![alias_id])?;
+            }
+        }
         tx.execute(
             r#"
             UPDATE files

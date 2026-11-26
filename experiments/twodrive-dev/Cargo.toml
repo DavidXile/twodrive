@@ -1,18 +1,24 @@
 [package]
 name = "twodrive-dev"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.91"
 
-# An isolated experiment: the stable workspace and its lockfile are untouched.
+# Isolated workspace and lockfile; reusable Graph/core code is shared with stable.
 [workspace]
 
 [features]
 default = []
 mount = ["dep:twodrive-fs", "dep:fuser"]
+native-sync = ["native-local-fixture", "twodrive-local-files/native-sync"]
+native-local-fixture = ["twodrive-local-files/native-local-fixture"]
+native-test-hooks = ["native-local-fixture", "twodrive-local-files/native-test-hooks"]
 
 [dependencies]
+twodrive-core = { path = "../../crates/twodrive-core" }
+twodrive-backend = { path = "../../crates/twodrive-backend" }
+twodrive-local-files = { package = "twodrive-cfapi-probe", path = "../windows-cfapi", default-features = false }
 anyhow = "1"
 base64 = "0.22"
 bytes = "1"
@@ -25,25 +31,38 @@ http = "1"
 http-body-util = "0.1"
 httpdate = "1"
 libc = "0.2"
+md-5 = "0.10"
 tempfile = "3"
 hyper = { version = "1", features = ["http1", "client", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 iroh = { version = "=1.3.0", default-features = false, features = ["tls-ring"] }
+iroh-dns = { version = "=1.3.0", default-features = false }
+n0-error = "1"
+netdev = { version = "=0.46.3", default-features = false, features = ["gateway"] }
 percent-encoding = "2"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+ring = "0.17.14"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "system-proxy"] }
 roxmltree = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+simple-dns = "=0.12.0"
+socket2 = { version = "0.6", features = ["all"] }
 subtle = "2"
 thiserror = "2"
+time = { version = "0.3", features = ["parsing"] }
+tiny_http = "0.12"
 tokio = { version = "1", features = ["full"] }
 url = "2"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Wdk_System_SystemServices", "Win32_System_IO", "Win32_Networking_WinSock", "Win32_Networking_WinHttp", "Win32_Foundation", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
-twodrive-backend = { path = "../../crates/twodrive-backend" }
-twodrive-core = { path = "../../crates/twodrive-core" }
 twodrive-fs = { path = "../../crates/twodrive-fs", optional = true }
 fuser = { version = "0.15", default-features = false, optional = true }
 

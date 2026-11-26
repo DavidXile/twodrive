@@ -1,8 +1,12 @@
 #![cfg_attr(windows, allow(dead_code))]
 //! Files On-Demand, recovery and the FUSE adapter.
 mod activity;
+#[cfg(unix)]
+mod cache_controls;
 mod cache_io;
 mod conflicts;
+#[cfg(unix)]
+mod directory_refresh;
 #[cfg(unix)]
 mod filesystem;
 mod hydration;
@@ -33,3 +37,5 @@ pub use recovery::{
 pub use recovery::recover_dirty_record;
 #[cfg(test)]
 mod delete_retry_tests;
+#[cfg(test)]
+mod missing_upload_tests;

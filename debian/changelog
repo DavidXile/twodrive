@@ -1,3 +1,114 @@
+twodrive (0.2.24+dev0.4.0-1) unstable; urgency=medium
+
+  * Consolidate iCloud and Baidu mounts on TwoDriveFS and recoverable writes.
+  * Restore personal desktop pages, retain the Dashboard, and persist history.
+  * Default backups to original paths, make versioned copies an explicit choice.
+  * Preserve mounted-file edits and use normal application closure on busy quit.
+
+ -- DavidXile <244680153+DavidXile@users.noreply.github.com>  Wed, 25 Nov 2026 21:15:00 +0800
+
+twodrive (0.2.24+dev0.3.4-1) unstable; urgency=medium
+
+  * Paint the Linux tray shadow with the popup content.
+
+ -- TwoDrive maintainers <maintainers@users.noreply.github.com>  Wed, 25 Nov 2026 19:50:00 +0800
+
+twodrive (0.2.24+dev0.3.3-1) unstable; urgency=medium
+
+  * Report whole-device route fallback separately from background relay use.
+
+ -- TwoDrive maintainers <maintainers@users.noreply.github.com>  Wed, 25 Nov 2026 18:00:00 +0800
+
+twodrive (0.2.24+dev0.3.2-1) unstable; urgency=medium
+
+  * Keep unconfigured backups idle and stabilize the Linux tray footer.
+
+ -- TwoDrive maintainers <maintainers@users.noreply.github.com>  Tue, 24 Nov 2026 14:00:00 +0800
+
+twodrive (0.2.24+dev0.3.1-1) unstable; urgency=medium
+
+  * Correct peer route reporting and display remote share capacity.
+
+ -- TwoDrive maintainers <maintainers@users.noreply.github.com>  Tue, 24 Nov 2026 12:00:00 +0800
+
+twodrive (0.2.24+dev0.3.0-1) unstable; urgency=medium
+
+  * Fix Development Google Drive cold reads and Nautilus cache actions.
+
+ -- TwoDrive maintainers <maintainers@users.noreply.github.com>  Mon, 23 Nov 2026 18:40:00 +0800
+
+twodrive (0.2.24+dev0.2.26-1) unstable; urgency=medium
+
+  * Publish the Development desktop tray window fix.
+
+ -- TwoDrive maintainers <maintainers@users.noreply.github.com>  Mon, 23 Nov 2026 16:50:00 +0800
+
+twodrive (0.2.24+dev0.2.25-1) unstable; urgency=medium
+
+  * Package the Development source alongside the 0.2.25 desktop bundles.
+
+ -- TwoDrive maintainers <maintainers@users.noreply.github.com>  Mon, 23 Nov 2026 14:40:00 +0800
+
+twodrive (0.2.24-1) unstable; urgency=medium
+
+  * Keep Office owner and regex-excluded files durable and local in FUSE.
+  * Preserve reads, exclusive creates, unlink and temporary-save promotion.
+  * Show upload activity only at cloud transfer calls, with network progress.
+  * Share validated filename regex exclusions with known-folder uploads.
+  * Retain offline dpkg-buildpackage/debhelper source and binary builds.
+
+ -- Bai Lujia <198035981+LumiaBlack51@users.noreply.github.com>  Sun, 08 Nov 2026 16:22:00 +0800
+
+twodrive (0.2.23-1) unstable; urgency=medium
+
+  * Apply known-folder exclusions to descendants, events and persisted uploads.
+  * Persist upload results incrementally and migrate legacy JSON transactionally.
+  * Coalesce editor saves and defer hot changes with sliding time budgets.
+  * Discover bounded project roots only after churn thresholds are reached.
+  * Bound watcher ingress and recover dropped events through filtered scans.
+  * Resolve existing cloud directories and distinguish subsecond local saves.
+  * Retain offline dpkg-buildpackage/debhelper source and binary builds.
+
+ -- Bai Lujia <198035981+LumiaBlack51@users.noreply.github.com>  Sun, 01 Nov 2026 18:48:27 +0800
+
+twodrive (0.2.22-1) unstable; urgency=medium
+
+  * Keep untouched writable opens clean and skip their release upload.
+  * Begin write state/activity only on write or truncation.
+  * Preserve pending states when opening without changing content.
+  * Guard delayed writes against a replaced cache or remote version.
+  * Cover inactive sibling handles and isolated FUSE open/write/close.
+  * Retain offline dpkg-buildpackage/debhelper source and binary builds.
+
+ -- Bai Lujia <198035981+LumiaBlack51@users.noreply.github.com>  Sun, 01 Nov 2026 18:30:00 +0800
+
+twodrive (0.2.21-1) unstable; urgency=medium
+
+  * Retire stale FUSE paths after background conflict recovery.
+  * Keep open descriptors valid without reviving removed directory entries.
+  * Allocate separate inodes when different local identities reuse a path.
+  * Preserve replacement path ownership during stale inode updates/removal.
+  * Cover cached lookups, open-reader sizes and recreated-name isolation.
+  * Retain offline dpkg-buildpackage/debhelper source and binary builds.
+
+ -- Bai Lujia <198035981+LumiaBlack51@users.noreply.github.com>  Sun, 01 Nov 2026 15:30:00 +0800
+
+twodrive (0.2.20-1) unstable; urgency=medium
+
+  * Coalesce exact clean delta echoes before binding renamed initial uploads.
+  * Prevent late upload cleanup from deleting cloud IDs with active local owners.
+  * Preserve a pending cloud move when an atomic save replaces renamed content.
+  * Validate rename/folder names before authentication and network requests.
+  * Reconcile missing bound upload targets instead of retrying stale IDs forever.
+  * Preserve unsynced local edits as conflict copies without restoring deleted
+    originals or overwriting newer same-name cloud objects.
+  * Complete missing-original conflict recovery atomically, preserving newer
+    saves and concurrent deletion recovery.
+  * Add remote-deletion, restart, replacement and active-writer regressions.
+  * Retain offline dpkg-buildpackage/debhelper source and binary builds.
+
+ -- Bai Lujia <198035981+LumiaBlack51@users.noreply.github.com>  Sun, 01 Nov 2026 13:45:00 +0800
+
 twodrive (0.2.19-1) unstable; urgency=medium
 
   * Preserve cached Linux trash metadata and payloads beyond cache retention.

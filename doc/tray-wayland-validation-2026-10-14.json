@@ -1,0 +1,26 @@
+{
+  "icon": [
+    1328,
+    0,
+    36,
+    32
+  ],
+  "workarea": [
+    0,
+    32,
+    1440,
+    868
+  ],
+  "panel": [
+    1042,
+    40,
+    390,
+    570
+  ],
+  "repeat_open_close": 3,
+  "actor_geometry_verified": true,
+  "wrong_process_position_rejected": true,
+  "background_start_hidden": true,
+  "environment": "isolated GNOME 46 / native GTK wayland",
+  "foreground_desktop_input": false
+}

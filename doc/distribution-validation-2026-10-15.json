@@ -1,0 +1,88 @@
+{
+  "date": "2026-10-15",
+  "tested_source_commit": "f22a1213a360b095405087a63bb13250f673ce6a",
+  "pull_request": "https://github.com/LumiaBlack51/twodrive/pull/21",
+  "workflows": {
+    "desktop": "https://github.com/LumiaBlack51/twodrive/actions/runs/38690583401",
+    "peer_native": "https://github.com/LumiaBlack51/twodrive/actions/runs/38690583553",
+    "webdav_quic": "https://github.com/LumiaBlack51/twodrive/actions/runs/38690583461",
+    "windows_preview": "https://github.com/LumiaBlack51/twodrive/actions/runs/38690583597",
+    "debian": "https://github.com/LumiaBlack51/twodrive/actions/runs/38690583450"
+  },
+  "workflow_conclusions": "all five success",
+  "windows_checks": {
+    "native_tray_focus_escape": "passed in CI",
+    "desktop_ipc_backup_autostart_isolation": "passed",
+    "flutter_analyze_tests_release": "passed",
+    "makeappx": "passed",
+    "local_foreground_fixture": "precondition failed; cause not established; no local hardware acceptance claim"
+  },
+  "msix": {
+    "name": "TwoDrive-Development-1.1.4.0-x64-test-unsigned.msix",
+    "bytes": 24777256,
+    "sha256": "8189e50a6ba4c0f6381228de3f72ead6479276874d978d98885066ee2dc6223f",
+    "identity": {
+      "Name": "TwoDrive.Development.Test",
+      "Publisher": "CN=TwoDrive Development Test",
+      "Version": "1.1.4.0",
+      "ProcessorArchitecture": "x64"
+    },
+    "signed": false,
+    "retained_bundle_files_verified": 33,
+    "bundle_payload_sha256": "all retained files match native CI bundle",
+    "logos": "50x50, 44x44, 150x150 verified",
+    "github_update_channel": "disabled by distribution-msix marker"
+  },
+  "debian": {
+    "version": "0.2.14-2",
+    "distribution": "UNRELEASED",
+    "upload_manifests_verified": [
+      ".changes",
+      ".dsc"
+    ],
+    "install_smoke_remove": "passed in disposable CI runner",
+    "binary_lintian": "empty log",
+    "source_lintian_errors": 0,
+    "source_lintian_warnings": [
+      "W: twodrive source: newer-standards-version 4.7.4 (current is 4.6.2)"
+    ],
+    "artifacts": {
+      "twodrive-dbgsym_0.2.14-2_amd64.ddeb": {
+        "bytes": 363054,
+        "sha256": "501c18f6b5847bd037d5bdcc33f92817608a27c0c5988ab473267742b32c3288"
+      },
+      "twodrive_0.2.14-2.debian.tar.xz": {
+        "bytes": 5092,
+        "sha256": "6384b8cdfc303db4e8944f0533808adf50a122a6661209c50e6c6b9a250933a6"
+      },
+      "twodrive_0.2.14-2.dsc": {
+        "bytes": 1149,
+        "sha256": "b0c10aed53596485bb8f1efc9861ed13073a8b49f9d4dd62a8d427995d3ba932"
+      },
+      "twodrive_0.2.14-2_amd64.buildinfo": {
+        "bytes": 13579,
+        "sha256": "477800908ede6c9a513ce214af1493519620a0ccee038eff027ed40fee4f6689"
+      },
+      "twodrive_0.2.14-2_amd64.changes": {
+        "bytes": 1794,
+        "sha256": "d66f84e68e7f936581b2223414092c057da200d92cfca4e5afcf30650638b074"
+      },
+      "twodrive_0.2.14-2_amd64.deb": {
+        "bytes": 2641638,
+        "sha256": "3ad1720c56d76eedbd16d7cc1a820294626d441e0c135618795fd545921b2c0e"
+      },
+      "twodrive_0.2.14.orig.tar.xz": {
+        "bytes": 8168656,
+        "sha256": "9c41d6d93ecbe40bf7e8dad127c867b18148c6b2d9c017384c0cdb59a3557d87"
+      }
+    }
+  },
+  "not_verified": [
+    "signed MSIX install/upgrade/uninstall",
+    "Microsoft Store certification",
+    "Debian-packaged complete Rust dependency closure and license audit",
+    "Debian unstable sbuild/autopkgtest/piuparts",
+    "live OneDrive/Google account end-to-end in this change",
+    "two physically separate hosts behind independent NATs"
+  ]
+}

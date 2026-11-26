@@ -1,0 +1,101 @@
+{
+  "single_click_roundtrips": [
+    {
+      "expected": "IsViewable",
+      "ms": 150,
+      "geometry": {
+        "Absolute upper-left X": "1042",
+        "Absolute upper-left Y": "40",
+        "Width": "390",
+        "Height": "570",
+        "Map State": "IsViewable"
+      },
+      "pointer": [
+        1296,
+        810
+      ]
+    },
+    {
+      "expected": "IsUnMapped",
+      "ms": 98,
+      "geometry": {
+        "Absolute upper-left X": "1042",
+        "Absolute upper-left Y": "40",
+        "Width": "390",
+        "Height": "570",
+        "Map State": "IsUnMapped"
+      },
+      "pointer": [
+        1346,
+        16
+      ]
+    },
+    {
+      "expected": "IsViewable",
+      "ms": 130,
+      "geometry": {
+        "Absolute upper-left X": "1042",
+        "Absolute upper-left Y": "40",
+        "Width": "390",
+        "Height": "570",
+        "Map State": "IsViewable"
+      },
+      "pointer": [
+        1346,
+        16
+      ]
+    },
+    {
+      "expected": "IsUnMapped",
+      "ms": 100,
+      "geometry": {
+        "Absolute upper-left X": "1042",
+        "Absolute upper-left Y": "40",
+        "Width": "390",
+        "Height": "570",
+        "Map State": "IsUnMapped"
+      },
+      "pointer": [
+        1346,
+        16
+      ]
+    },
+    {
+      "expected": "IsViewable",
+      "ms": 140,
+      "geometry": {
+        "Absolute upper-left X": "1042",
+        "Absolute upper-left Y": "40",
+        "Width": "390",
+        "Height": "570",
+        "Map State": "IsViewable"
+      },
+      "pointer": [
+        1346,
+        16
+      ]
+    },
+    {
+      "expected": "IsUnMapped",
+      "ms": 99,
+      "geometry": {
+        "Absolute upper-left X": "1042",
+        "Absolute upper-left Y": "40",
+        "Width": "390",
+        "Height": "570",
+        "Map State": "IsUnMapped"
+      },
+      "pointer": [
+        1346,
+        16
+      ]
+    }
+  ],
+  "settling_ms": 400,
+  "stable": true,
+  "icon_geometry_verified": true,
+  "pointer_fallback": false,
+  "host_event_root": "virtual display input",
+  "environment": "isolated GNOME 46 / native GTK x11",
+  "foreground_desktop_input": false
+}

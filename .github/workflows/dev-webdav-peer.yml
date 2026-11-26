@@ -6,14 +6,21 @@ on:
     paths:
       - 'experiments/twodrive-dev/**'
       - 'crates/**'
+      - 'scripts/test-smb-readonly.py'
       - '.github/workflows/dev-webdav-peer.yml'
   workflow_dispatch:
+    inputs:
+      report_only:
+        description: Run only the native Windows report runtime regression
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   test:
+    if: github.event_name != 'workflow_dispatch' || !inputs.report_only
     strategy:
       fail-fast: false
       matrix:
@@ -38,12 +45,55 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: experiments/twodrive-dev -> target
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: SMB pinned component and adversarial unit checks
+        run: |
+          python -m pip install -r components/requirements-smb.txt
+          python components/test_smb_component.py
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --locked ${{ matrix.args }} -- -D warnings
+      - name: Reject a response belonging to another signed command
+        run: python scripts/test-control-response.py
+      - name: Reject false success and unbounded HTTP trickle in acceptance runner
+        run: python scripts/test-reliability.py
+      - name: Confirm the DNS regression rejects the old selection
+        run: python scripts/test-dns-old-selection.py
       - run: cargo test --locked ${{ matrix.args }}
+      - name: Verify report runtime on Windows PowerShell 5.1 and pwsh
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git fetch --no-tags --depth=1 origin bdab13ec0d3a2804b93c55498c73385075ed5df7
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $legacy = Join-Path $env:RUNNER_TEMP 'td-old-network-verification.ps1'
+          [IO.File]::WriteAllText($legacy, ((git show bdab13ec0d3a2804b93c55498c73385075ed5df7:experiments/twodrive-dev/scripts/verify-network.ps1) -join "`n"))
+          try {
+            $oldOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-network-report.ps1 -ScriptPath $legacy -LegacyReportDepth 2>&1
+            if ($LASTEXITCODE -eq 0 -or ($oldOutput -join "`n") -notmatch 'Report network_messages must contain only plain strings') { throw 'Expected bounded old-report regression failure was not observed.' }
+            Write-Host 'Confirmed old PowerShell 5.1 report serializes provider objects instead of strings.'
+          } finally { Remove-Item -LiteralPath $legacy -Force }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-network-report.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & pwsh -NoProfile -File scripts/test-network-report.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-agent-bootstrap-path.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Native bootstrap verbatim path regression
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-agent-bootstrap-path.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run: cargo build --release --locked ${{ matrix.args }}
       - name: Two CLI processes without public infrastructure
         run: python scripts/smoke.py --binary ${{ matrix.binary }} --network lan
+      - name: Signed control through the real TwoDrive transport
+        run: python scripts/smoke-test-agent.py --binary ${{ matrix.binary }}
       - uses: actions/upload-artifact@v4
         with:
           name: twodrive-dev-${{ runner.os }}
@@ -51,3 +101,30 @@ jobs:
             experiments/twodrive-dev/target/release/twodrive-dev
             experiments/twodrive-dev/target/release/twodrive-dev.exe
           if-no-files-found: error
+
+  report:
+    if: github.event_name == 'workflow_dispatch' && inputs.report_only
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: experiments/twodrive-dev
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm old live-reader failure and corrected 5.1/7 runtime
+        run: |
+          git fetch --no-tags --depth=1 origin e3dc0b76a5b5ad274b6ac809003762146d359842
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $legacy = Join-Path $env:RUNNER_TEMP 'td-old-live-reader.ps1'
+          [IO.File]::WriteAllText($legacy, ((git show e3dc0b76a5b5ad274b6ac809003762146d359842:experiments/twodrive-dev/scripts/verify-network.ps1) -join "`n"))
+          try {
+            $oldOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-network-report.ps1 -ScriptPath $legacy 2>&1
+            if ($LASTEXITCODE -eq 0 -or ($oldOutput -join "`n") -notmatch 'Expected sharing violation reproduced by active redirected log reader') { $oldOutput; throw 'Expected old active-reader failure was not observed.' }
+            Write-Host 'Confirmed old ReadAllLines fails with the actual active Start-Process writer.'
+          } finally { Remove-Item -LiteralPath $legacy -Force }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-network-report.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & pwsh -NoProfile -File scripts/test-network-report.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-agent-bootstrap-path.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

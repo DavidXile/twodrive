@@ -1,0 +1,18 @@
+{
+  "environment": "live-OneDrive-isolated-desktop",
+  "checks": {
+    "actual_saved_login_and_identity_probe": true,
+    "upload_bytes": 8388731,
+    "download_sha256": "26c629edd55f2459e48fdfaf91b4a95733aadc15e95ceb299ec92441f753402a",
+    "create_only": true,
+    "conditional_overwrite": true,
+    "stale_version_rejected": true,
+    "move_rename": true,
+    "delete": true,
+    "owned_remote_folder_deleted": true
+  },
+  "boundaries": [
+    "Existing saved login tested; new browser OAuth not executed.",
+    "No real OneDrive FUSE, folder backup, organization account or Windows validation."
+  ]
+}

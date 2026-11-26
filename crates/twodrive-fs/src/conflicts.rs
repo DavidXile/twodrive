@@ -26,8 +26,25 @@ pub(crate) fn preserve_conflict_copy<B: CloudBackend>(
     if !db.begin_conflict_upload(original, &conflict_path, cache_path)? {
         anyhow::bail!("conflict generation was removed before upload");
     }
-    let conflict =
-        backend.upload_file_with_version(&conflict_path, cache_path, None, None, on_progress)?;
+    let mut activity = crate::activity::ActivityGuard::start(
+        cache_path.parent().unwrap_or(Path::new(".")),
+        "upload",
+        &conflict_path,
+        conflict_path.rsplit('/').next().unwrap_or(""),
+        Some(original.metadata.size),
+    );
+    let result = backend.upload_file_with_version(
+        &conflict_path,
+        cache_path,
+        None,
+        None,
+        &mut |done, total| {
+            activity.set_progress(done, Some(total));
+            on_progress(done, total)
+        },
+    );
+    drop(activity);
+    let conflict = result?;
     if db.complete_deleted_upload(&original.metadata.remote_id, &conflict)? {
         return Ok(conflict);
     }
@@ -35,16 +52,19 @@ pub(crate) fn preserve_conflict_copy<B: CloudBackend>(
         .cloud_remote_id
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("local-only item cannot have an etag conflict"))?;
-    let latest_original = backend.get_metadata(cloud_remote_id)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "original remote item disappeared while preserving conflict {}",
-            original.metadata.path
-        )
-    })?;
+    let latest_original = backend.get_metadata(cloud_remote_id)?;
     let _guard = crate::recovery::upload_commit_lock()
         .lock()
         .map_err(|_| anyhow::anyhow!("upload commit lock is poisoned"))?;
     if db.complete_deleted_upload(&original.metadata.remote_id, &conflict)? {
+        return Ok(conflict);
+    }
+    if latest_original.is_none() {
+        if !db.complete_missing_conflict_upload(original, &conflict, cache_path)?
+            && !db.complete_deleted_upload(&original.metadata.remote_id, &conflict)?
+        {
+            db.queue_remote_delete(&conflict.remote_id, &conflict_path)?;
+        }
         return Ok(conflict);
     }
     if db.get_by_remote_id(&original.metadata.remote_id)?.is_none() {
@@ -56,7 +76,7 @@ pub(crate) fn preserve_conflict_copy<B: CloudBackend>(
     // The conflict copy now owns the local bytes. Release the original's
     // protected conflict state before importing the winning cloud version.
     db.mark_online_only(&original.metadata.remote_id)?;
-    db.upsert_metadata(&latest_original)?;
+    db.upsert_metadata(&latest_original.expect("existing original was checked above"))?;
     Ok(conflict)
 }
 

@@ -1,0 +1,79 @@
+{
+  "date": "2026-10-15",
+  "pull_request": "https://github.com/LumiaBlack51/twodrive/pull/22",
+  "environment": "native Windows; isolated disposable state; Flutter 3.41.8",
+  "rust": {
+    "library_tests_passed": 40,
+    "desktop_tests_passed": 9,
+    "clippy": "all targets; warnings denied; passed",
+    "fmt": "passed",
+    "release_engine_build": "passed",
+    "full_suite_tests_passed": 64,
+    "windows_atomic_replacement": "real non-delete-sharing handle: temporary denial recovers; persistent denial bounded; previous bytes retained"
+  },
+  "flutter": {
+    "analysis": "passed",
+    "tests_passed": 33,
+    "minimum_window": [
+      840,
+      580
+    ],
+    "file_dialogs": "platform interface test double",
+    "release_windows_build": "passed"
+  },
+  "real_ipc_local_quic": {
+    "mode": "isolated desktop IPC and local QUIC",
+    "checks": {
+      "start_export_import_pair_download_upload": true,
+      "revoke_denies_new_requests_and_client_disconnect_keeps_hosting": true,
+      "same_engine_disconnect_preserves_hosting": true,
+      "explicit_replace_reauthorizes_and_same_scope_restart_retains_identity": true,
+      "changed_permissions_use_new_identity_and_enforce_readonly": true,
+      "quit_stops_hosting_and_releases_lock": true
+    },
+    "passed": true
+  },
+  "msix": {
+    "type": "local Windows build, unsigned test MSIX",
+    "bytes": 24907742,
+    "sha256": "e478a2fde6a57b74caaf99de14a743ce28c4655599a7a54abb875855d4d7672e",
+    "crc_verified": true,
+    "retained_files_verified": [
+      {
+        "path": "twodrive_dav.exe",
+        "sha256": "359821337c68bba23e7b27a45b015e66da9e4c28aaae30cfa940f79e4a071132"
+      },
+      {
+        "path": "twodrive-dev.exe",
+        "sha256": "c7f9f2a11f800034afd7ca88e61c905d2706523599edd7ec587cd9a51c0e7fd1"
+      },
+      {
+        "path": "twodrive-dav-engine.exe",
+        "sha256": "3edb14ae6c4cef9a429201db448465d8e0cc376bc54f41279fb2f80ba45ae555"
+      },
+      {
+        "path": "flutter_windows.dll",
+        "sha256": "c0304beba5fe98477177e151c673adad98d0442f50efa25d03ff5f207cc21056"
+      },
+      {
+        "path": "docs/desktop-sharing-validation.md",
+        "sha256": "a91b56b4214f61797a190fa6374e5d184fb2d3a8a31aea0e1c677a22d2711ff5"
+      }
+    ],
+    "signed": false,
+    "installed": false,
+    "store_submitted": false
+  },
+  "ci_results": "Final per-head workflow links and conclusions are maintained in the pull request validation record before merge.",
+  "not_verified": [
+    "physical NAS",
+    "independent-network NAT traversal",
+    "signed MSIX installation",
+    "Microsoft Store certification",
+    "live cloud accounts in this change"
+  ],
+  "runtime_source_base_commit": "d3a40f307de116d4a868ee3874a1fd2b6de96db3",
+  "runtime_source_overrides": {
+    "experiments/twodrive-dev/src/state.rs": "723d13999d0ecbe5c3fe7255769305e072b239a1"
+  }
+}

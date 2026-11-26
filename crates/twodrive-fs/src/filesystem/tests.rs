@@ -30,6 +30,8 @@ use twodrive_backend::DeltaResult;
 
 #[path = "deletion_tests.rs"]
 mod deletion_tests;
+#[path = "office_owner_tests.rs"]
+mod office_owner_tests;
 
 #[derive(Debug)]
 struct FailingBackend {
@@ -307,6 +309,237 @@ impl Drop for TestFs {
     }
 }
 
+#[test]
+fn untouched_writable_open_close_preserves_clean_and_pending_states() {
+    for dirty in [false, true] {
+        let mut test = TestFs::new(if dirty {
+            "untouched-dirty"
+        } else {
+            "untouched-clean"
+        });
+        let original = test
+            .fs
+            .db
+            .get_by_path("/README-cloud.txt")
+            .unwrap()
+            .unwrap();
+        test.fs.ensure_cached(&original).unwrap();
+        if dirty {
+            test.fs
+                .db
+                .mark_state(&original.metadata.remote_id, FileState::Dirty)
+                .unwrap();
+        }
+        let before = test
+            .fs
+            .db
+            .get_by_path("/README-cloud.txt")
+            .unwrap()
+            .unwrap();
+        let (_, fh, _) = test
+            .fs
+            .create_overwrite_upload(before.clone(), false)
+            .unwrap();
+        assert!(
+            test.fs.write_handles[&fh].activity.is_none(),
+            "open is not an upload"
+        );
+        assert_eq!(
+            test.fs
+                .db
+                .get_by_path("/README-cloud.txt")
+                .unwrap()
+                .unwrap()
+                .state,
+            before.state
+        );
+        test.fs.sync_handle(fh, false).unwrap();
+        test.fs.queue_upload_handle(fh).unwrap();
+        let after = test
+            .fs
+            .db
+            .get_by_path("/README-cloud.txt")
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.state, before.state);
+        assert_eq!(after.metadata.etag, before.metadata.etag);
+        assert_eq!(after.metadata.modified_unix, before.metadata.modified_unix);
+        assert!(
+            test.fs
+                .upload_pool
+                .sender
+                .pending
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn first_real_write_marks_writing_and_untouched_sibling_cannot_publish_partial_content() {
+    let mut test = TestFs::new("first-real-write");
+    let record = test
+        .fs
+        .db
+        .get_by_path("/README-cloud.txt")
+        .unwrap()
+        .unwrap();
+    let (_, writer, _) = test.fs.create_overwrite_upload(record, false).unwrap();
+    let current = test
+        .fs
+        .db
+        .get_by_path("/README-cloud.txt")
+        .unwrap()
+        .unwrap();
+    let (_, spectator, _) = test.fs.create_overwrite_upload(current, false).unwrap();
+    test.fs.begin_handle_write(writer).unwrap();
+    assert!(
+        test.fs.write_handles[&writer].activity.is_none(),
+        "local writes are not network transfers"
+    );
+    let cache = test.fs.write_handles[&writer].cache_path.clone();
+    write_slice(&cache, 0, b"new content").unwrap();
+    test.fs.queue_upload_handle(spectator).unwrap();
+    let current = test
+        .fs
+        .db
+        .get_by_path("/README-cloud.txt")
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.state, FileState::Writing);
+    assert!(
+        test.fs
+            .upload_pool
+            .sender
+            .pending
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+    test.fs.queue_upload_handle(writer).unwrap();
+    test.fs.write_handles.clear();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let saved = test
+            .fs
+            .db
+            .get_by_path("/README-cloud.txt")
+            .unwrap()
+            .unwrap();
+        if saved.state == FileState::Cached {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn delayed_first_write_rejects_a_new_remote_baseline() {
+    let mut test = TestFs::new("delayed-write-baseline");
+    let record = test
+        .fs
+        .db
+        .get_by_path("/README-cloud.txt")
+        .unwrap()
+        .unwrap();
+    let (_, fh, _) = test.fs.create_overwrite_upload(record, false).unwrap();
+    let before = test
+        .fs
+        .db
+        .get_by_path("/README-cloud.txt")
+        .unwrap()
+        .unwrap();
+    let mut changed = before.metadata.clone();
+    changed.etag = "external-new-version".into();
+    test.fs.db.upsert_metadata(&changed).unwrap();
+    assert!(
+        !test.fs.db.begin_cached_write(&before).unwrap(),
+        "a stale inspected baseline must not claim newer metadata"
+    );
+    assert!(test.fs.begin_handle_write(fh).is_err());
+    assert!(!test.fs.write_handles[&fh].changed);
+}
+
+#[test]
+#[ignore = "requires /dev/fuse; uses an isolated temporary mock mount"]
+fn mounted_untouched_writable_close_does_not_upload_but_real_write_does() {
+    let root = test_root("mounted-noop-open");
+    let mount = root.join("mount");
+    fs::create_dir_all(&mount).unwrap();
+    let db = Database::new(root.join("test.sqlite3"));
+    db.init().unwrap();
+    let backend = MockBackend::new();
+    sync_metadata(&db, &backend).unwrap();
+    let filesystem = TwoDriveFs::new(db.clone(), root.join("cache"), backend).unwrap();
+    let backend = Arc::clone(&filesystem.backend);
+    let session = fuser::spawn_mount2(filesystem, &mount, &[]).unwrap();
+    let path = mount.join("README-cloud.txt");
+    let content = fs::read(&path).unwrap();
+    let before = db.get_by_path("/README-cloud.txt").unwrap().unwrap();
+    for _ in 0..3 {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+    }
+    thread::sleep(Duration::from_millis(300));
+    let after = db.get_by_path("/README-cloud.txt").unwrap().unwrap();
+    assert_eq!(after.state, FileState::Cached);
+    assert_eq!(after.cloud_remote_id, before.cloud_remote_id);
+    assert_eq!(
+        after.metadata.etag, before.metadata.etag,
+        "untouched close uploaded a new cloud version"
+    );
+    assert_eq!(fs::read(&path).unwrap(), content);
+    assert_eq!(
+        backend
+            .get_metadata_by_path("/README-cloud.txt")
+            .unwrap()
+            .unwrap()
+            .remote_id,
+        before.cloud_remote_id.as_deref().unwrap(),
+        "untouched closes must not create a mock cloud replacement"
+    );
+    {
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"edited").unwrap();
+        file.sync_all().unwrap();
+        assert_eq!(
+            db.get_by_path("/README-cloud.txt").unwrap().unwrap().state,
+            FileState::Writing
+        );
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let saved = db.get_by_path("/README-cloud.txt").unwrap().unwrap();
+        if saved.state == FileState::Cached
+            && backend
+                .download(saved.cloud_remote_id.as_deref().unwrap())
+                .unwrap()
+                .starts_with(b"edited")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "real writes must still upload; state={:?}",
+            saved.state
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    session.join();
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn test_root(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "twodrive-fs-{name}-{}-{}",
@@ -456,6 +689,30 @@ impl CloudBackend for StreamingBackend {
         }
         Ok(done)
     }
+}
+
+#[test]
+fn queued_pin_cannot_claim_the_new_generation_after_release() {
+    let test = TestFs::new("release-before-pin-claim");
+    let db = &test.fs.db;
+    db.set_explicit_pin("file-readme", true).unwrap();
+    let selected = db.get_by_remote_id("file-readme").unwrap().unwrap();
+    assert!(selected.effective_pinned());
+    let before = db.download_generation("file-readme").unwrap();
+    db.release_path(&selected.metadata.path).unwrap();
+    assert!(db.download_generation("file-readme").unwrap() > before);
+    assert!(
+        crate::hydration::hydrate_pinned_record(
+            db,
+            &test.fs.cache_dir,
+            test.fs.backend.as_ref(),
+            &selected
+        )
+        .is_err()
+    );
+    let after = db.get_by_remote_id("file-readme").unwrap().unwrap();
+    assert_eq!(after.state, FileState::OnlineOnly);
+    assert!(after.cache_path.is_none());
 }
 
 #[test]
@@ -899,6 +1156,87 @@ fn large_directory_refresh_preserves_inodes_and_removes_stale_names() {
     let children = table.children_for_ino(ROOT_INO);
     assert_eq!(children.len(), 9999);
     assert_eq!(children[0].1.metadata.size, 12345);
+}
+
+#[test]
+fn retired_inode_keeps_open_reader_without_aliasing_a_replacement() {
+    let mut test = TestFs::new("retired-inode-replacement");
+    let original = test
+        .fs
+        .db
+        .get_by_path("/README-cloud.txt")
+        .unwrap()
+        .unwrap();
+    let ino = test
+        .fs
+        .inodes
+        .ino_for_path(&original.metadata.path)
+        .unwrap();
+    let cache = test.fs.ensure_cached(&original).unwrap();
+    let bytes = fs::read(&cache).unwrap();
+    let fh = test.fs.open_read_handle(ino, cache).unwrap();
+    test.fs
+        .db
+        .remove_by_remote_id(&original.metadata.remote_id)
+        .unwrap();
+    assert!(test.fs.record_for_ino(ino).is_none());
+    assert_eq!(test.fs.attr_for_ino(ino).unwrap().nlink, 0);
+    let replacement =
+        MetadataEntry::new_file("replacement-id", &original.metadata.path, 987, 2, "new");
+    test.fs.db.upsert_metadata(&replacement).unwrap();
+    test.fs.refresh_child_records("/");
+    let replacement_ino = test.fs.inodes.ino_for_path(&replacement.path).unwrap();
+    assert_ne!(replacement_ino, ino);
+    assert_eq!(test.fs.attr_for_ino(ino).unwrap().nlink, 0);
+    assert_eq!(test.fs.attr_for_ino(ino).unwrap().size, bytes.len() as u64);
+    assert_eq!(test.fs.attr_for_ino(replacement_ino).unwrap().size, 987);
+    assert_eq!(test.fs.read_open_handle(fh, 0, 4096).unwrap(), bytes);
+    test.fs.release_read_handle(fh).unwrap();
+    assert!(test.fs.attr_for_ino(ino).is_none());
+}
+
+#[test]
+fn replaced_path_does_not_reuse_or_lose_the_new_owners_inode() {
+    let test = TestFs::new("inode-path-ownership");
+    let original = test
+        .fs
+        .db
+        .get_by_path("/README-cloud.txt")
+        .unwrap()
+        .unwrap();
+    for via_refresh in [false, true] {
+        for move_old in [false, true] {
+            let mut table = InodeTable::new(std::slice::from_ref(&original));
+            let old_ino = table.ino_for_path(&original.metadata.path).unwrap();
+            let mut replacement = original.clone();
+            replacement.metadata.remote_id = "replacement-id".into();
+            if via_refresh {
+                table.refresh_children("/", vec![replacement.clone()]);
+            } else {
+                table.insert_or_update(replacement.clone());
+            }
+            let new_ino = table.ino_for_path(&original.metadata.path).unwrap();
+            assert_ne!(old_ino, new_ino, "different identities shared an inode");
+            let children = table.children_for_ino(ROOT_INO);
+            assert_eq!(children.len(), 1, "stale child remained in the namespace");
+            assert_eq!(children[0].1.metadata.remote_id, "replacement-id");
+            if move_old {
+                let mut moved = original.clone();
+                moved.metadata.path = "/moved.txt".into();
+                moved.metadata.name = "moved.txt".into();
+                table.replace_ino_record(old_ino, moved);
+                assert_eq!(
+                    table.ino_for_path(&replacement.metadata.path),
+                    Some(new_ino)
+                );
+            }
+            table.remove_ino(old_ino);
+            assert_eq!(
+                table.ino_for_path(&replacement.metadata.path),
+                Some(new_ino)
+            );
+        }
+    }
 }
 
 #[test]
@@ -1617,6 +1955,97 @@ fn remote_update_refreshes_inode_size_without_a_directory_listing() {
     changed.etag = "cloud-edit".into();
     test.fs.db.upsert_metadata_batch([&changed]).unwrap();
     assert_eq!(test.fs.attr_for_ino(ino).unwrap().size, 7);
+}
+
+#[test]
+fn untouched_writable_handle_does_not_hide_new_remote_attributes() {
+    let mut test = TestFs::new("untouched-handle-remote-size");
+    let record = test
+        .fs
+        .db
+        .get_by_path("/README-cloud.txt")
+        .unwrap()
+        .unwrap();
+    let (ino, fh, _) = test
+        .fs
+        .create_overwrite_upload(record.clone(), false)
+        .unwrap();
+    assert!(!test.fs.write_handles[&fh].changed);
+    let mut changed = record.metadata;
+    changed.size += 100;
+    changed.etag = "changed-remotely".into();
+    test.fs.db.upsert_metadata(&changed).unwrap();
+    assert_eq!(test.fs.attr_for_ino(ino).unwrap().size, changed.size);
+    test.fs.write_handles.remove(&fh);
+}
+
+#[test]
+fn failed_final_access_update_does_not_leak_a_closed_reader() {
+    let mut test = TestFs::new("cached-read-access-failure");
+    let record = test
+        .fs
+        .db
+        .get_by_path("/README-cloud.txt")
+        .unwrap()
+        .unwrap();
+    let ino = test.fs.inodes.ino_for_path(&record.metadata.path).unwrap();
+    let cache = test.fs.ensure_cached(&record).unwrap();
+    let fh = test.fs.open_read_handle(ino, cache.clone()).unwrap();
+    drop(std::mem::replace(
+        &mut test.fs.read_pool,
+        crate::read_pool::ReadPool::new(),
+    ));
+    let conn = rusqlite::Connection::open(test.fs.db.path()).unwrap();
+    conn.execute_batch("CREATE TRIGGER fail_access BEFORE UPDATE OF cache_accessed_unix ON files BEGIN SELECT RAISE(ABORT,'injected access update failure'); END;").unwrap();
+    assert!(test.fs.release_read_handle(fh).is_err());
+    assert!(!test.fs.read_handles.contains_key(&fh));
+    let unlocked = std::fs::File::open(&cache).unwrap();
+    unlocked
+        .try_lock()
+        .expect("final close must release its cache lock even on accounting failure");
+    drop(unlocked);
+    conn.execute_batch("DROP TRIGGER fail_access;").unwrap();
+    let next = test.fs.open_read_handle(ino, cache.clone()).unwrap();
+    test.fs.release_read_handle(next).unwrap();
+    assert!(test.fs.read_handles.is_empty());
+}
+
+#[test]
+fn cached_read_and_close_refresh_retention_before_releasing_the_lease() {
+    let mut test = TestFs::new("cached-read-retention");
+    let record = test
+        .fs
+        .db
+        .get_by_path("/README-cloud.txt")
+        .unwrap()
+        .unwrap();
+    let ino = test.fs.inodes.ino_for_path(&record.metadata.path).unwrap();
+    let cache = test.fs.ensure_cached(&record).unwrap();
+    rusqlite::Connection::open(test.fs.db.path())
+        .unwrap()
+        .execute(
+            "UPDATE files SET cache_accessed_unix=1 WHERE remote_id=?1",
+            [&record.metadata.remote_id],
+        )
+        .unwrap();
+    let handle = test.fs.open_read_handle(ino, cache.clone()).unwrap();
+    assert!(!test.fs.read_open_handle(handle, 0, 16).unwrap().is_empty());
+    test.fs.release_read_handle(handle).unwrap();
+    // Drain the actual read/retention worker before checking the durable value.
+    let reads = std::mem::replace(&mut test.fs.read_pool, crate::read_pool::ReadPool::new());
+    drop(reads);
+    assert!(
+        test.fs
+            .db
+            .get_by_remote_id(&record.metadata.remote_id)
+            .unwrap()
+            .unwrap()
+            .cache_accessed_unix
+            .unwrap()
+            > 1
+    );
+    assert_eq!(test.fs.db.prune_cache(60).unwrap(), 0);
+    assert!(cache.exists());
 }
 
 struct EditingDownloadBackend {
@@ -2530,4 +2959,173 @@ fn atomic_replacement_without_old_handles_must_not_leak_superseded_cache() {
         !old_cache.exists(),
         "superseded cache has no handles or database reference, but replacement and prune both leave it behind"
     );
+}
+
+#[derive(Clone)]
+struct ShallowBackend {
+    inner: Arc<MockBackend>,
+    listed: Arc<AtomicUsize>,
+    downloads: Arc<AtomicUsize>,
+    slow: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    started: Sender<()>,
+}
+impl CloudBackend for ShallowBackend {
+    fn uses_directory_metadata(&self) -> bool {
+        true
+    }
+    fn directory_metadata(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
+        self.listed.fetch_add(1, Ordering::SeqCst);
+        if path.starts_with("/slow-") {
+            let _ = self.started.send(());
+            let (lock, wake) = &*self.slow;
+            let guard = lock.lock().unwrap();
+            let (guard, timeout) = wake
+                .wait_timeout_while(guard, Duration::from_secs(10), |ready| !*ready)
+                .unwrap();
+            anyhow::ensure!(
+                *guard && !timeout.timed_out(),
+                "synthetic directory timed out"
+            );
+        }
+        Ok(self
+            .inner
+            .list_all()?
+            .into_iter()
+            .filter(|m| m.parent_path == path)
+            .collect())
+    }
+    fn list_all(&self) -> anyhow::Result<Vec<MetadataEntry>> {
+        anyhow::bail!("recursive metadata must never run")
+    }
+    fn get_metadata(&self, id: &str) -> anyhow::Result<Option<MetadataEntry>> {
+        self.inner.get_metadata(id)
+    }
+    fn get_metadata_by_path(&self, path: &str) -> anyhow::Result<Option<MetadataEntry>> {
+        self.inner.get_metadata_by_path(path)
+    }
+    fn download(&self, id: &str) -> anyhow::Result<Vec<u8>> {
+        self.downloads.fetch_add(1, Ordering::SeqCst);
+        self.inner.download(id)
+    }
+    fn upload(&self, path: &str, bytes: Vec<u8>) -> anyhow::Result<MetadataEntry> {
+        self.inner.upload(path, bytes)
+    }
+    fn create_folder(&self, path: &str) -> anyhow::Result<MetadataEntry> {
+        self.inner.create_folder(path)
+    }
+    fn rename(&self, id: &str, to: &str) -> anyhow::Result<MetadataEntry> {
+        self.inner.rename(id, to)
+    }
+    fn delete(&self, id: &str) -> anyhow::Result<()> {
+        self.inner.delete(id)
+    }
+}
+#[test]
+#[ignore = "requires isolated /dev/fuse, fusermount3 and gio"]
+fn shallow_mount_is_lazy_cache_aware_and_reads_while_metadata_is_stalled() {
+    let root = test_root("shallow-native");
+    let mount = root.join("mount");
+    fs::create_dir_all(&mount).unwrap();
+    let db = Database::new(root.join("db.sqlite3"));
+    db.init().unwrap();
+    let inner = Arc::new(MockBackend::new());
+    let cached = inner
+        .upload("/cached.part.09", b"cached data".to_vec())
+        .unwrap();
+    let cold = inner
+        .upload("/cold.part.09", b"cold data".to_vec())
+        .unwrap();
+    for i in 0..4 {
+        inner.create_folder(&format!("/slow-{i}")).unwrap();
+    }
+    let cache = root.join("cached-content");
+    fs::write(&cache, b"cached data").unwrap();
+    db.upsert_metadata(&cached).unwrap();
+    db.mark_cached(&cached.remote_id, &cache).unwrap();
+    let (started, receive) = mpsc::channel();
+    let backend = ShallowBackend {
+        inner,
+        listed: Arc::default(),
+        downloads: Arc::default(),
+        slow: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+        started,
+    };
+    assert_eq!(sync_delta_metadata(&db, &backend).unwrap(), 0);
+    let filesystem = TwoDriveFs::new(db.clone(), root.join("cache"), backend.clone()).unwrap();
+    let session = fuser::spawn_mount2(filesystem, &mount, &[]).unwrap();
+    let result = Command::new("gio")
+        .args(["list", "-a", "standard::*,access::*"])
+        .arg(&mount)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        backend.downloads.load(Ordering::SeqCst),
+        0,
+        "metadata must use local cached bytes without hydrating cold files"
+    );
+    assert!(
+        db.get_by_path(&cold.path)
+            .unwrap()
+            .unwrap()
+            .cache_path
+            .is_none()
+    );
+    let pending: Vec<_> = (0..4)
+        .map(|i| {
+            let path = mount.join(format!("slow-{i}"));
+            thread::spawn(move || fs::read_dir(path).map(|d| d.count()))
+        })
+        .collect();
+    for _ in 0..4 {
+        receive.recv_timeout(Duration::from_secs(3)).unwrap();
+    }
+    let at = Instant::now();
+    assert_eq!(
+        fs::read(mount.join("cached.part.09")).unwrap(),
+        b"cached data"
+    );
+    assert!(
+        at.elapsed() < Duration::from_secs(1),
+        "metadata stalled the dispatcher"
+    );
+    // GIO must still sniff fully local content. ENODATA for all GIO opens would
+    // make this query lose its text/plain MIME type.
+    let info = Command::new("gio")
+        .args(["info", "-a", "standard::content-type"])
+        .arg(mount.join("cached.part.09"))
+        .output()
+        .unwrap();
+    assert!(info.status.success());
+    assert!(String::from_utf8_lossy(&info.stdout).contains("text/plain"));
+    assert_eq!(backend.downloads.load(Ordering::SeqCst), 0);
+    let at = Instant::now();
+    assert_eq!(fs::read(mount.join("cold.part.09")).unwrap(), b"cold data");
+    assert!(
+        at.elapsed() < Duration::from_secs(1),
+        "all metadata workers blocked content hydration"
+    );
+    assert_eq!(backend.downloads.load(Ordering::SeqCst), 1);
+    {
+        let (lock, wake) = &*backend.slow;
+        *lock.lock().unwrap() = true;
+        wake.notify_all();
+    }
+    for worker in pending {
+        worker.join().unwrap().unwrap();
+    }
+    assert_eq!(fs::read(mount.join("cold.part.09")).unwrap(), b"cold data");
+    assert_eq!(backend.downloads.load(Ordering::SeqCst), 1);
+    let unmount = Command::new("fusermount3")
+        .args(["-u", "--"])
+        .arg(&mount)
+        .output()
+        .unwrap();
+    assert!(unmount.status.success());
+    session.join();
+    fs::remove_dir_all(root).unwrap();
 }

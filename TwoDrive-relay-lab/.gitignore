@@ -1,0 +1,11 @@
+# Only historical source belongs in this archive.
+target/
+dist/
+identity.json
+*.identity.json
+tokens.json
+*.tokens.json
+.env
+.env.*
+inbox/
+relay-cache/

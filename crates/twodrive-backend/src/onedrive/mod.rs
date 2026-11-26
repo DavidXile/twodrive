@@ -15,12 +15,16 @@ use twodrive_core::{AppPaths, Config, MetadataEntry, TokenData, TokenStore, norm
 use upload::{
     GraphUploadSession, PersistedUploadSession, UploadSessionStore, query_upload_offset,
     shared_upload_session_store, simple_upload_url, upload_request, upload_session_create_url,
-    upload_session_file, upload_session_request_body, uses_upload_session,
+    upload_session_file, uses_upload_session,
 };
 mod auth;
 pub mod browse;
+mod desktop;
 mod http;
+mod integrity;
+pub use integrity::{FileIntegrity, IntegrityRequest, QuickXorHash};
 mod model;
+mod namespace;
 mod paths;
 pub mod readonly;
 mod upload;
@@ -85,6 +89,7 @@ impl GraphBackend {
         source_modified_unix: i64,
         remote_id: Option<&str>,
         if_match: Option<&str>,
+        source_digest: &str,
     ) -> anyhow::Result<Option<PersistedUploadSession>> {
         let sessions = self
             .upload_sessions
@@ -98,6 +103,7 @@ impl GraphBackend {
                     && session.source_modified_unix == source_modified_unix
                     && session.remote_id.as_deref() == remote_id
                     && session.if_match.as_deref() == if_match
+                    && session.source_digest.as_deref() == Some(source_digest)
             })
             .cloned())
     }
@@ -173,13 +179,16 @@ impl CloudBackend for GraphBackend {
 
     fn get_metadata_by_path(&self, path: &str) -> anyhow::Result<Option<MetadataEntry>> {
         let path = normalize_cloud_path(path);
-        let url = format!(
-            "https://graph.microsoft.com/v1.0/me/drive/root:/{}",
-            encode_graph_path(&path)
-        );
+        let url = graph_parent_lookup_url(&path);
+        #[cfg(test)]
+        let url = self
+            .test_endpoint
+            .as_ref()
+            .map(|base| format!("{base}{}", &url["https://graph.microsoft.com".len()..]))
+            .unwrap_or(url);
         let Some(response) = retry_optional_request(|| {
             let access_token = self.access_token()?;
-            Ok(self.client.get(&url).bearer_auth(access_token))
+            Ok(self.client.get(url.as_str()).bearer_auth(access_token))
         })?
         else {
             return Ok(None);
@@ -327,98 +336,7 @@ impl CloudBackend for GraphBackend {
         if_match: Option<&str>,
         on_progress: &mut dyn FnMut(u64, u64) -> anyhow::Result<()>,
     ) -> anyhow::Result<MetadataEntry> {
-        validate_graph_file_path(path)?;
-        let source_metadata = fs::metadata(source_path)?;
-        let size = source_metadata.len();
-        if !uses_upload_session(size) {
-            let access_token = self.access_token()?;
-            let url = simple_upload_url(path, remote_id);
-            let content = fs::read(source_path)?;
-            let item: GraphDriveItem = retry_request(|| {
-                upload_request(&self.client, &url, &access_token, if_match, &content)
-            })?
-            .json()?;
-            let uploaded = item.into_metadata_at_path(path).ok_or_else(|| {
-                anyhow::anyhow!("Graph upload response did not include file metadata")
-            })?;
-            on_progress(size, size)?;
-            return Ok(uploaded);
-        }
-
-        let source_modified_unix = source_metadata
-            .modified()
-            .ok()
-            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|value| value.as_secs() as i64)
-            .unwrap_or_default();
-        let session_key = normalize_cloud_path(path);
-        let persisted = self.matching_upload_session(
-            &session_key,
-            size,
-            source_modified_unix,
-            remote_id,
-            if_match,
-        )?;
-        let resumed = match persisted {
-            Some(session) => query_upload_offset(&self.client, &session.upload_url)?
-                .filter(|offset| *offset < size)
-                .map(|offset| (session.upload_url, offset)),
-            None => None,
-        };
-        let (upload_url, initial_offset) = if let Some(resumed) = resumed {
-            resumed
-        } else {
-            let _ = self.remove_upload_session(&session_key);
-            let access_token = self.access_token()?;
-            let (parent_path, name) = split_cloud_parent_name(path)?;
-            let parent_id = if remote_id.is_none() {
-                let parent_url = graph_parent_lookup_url(&parent_path);
-                let parent: GraphDriveItem = self.get_with_retry(&parent_url)?.json()?;
-                Some(parent.id)
-            } else {
-                None
-            };
-            let create_url = upload_session_create_url(remote_id, parent_id.as_deref(), &name)?;
-            let body = upload_session_request_body();
-            let session: GraphUploadSession = retry_request(|| {
-                let builder = self
-                    .client
-                    .post(&create_url)
-                    .bearer_auth(&access_token)
-                    .json(&body);
-                if let Some(etag) = if_match.filter(|etag| !etag.trim().is_empty()) {
-                    builder.header(IF_MATCH, etag.to_string())
-                } else {
-                    builder
-                }
-            })?
-            .json()?;
-            self.save_upload_session(
-                session_key.clone(),
-                PersistedUploadSession {
-                    upload_url: session.upload_url.clone(),
-                    source_size: size,
-                    source_modified_unix,
-                    remote_id: remote_id.map(str::to_string),
-                    if_match: if_match.map(str::to_string),
-                },
-            )?;
-            (session.upload_url, 0)
-        };
-
-        let result = upload_session_file(
-            &self.client,
-            &upload_url,
-            path,
-            source_path,
-            size,
-            initial_offset,
-            on_progress,
-        );
-        if result.is_ok() {
-            let _ = self.remove_upload_session(&session_key);
-        }
-        result
+        self.upload_file_with_policy(path, source_path, remote_id, if_match, on_progress, false)
     }
 
     fn upload_with_etag(
@@ -442,6 +360,7 @@ impl CloudBackend for GraphBackend {
     }
 
     fn create_folder(&self, path: &str) -> anyhow::Result<MetadataEntry> {
+        validate_graph_file_path(path)?;
         let access_token = self.access_token()?;
         let (parent_path, name) = split_cloud_parent_name(path)?;
         let url = if parent_path == "/" {
@@ -469,6 +388,7 @@ impl CloudBackend for GraphBackend {
     }
 
     fn rename(&self, remote_id: &str, new_path: &str) -> anyhow::Result<MetadataEntry> {
+        validate_graph_file_path(new_path)?;
         let access_token = self.access_token()?;
         let (parent_path, name) = split_cloud_parent_name(new_path)?;
         let parent_url = graph_parent_lookup_url(&parent_path);
@@ -514,6 +434,212 @@ pub(crate) fn is_conflict_error(err: &anyhow::Error) -> bool {
 }
 
 mod control;
+
+impl GraphBackend {
+    /// Provider contract: new objects fail on a name race; existing objects require a version.
+    pub fn upload_desktop_file(
+        &self,
+        path: &str,
+        source: &Path,
+        remote_id: Option<&str>,
+        version: Option<&str>,
+        progress: &mut dyn FnMut(u64, u64) -> anyhow::Result<()>,
+    ) -> anyhow::Result<MetadataEntry> {
+        self.upload_file_with_policy(path, source, remote_id, version, progress, true)
+    }
+
+    /// Resume only a previously persisted create-only session. The caller must
+    /// first match the immutable source to its durable upload-intent digest.
+    /// Never adopt an existing nonempty item or create a replacement session.
+    pub fn resume_desktop_create_upload(
+        &self,
+        path: &str,
+        source: &Path,
+        progress: &mut dyn FnMut(u64, u64) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Option<MetadataEntry>> {
+        validate_graph_file_path(path)?;
+        let key = normalize_cloud_path(path);
+        let size = fs::metadata(source)?.len();
+        let saved = self
+            .upload_sessions
+            .lock()
+            .map_err(|_| anyhow::anyhow!("upload session store lock is poisoned"))?
+            .sessions
+            .get(&key)
+            .cloned();
+        let Some(saved) = saved.filter(|s| {
+            s.create_only
+                && s.remote_id.is_none()
+                && s.if_match.is_none()
+                && s.source_size == size
+                && size > 0
+        }) else {
+            return Ok(None);
+        };
+        if saved.source_digest.as_deref() != Some(upload::source_digest(source)?.as_str()) {
+            return Ok(None);
+        }
+        let Some(item) = self.get_metadata_by_path(path)? else {
+            return Ok(None);
+        };
+        if item.is_dir || item.size != 0 {
+            return Ok(None);
+        }
+        let Some(offset) = query_upload_offset(&self.client, &saved.upload_url)
+            .map_err(|_| anyhow::anyhow!("无法检查原上传会话，请稍后重试"))?
+            .filter(|offset| *offset < size)
+        else {
+            return Ok(None);
+        };
+        let uploaded = upload_session_file(
+            &self.client,
+            &saved.upload_url,
+            path,
+            source,
+            size,
+            offset,
+            progress,
+        )
+        .map_err(|_| anyhow::anyhow!("原上传会话续传失败，请检查网络和备份状态"))?;
+        self.remove_upload_session(&key)?;
+        Ok(Some(uploaded))
+    }
+
+    fn upload_file_with_policy(
+        &self,
+        path: &str,
+        source_path: &Path,
+        remote_id: Option<&str>,
+        if_match: Option<&str>,
+        on_progress: &mut dyn FnMut(u64, u64) -> anyhow::Result<()>,
+        strict: bool,
+    ) -> anyhow::Result<MetadataEntry> {
+        validate_graph_file_path(path)?;
+        let source_metadata = fs::metadata(source_path)?;
+        let size = source_metadata.len();
+        let create_only = strict && remote_id.is_none();
+        if strict {
+            anyhow::ensure!(
+                if_match.is_none_or(|v| !v.trim().is_empty() && v != "*"),
+                "conditional upload requires a concrete version"
+            );
+            anyhow::ensure!(
+                remote_id.is_some() == if_match.is_some(),
+                "conditional upload identity/version mismatch"
+            );
+        }
+        if !uses_upload_session(size) {
+            let access_token = self.access_token()?;
+            let url = simple_upload_url(path, remote_id);
+            #[cfg(test)]
+            let url = self
+                .test_endpoint
+                .as_ref()
+                .map(|base| format!("{base}{}", &url["https://graph.microsoft.com".len()..]))
+                .unwrap_or(url);
+            let content = fs::read(source_path)?;
+            let item: GraphDriveItem = retry_request(|| {
+                let request = upload_request(&self.client, &url, &access_token, if_match, &content);
+                if create_only {
+                    request
+                        .query(&[("@microsoft.graph.conflictBehavior", "fail")])
+                        .header("If-None-Match", "*")
+                } else {
+                    request
+                }
+            })?
+            .json()?;
+            let uploaded = item.into_metadata_at_path(path).ok_or_else(|| {
+                anyhow::anyhow!("Graph upload response did not include file metadata")
+            })?;
+            on_progress(size, size)?;
+            return Ok(uploaded);
+        }
+
+        let source_modified_unix = source_metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|value| value.as_secs() as i64)
+            .unwrap_or_default();
+        let session_key = normalize_cloud_path(path);
+        let source_digest = upload::source_digest(source_path)?;
+        let persisted = self
+            .matching_upload_session(
+                &session_key,
+                size,
+                source_modified_unix,
+                remote_id,
+                if_match,
+                &source_digest,
+            )?
+            .filter(|session| session.create_only == create_only);
+        let resumed = match persisted {
+            Some(session) => query_upload_offset(&self.client, &session.upload_url)?
+                .filter(|offset| *offset < size)
+                .map(|offset| (session.upload_url, offset)),
+            None => None,
+        };
+        let (upload_url, initial_offset) = if let Some(resumed) = resumed {
+            resumed
+        } else {
+            let _ = self.remove_upload_session(&session_key);
+            let access_token = self.access_token()?;
+            let (parent_path, name) = split_cloud_parent_name(path)?;
+            let parent_id = if remote_id.is_none() {
+                let parent_url = graph_parent_lookup_url(&parent_path);
+                let parent: GraphDriveItem = self.get_with_retry(&parent_url)?.json()?;
+                Some(parent.id)
+            } else {
+                None
+            };
+            let create_url = upload_session_create_url(remote_id, parent_id.as_deref(), &name)?;
+            let body = upload::upload_session_request_body_for(create_only);
+            let session: GraphUploadSession = retry_request(|| {
+                let builder = self
+                    .client
+                    .post(&create_url)
+                    .bearer_auth(&access_token)
+                    .json(&body);
+                if let Some(etag) = if_match.filter(|etag| !etag.trim().is_empty()) {
+                    builder.header(IF_MATCH, etag.to_string())
+                } else if create_only {
+                    builder.header("If-None-Match", "*")
+                } else {
+                    builder
+                }
+            })?
+            .json()?;
+            self.save_upload_session(
+                session_key.clone(),
+                PersistedUploadSession {
+                    upload_url: session.upload_url.clone(),
+                    source_size: size,
+                    source_modified_unix,
+                    remote_id: remote_id.map(str::to_string),
+                    if_match: if_match.map(str::to_string),
+                    create_only,
+                    source_digest: Some(source_digest),
+                },
+            )?;
+            (session.upload_url, 0)
+        };
+
+        let result = upload_session_file(
+            &self.client,
+            &upload_url,
+            path,
+            source_path,
+            size,
+            initial_offset,
+            on_progress,
+        );
+        if result.is_ok() {
+            let _ = self.remove_upload_session(&session_key);
+        }
+        result
+    }
+}
 
 #[cfg(test)]
 mod diagnostic_tests;

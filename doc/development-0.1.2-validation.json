@@ -1,0 +1,158 @@
+{
+  "date": "2026-10-14",
+  "development_version": "0.1.2",
+  "tested_build_commit": "863bf6d6218853d79eecb57be6be8c8c2a4f6cef",
+  "ci": [
+    {
+      "databaseId": 38553734864,
+      "workflowName": "TwoDrive desktop",
+      "headSha": "863bf6d6218853d79eecb57be6be8c8c2a4f6cef",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/LumiaBlack51/twodrive/actions/runs/38553734864"
+    },
+    {
+      "databaseId": 38553734859,
+      "workflowName": "Peer native builds",
+      "headSha": "863bf6d6218853d79eecb57be6be8c8c2a4f6cef",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/LumiaBlack51/twodrive/actions/runs/38553734859"
+    },
+    {
+      "databaseId": 38553734826,
+      "workflowName": "Dev WebDAV and QUIC peer",
+      "headSha": "863bf6d6218853d79eecb57be6be8c8c2a4f6cef",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/LumiaBlack51/twodrive/actions/runs/38553734826"
+    },
+    {
+      "databaseId": 38553734818,
+      "workflowName": "Windows dual preview",
+      "headSha": "863bf6d6218853d79eecb57be6be8c8c2a4f6cef",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/LumiaBlack51/twodrive/actions/runs/38553734818"
+    }
+  ],
+  "ci_binary_package_audits": {
+    "linux": {
+      "artifact_run": 38553734864,
+      "artifact_id": 11888570515,
+      "file_count": 40,
+      "required_bundle_files": [
+        "twodrive_dav",
+        "twodrive-dev",
+        "twodrive-dav-engine",
+        "install-dav-desktop.py",
+        "INSTALL.md",
+        "gnome-tray-anchor/extension.js",
+        "gnome-tray-anchor/geometry.js",
+        "gnome-tray-anchor/metadata.json",
+        "docs/provider-integration-spec.md",
+        "docs/storage-connections-dev.md",
+        "docs/google-drive-dev.md",
+        "docs/tray-positioning-2026-10-14.md"
+      ],
+      "version": "twodrive-dev 0.1.2",
+      "native_binary_sha256": {
+        "twodrive_dav": "13c0387e1f33baa2e931d23dbf546020dd92306d06d0e37f131f61f142a85ae9",
+        "twodrive-dev": "e0aef66163724ac2cc59f496c8a8e46f0efd131c921614d10d8022e171a53ee2",
+        "twodrive-dav-engine": "4afffcfd87314926bfac3e368b43ee64012ff2b1dfeab8b6c8a82630a3b7ff71"
+      },
+      "source_component_matches": true,
+      "private_credential_filenames_found": false
+    },
+    "windows": {
+      "artifact_run": 38553734864,
+      "artifact_id": 11889171502,
+      "file_count": 35,
+      "required_bundle_files": [
+        "twodrive_dav.exe",
+        "twodrive-dev.exe",
+        "twodrive-dav-engine.exe",
+        "flutter_windows.dll",
+        "install-desktop-windows.ps1",
+        "INSTALL.md",
+        "docs/provider-integration-spec.md",
+        "docs/google-drive-dev.md",
+        "docs/storage-connections-dev.md",
+        "docs/tray-positioning-2026-10-14.md"
+      ],
+      "native_binary_sha256": {
+        "twodrive_dav.exe": "c2d933eb4a04e383b2dd2a18f8c596e3f3006846fdfee6b9bebddfee21c25ea8",
+        "twodrive-dev.exe": "ada80fd94cf5724992f0690cf22383eb415fd39f4e7d545b4ec7c3e40175f972",
+        "twodrive-dav-engine.exe": "e9209907d959d19509106a8f1a3fe687c5eefc23f515db45e21a6eca60d77adf"
+      },
+      "native_architecture": "PE-x64",
+      "native_icon_assets_present": true,
+      "installer_and_spec_match_after_LF_normalization": true,
+      "locally_executed_on_Windows": false
+    }
+  },
+  "ci_linux_binary_replay": {
+    "desktop": {
+      "mode": "local-WebDAV",
+      "checks": {
+        "private_profiles": true,
+        "connect": true,
+        "connected_profile_management_preserves_active_account": true,
+        "connection_affinity_enforced": true,
+        "roundtrip_bytes": 2097356,
+        "roundtrip_sha256": "25e13b8004eab67ba7723f8ff39dd3b180edd968c2902d3e0ed47e9a74723b65",
+        "shallow_directory": true,
+        "no_clobber": true,
+        "traversal_rejected": true,
+        "rename": true,
+        "progress_events": 2,
+        "backup_committed_upload_recovery_by_hash": true,
+        "backup_conflict_preserves_remote": true,
+        "folder_backup_create_update_pause_resume_symlink_guard": true,
+        "remote_test_removed": true,
+        "readonly_enforced": true,
+        "autostart_toggle_isolated_default_off": true
+      },
+      "passed": true
+    },
+    "storage": {
+      "mode": "isolated-local-IPC-UDP-QUIC",
+      "checks": {
+        "online_add_edit_remove_preserves_active_revision": true,
+        "onedrive_schema_and_independent_defaults_without_login": true,
+        "actual_signed_udp_discovery_without_pairing_secret": true,
+        "actual_invitation_pairing_and_quic_read_write_modify_delete": true,
+        "paired_reconnect_without_reusing_invitation": true,
+        "switch_back_to_existing_connection": true
+      },
+      "not_verified": [
+        "real-OneDrive-OAuth-and-cloud",
+        "physical-NAS",
+        "cross-network-NAT-hole-punching",
+        "native-Windows"
+      ]
+    }
+  },
+  "live_cloud_reports": {
+    "google": [
+      "google-drive-validation-2026-10-14.json",
+      "google-drive-large-validation-2026-10-14.json"
+    ],
+    "onedrive": [
+      "onedrive-desktop-validation-2026-10-14.json"
+    ],
+    "boundary": "Earlier local development builds on the same day; not a rerun of live cloud OAuth using the final CI binaries."
+  },
+  "isolated_native_tray_reports": [
+    "tray-wayland-validation-2026-10-14.json",
+    "tray-x11-validation-2026-10-14.json"
+  ],
+  "not_verified": [
+    "user physical desktop/multi-monitor tray position",
+    "other Wayland compositors",
+    "native Windows live Google/OneDrive OAuth and cloud roundtrip",
+    "physical NAS",
+    "arbitrary cross-network NAT hole punching",
+    "organization/shared drives"
+  ]
+}

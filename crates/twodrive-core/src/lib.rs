@@ -1,19 +1,27 @@
 //! Domain state and compatible local persistence for TwoDrive.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 mod config;
 mod credentials;
 mod database;
 mod domain;
+mod exclusions;
 mod known_folders;
 mod paths;
 mod time;
 
 pub use config::{
     CacheConfig, Config, DEFAULT_GRAPH_CLIENT_ID, GraphConfig, KnownFolderConfig,
-    KnownFoldersConfig, PowerConfig,
+    KnownFoldersConfig, PowerConfig, SyncConfig,
 };
 pub use credentials::{TokenData, TokenStore};
 pub use database::Database;
+pub use database::NativeWatchState;
 pub use database::cloud::{CloudIdentity, DownloadTask, IndexedItem};
+pub use database::local_journal::{
+    CacheJournal, CacheReadLease, CacheSnapshot, CacheWriteLease, NativeBackupCopy,
+    NativeCaptureBinding, NativeCreation, NativeDeleteIntent, NativeFileIdentity, NativeMoveIntent,
+    NativeProjection, NativeRemoteRemoval, NativeRemoteUpdate, NativeSourceImport, UploadLease,
+};
 pub use domain::{
     CoreError, DeleteFailureKind, FileRecord, FileState, MetadataEntry, PendingDelete,
     PendingMetadataKind, PendingMetadataOperation,
@@ -29,3 +37,5 @@ pub use time::{now_unix, parse_duration_seconds};
 mod tests;
 
 pub mod private_file;
+
+pub use exclusions::NameExclusions;

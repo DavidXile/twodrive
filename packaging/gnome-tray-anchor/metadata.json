@@ -1,0 +1,7 @@
+{
+  "uuid": "twodrive-tray-anchor@twodrive",
+  "name": "TwoDrive tray positioning",
+  "description": "Aligns only the TwoDrive Development panel with its tray icon on GNOME/Zorin, with X11 or Wayland.",
+  "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
+  "version": 1
+}

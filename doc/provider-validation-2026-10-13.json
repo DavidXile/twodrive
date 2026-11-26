@@ -1,0 +1,152 @@
+{
+  "source_commit": "4554021886852e71b04299fd2b2ccc240442c2c7",
+  "root_default_rust_tests": 151,
+  "development_rust_tests_linux": 49,
+  "flutter_tests": 13,
+  "nautilus_tests": 25,
+  "settings_tests": 4,
+  "fuse_regressions": 6,
+  "live_cloud_tested": false,
+  "desktop_local_webdav_fuse": {
+    "mode": "local-WebDAV",
+    "checks": {
+      "private_profiles": true,
+      "connect": true,
+      "connection_affinity_enforced": true,
+      "roundtrip_bytes": 2097356,
+      "roundtrip_sha256": "25e13b8004eab67ba7723f8ff39dd3b180edd968c2902d3e0ed47e9a74723b65",
+      "shallow_directory": true,
+      "no_clobber": true,
+      "traversal_rejected": true,
+      "rename": true,
+      "progress_events": 2,
+      "fuse_read": true,
+      "existing_mount_not_adopted": true,
+      "fuse_write": true,
+      "fuse_pause_preserves_and_resumes_pending_write": true,
+      "cache_cleared": true,
+      "backup_committed_upload_recovery_by_hash": true,
+      "backup_conflict_preserves_remote": true,
+      "folder_backup_create_update_pause_resume_symlink_guard": true,
+      "remote_test_removed": true,
+      "readonly_enforced": true,
+      "autostart_toggle_isolated_default_off": true
+    },
+    "passed": true
+  },
+  "stable_package": {
+    "build_source": "56248a7822156ea2e10fade28bbb2dedcc2e7f2e",
+    "version": "twodrive 0.2.12",
+    "sha256": "12bd85c3e97f3931f06fdc295cc35c6f26663bbc732afbcf3fdb8dfa43bf16a9",
+    "packaged_mock_daemon_smoke": true,
+    "packaged_nautilus_tests": 25,
+    "source_identical_at_verified_head": true,
+    "packaged_cli_fuse_regressions": 6
+  },
+  "merged_dev_commit": "bff03bdfc13eab7ab079433bdde8d4155a043ef1",
+  "pull_request": "https://github.com/LumiaBlack51/twodrive/pull/11",
+  "ci": [
+    {
+      "run_id": 38364410735,
+      "conclusion": "success",
+      "source_commit": "4554021886852e71b04299fd2b2ccc240442c2c7",
+      "url": "https://github.com/LumiaBlack51/twodrive/actions/runs/38364410735"
+    },
+    {
+      "run_id": 38364410787,
+      "conclusion": "success",
+      "source_commit": "4554021886852e71b04299fd2b2ccc240442c2c7",
+      "url": "https://github.com/LumiaBlack51/twodrive/actions/runs/38364410787"
+    },
+    {
+      "run_id": 38364410773,
+      "conclusion": "success",
+      "source_commit": "4554021886852e71b04299fd2b2ccc240442c2c7",
+      "url": "https://github.com/LumiaBlack51/twodrive/actions/runs/38364410773"
+    },
+    {
+      "run_id": 38364410768,
+      "conclusion": "success",
+      "source_commit": "4554021886852e71b04299fd2b2ccc240442c2c7",
+      "url": "https://github.com/LumiaBlack51/twodrive/actions/runs/38364410768"
+    }
+  ],
+  "final_linux_distribution_smoke": {
+    "mode": "local-WebDAV",
+    "checks": {
+      "private_profiles": true,
+      "connect": true,
+      "connection_affinity_enforced": true,
+      "roundtrip_bytes": 2097356,
+      "roundtrip_sha256": "25e13b8004eab67ba7723f8ff39dd3b180edd968c2902d3e0ed47e9a74723b65",
+      "shallow_directory": true,
+      "no_clobber": true,
+      "traversal_rejected": true,
+      "rename": true,
+      "progress_events": 2,
+      "fuse_read": true,
+      "existing_mount_not_adopted": true,
+      "fuse_write": true,
+      "fuse_pause_preserves_and_resumes_pending_write": true,
+      "cache_cleared": true,
+      "backup_committed_upload_recovery_by_hash": true,
+      "backup_conflict_preserves_remote": true,
+      "folder_backup_create_update_pause_resume_symlink_guard": true,
+      "remote_test_removed": true,
+      "readonly_enforced": true,
+      "autostart_toggle_isolated_default_off": true
+    },
+    "passed": true
+  },
+  "release_binary_sha256": {
+    "twodrive-development-0.1.1-linux-x64.tar.xz": "c6cab31678207dbd57886e6d9db29ded85b785feedee588421afeb9c159f2a3a",
+    "twodrive-development-0.1.1-windows-x64.zip": "424ced128acacbf45d1dd8168efca8f07cfcb899fbb08a53aca2bcd63263b082",
+    "twodrive_0.2.12-1_amd64.deb": "12bd85c3e97f3931f06fdc295cc35c6f26663bbc732afbcf3fdb8dfa43bf16a9",
+    "twodrive_0.2.12-1_amd64.deb.sha256": "6f87f44ce83e8c571ae7b69db310c4c1927a5d0656164aa78a59408f2895ea90"
+  },
+  "windows_native_ci": {
+    "flutter_tests": 13,
+    "build": true,
+    "ipc_backup_autostart": true,
+    "synthetic_tray_events_focus_escape": true,
+    "user_hardware_tested": false
+  },
+  "limits": [
+    "Non-DAV provider is an isolated memory fixture, not a new live cloud integration.",
+    "FUSE tests use MockBackend or a loopback WebDAV server.",
+    "No live OneDrive/Google Drive account, user configuration, installed client or service was changed.",
+    "The remaining live-cloud/device dependent ignored test was not run.",
+    "Native Windows CI is not physical interaction on the user device."
+  ],
+  "published_releases": {
+    "v0.2.12-1": {
+      "target": "93d1b44e7256f19d4b0822f22c2f90a066ec3305",
+      "published_at": "2026-10-13T08:07:04Z",
+      "url": "https://github.com/LumiaBlack51/twodrive/releases/tag/v0.2.12-1",
+      "prerelease": false,
+      "all_asset_digests_match": true,
+      "asset_sha256": {
+        "twodrive_0.2.12-1_amd64.deb": "12bd85c3e97f3931f06fdc295cc35c6f26663bbc732afbcf3fdb8dfa43bf16a9",
+        "verification.json": "6d73c6277e0387c92740457912d1423f52ef14864b51173734502937790ef8cd",
+        "twodrive_0.2.12-1_amd64.deb.sha256": "6f87f44ce83e8c571ae7b69db310c4c1927a5d0656164aa78a59408f2895ea90",
+        "twodrive-0.2.12-1-source.tar.gz": "48c478de7cbda138d65b2a499609ae9151c8a049dabdb14cc36d2f442b25475a",
+        "SHA256SUMS": "43c9b1cc5104325cfbf3fecf8a874e7bdf57147d46c57ed53c57d618fe48cb39"
+      }
+    },
+    "dev-v0.1.1": {
+      "target": "93d1b44e7256f19d4b0822f22c2f90a066ec3305",
+      "published_at": "2026-10-13T08:07:06Z",
+      "url": "https://github.com/LumiaBlack51/twodrive/releases/tag/dev-v0.1.1",
+      "prerelease": true,
+      "all_asset_digests_match": true,
+      "asset_sha256": {
+        "twodrive-development-0.1.1-linux-x64.tar.xz": "c6cab31678207dbd57886e6d9db29ded85b785feedee588421afeb9c159f2a3a",
+        "twodrive-development-0.1.1-windows-x64.zip": "424ced128acacbf45d1dd8168efca8f07cfcb899fbb08a53aca2bcd63263b082",
+        "verification.json": "6d73c6277e0387c92740457912d1423f52ef14864b51173734502937790ef8cd",
+        "twodrive-development-0.1.1-source.tar.gz": "11c42d1b351b73356938dbb043830f86eea64c1732ee49653eb8d52296d5962e",
+        "SHA256SUMS": "2c657090c268a7bac94024159b5e7935c6594fde7431d9e2cbc5ebee9ca159c3"
+      }
+    }
+  },
+  "release_snapshot_note": "Release source archives and verification.json contain prepublication evidence at 93d1b44. This delivery-only update records published URLs/digests and does not change binary inputs."
+}

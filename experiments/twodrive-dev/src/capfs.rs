@@ -46,6 +46,28 @@ fn blocking<'a, T: Send + 'a>(action: impl FnOnce() -> FsResult<T> + Send + 'a) 
 }
 
 impl CapFs {
+    /// Same capability/path/type checks as DAV reads. Never open a FIFO or a
+    /// path outside the exported directory to build a signature or copy data.
+    pub(crate) fn delta_base(&self, dav: &DavPath) -> FsResult<(cap_std::fs::File, String)> {
+        let destination = path(dav)?;
+        if !self.0.metadata(&destination).map_err(error)?.is_file() {
+            return Err(FsError::Forbidden);
+        }
+        let mut options = CapOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        let file = self.0.open_with(destination, &options).map_err(error)?;
+        let meta = Meta(file.metadata().map_err(error)?);
+        if !meta.0.is_file() {
+            return Err(FsError::Forbidden);
+        }
+        let etag = meta.etag().ok_or(FsError::GeneralFailure)?;
+        Ok((file, format!("\"{etag}\"")))
+    }
     pub fn new(root: &Path) -> anyhow::Result<Self> {
         Ok(Self(Arc::new(Dir::open_ambient_dir(
             root,
@@ -184,7 +206,72 @@ impl DavFile for AtomicFile {
     }
 }
 
+// Query the opened share directory, including after a rename. Capacity belongs
+// to the backing filesystem and querying it must never enumerate shared files.
+#[cfg(unix)]
+fn volume_quota(dir: &Dir) -> FsResult<(u64, Option<u64>)> {
+    let stat = rustix::fs::fstatvfs(dir).map_err(|_| FsError::GeneralFailure)?;
+    let used = stat
+        .f_blocks
+        .checked_sub(stat.f_bfree)
+        .ok_or(FsError::GeneralFailure)?;
+    quota_units(used, stat.f_bavail, stat.f_frsize)
+}
+
+#[cfg(windows)]
+fn volume_quota(dir: &Dir) -> FsResult<(u64, Option<u64>)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::{
+        Wdk::{
+            Storage::FileSystem::{FileFsFullSizeInformation, NtQueryVolumeInformationFile},
+            System::SystemServices::FILE_FS_FULL_SIZE_INFORMATION,
+        },
+        Win32::System::IO::IO_STATUS_BLOCK,
+    };
+    let mut info = FILE_FS_FULL_SIZE_INFORMATION::default();
+    let mut io = IO_STATUS_BLOCK::default();
+    // cap-std opens directory handles synchronously. Both output buffers
+    // remain valid for the duration of this fixed-size volume query.
+    let status = unsafe {
+        NtQueryVolumeInformationFile(
+            dir.as_raw_handle(),
+            &mut io,
+            (&raw mut info).cast(),
+            std::mem::size_of_val(&info) as u32,
+            FileFsFullSizeInformation,
+        )
+    };
+    if status != 0 {
+        return Err(FsError::GeneralFailure);
+    }
+    let total = u64::try_from(info.TotalAllocationUnits).map_err(|_| FsError::GeneralFailure)?;
+    let available =
+        u64::try_from(info.CallerAvailableAllocationUnits).map_err(|_| FsError::GeneralFailure)?;
+    quota_units(
+        total
+            .checked_sub(available)
+            .ok_or(FsError::GeneralFailure)?,
+        available,
+        u64::from(info.SectorsPerAllocationUnit) * u64::from(info.BytesPerSector),
+    )
+}
+
+fn quota_units(used: u64, available: u64, unit: u64) -> FsResult<(u64, Option<u64>)> {
+    if unit == 0 {
+        return Err(FsError::GeneralFailure);
+    }
+    let total = used
+        .checked_add(available)
+        .and_then(|n| n.checked_mul(unit))
+        .ok_or(FsError::GeneralFailure)?;
+    Ok((used * unit, Some(total)))
+}
+
 impl DavFileSystem for CapFs {
+    fn get_quota(&self) -> FsFuture<'_, (u64, Option<u64>)> {
+        blocking(|| volume_quota(&self.0))
+    }
+
     fn open<'a>(
         &'a self,
         dav: &'a DavPath,

@@ -67,6 +67,36 @@ impl Fixture {
     }
 }
 
+fn assert_share_volume(backend: &WebDavBackend, root: &std::path::Path) {
+    use twodrive_dev::provider::Provider;
+    let usage = backend
+        .storage_usage(&mut || Ok(()))
+        .unwrap()
+        .expect("share capacity");
+    assert_eq!(usage.scope, "share");
+    assert!(usage.total.unwrap() > 0);
+    assert_eq!(
+        usage.total,
+        usage.used.unwrap().checked_add(usage.free.unwrap())
+    );
+    let stat = fs2::statvfs(root).unwrap();
+    // The DAV total is used + caller-available; reserved filesystem blocks are excluded.
+    assert_eq!(
+        usage.total.unwrap(),
+        stat.total_space() - (stat.free_space() - stat.available_space())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn readonly_share_reports_remote_filesystem_capacity() {
+    let fixture = Fixture::local(false, 1024).await;
+    let backend = fixture.backend.clone();
+    let root = fixture.root.clone();
+    tokio::task::spawn_blocking(move || assert_share_volume(&backend, &root))
+        .await
+        .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn webdav_contract_unicode_versions_moves_and_snapshot_deletions() {
     let fixture = Fixture::local(true, 1024 * 1024).await;
@@ -147,6 +177,69 @@ async fn streaming_download_cancellation_and_full_file_upload() {
                 .is_err()
         );
         assert!(cancelled.len() < data.len());
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_shallow_browse_and_cancellable_upload() {
+    let fixture = Fixture::local(true, 16 * 1024 * 1024).await;
+    let backend = fixture.backend.clone();
+    let source = fixture._temp.path().join("source.bin");
+    tokio::task::spawn_blocking(move || {
+        backend.create_folder("/parent").unwrap();
+        backend.create_folder("/parent/child").unwrap();
+        backend
+            .upload("/parent/child/nested.txt", b"nested".to_vec())
+            .unwrap();
+        assert_eq!(backend.list_directory("/").unwrap().len(), 1);
+        assert_eq!(
+            backend.list_directory("/parent/").unwrap()[0].path,
+            "/parent/child"
+        );
+        assert!(backend.list_directory("/parent/child/nested.txt").is_err());
+        fs::write(&source, vec![31u8; 4 * 1024 * 1024]).unwrap();
+        let steps = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let copy = steps.clone();
+        backend
+            .upload_controlled(
+                "/complete.bin",
+                &source,
+                None,
+                std::sync::Arc::new(move |_, _| {
+                    copy.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        assert!(steps.load(std::sync::atomic::Ordering::Relaxed) > 2);
+        assert_eq!(
+            backend.download("/complete.bin").unwrap().len(),
+            4 * 1024 * 1024
+        );
+        let before = backend
+            .get_metadata_by_path("/complete.bin")
+            .unwrap()
+            .unwrap();
+        assert!(
+            backend
+                .upload_controlled(
+                    "/complete.bin",
+                    &source,
+                    Some(&before.etag),
+                    std::sync::Arc::new(|done, _| {
+                        anyhow::ensure!(done < 128 * 1024, "cancelled");
+                        Ok(())
+                    })
+                )
+                .is_err()
+        );
+        // Aborting a replacement cannot destroy the previously committed file.
+        assert_eq!(
+            backend.download("/complete.bin").unwrap(),
+            vec![31u8; 4 * 1024 * 1024]
+        );
     })
     .await
     .unwrap();
@@ -360,6 +453,27 @@ fn single_use_expiry_concurrent_pairing_and_private_state() {
     assert!(!persisted.contains(&second.secret));
 }
 
+#[tokio::test]
+async fn missing_physical_interface_falls_back_without_changing_device_identity() {
+    use twodrive_dev::network::RouteMode;
+    let temp = tempfile::tempdir().unwrap();
+    let state = State::new(temp.path().join("device")).unwrap();
+    let id = state.identity().unwrap().public();
+    let mut network = Network {
+        no_relay: true,
+        interface: Some("twodrive-nonexistent-interface-for-test".into()),
+        route: RouteMode::Direct,
+        ..Network::default()
+    };
+    assert!(peer::endpoint(&state, &network).await.is_err());
+    network.route = RouteMode::Auto;
+    let endpoint = peer::endpoint(&state, &network).await.unwrap();
+    assert_eq!(endpoint.id(), id);
+    assert_eq!(state.identity().unwrap().public(), id);
+    assert!(!state.dir.join("remote.json").exists());
+    endpoint.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn real_quic_pairing_streaming_webdav_and_revocation_on_existing_connection() {
     let temp = tempfile::tempdir().unwrap();
@@ -398,8 +512,10 @@ async fn real_quic_pairing_streaming_webdav_and_revocation_on_existing_connectio
             .await
             .is_err()
     );
-    let endpoint = peer::endpoint(&client_state, &network).await.unwrap();
-    let client = PeerClient::new(endpoint.clone(), invitation.address.clone());
+    let (endpoint, client) =
+        peer::connect_client(&client_state, &network, invitation.address.clone())
+            .await
+            .unwrap();
     client.pair(&client_state, Some(invitation)).await.unwrap();
     assert!(stranger.authenticate(None).await.is_err());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -415,6 +531,7 @@ async fn real_quic_pairing_streaming_webdav_and_revocation_on_existing_connectio
     let root_clone = root.clone();
     let working = backend.clone();
     tokio::task::spawn_blocking(move || {
+        assert_share_volume(&working, &root_clone);
         let data = vec![0xa5; 3 * 1024 * 1024];
         working.create_folder("/files").unwrap();
         working.upload("/files/content.bin", data.clone()).unwrap();
@@ -531,4 +648,45 @@ fn malicious_dav_metadata_is_rejected_without_false_deletions() {
             .contains("HTTP 302")
     );
     server.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delta_auto_falls_back_to_conditional_full_put_on_legacy_dav() {
+    use std::sync::Arc;
+    use twodrive_dev::webdav::{UploadKind, UploadMode};
+    // local_webdav deliberately has no peer delta extension (an older server).
+    let fixture = Fixture::local(true, 8 * 1024 * 1024).await;
+    let backend = fixture.backend.clone();
+    let source = fixture._temp.path().join("source.bin");
+    tokio::task::spawn_blocking(move || {
+        let mut content = vec![23; 2 * 1024 * 1024];
+        let original = backend.upload("/legacy.docx", content.clone()).unwrap();
+        content[500000] = 42;
+        fs::write(&source, &content).unwrap();
+        let outcome = backend
+            .upload_controlled_with_mode(
+                "/legacy.docx",
+                &source,
+                Some(&original.etag),
+                UploadMode::Auto,
+                Arc::new(|_, _| Ok(())),
+            )
+            .unwrap();
+        assert_eq!(outcome.kind, UploadKind::Full);
+        assert_eq!(outcome.uploaded_bytes, content.len() as u64);
+        assert_eq!(backend.download("/legacy.docx").unwrap(), content);
+        assert!(
+            backend
+                .upload_controlled_with_mode(
+                    "/legacy.docx",
+                    &source,
+                    Some(&original.etag),
+                    UploadMode::Auto,
+                    Arc::new(|_, _| Ok(()))
+                )
+                .is_err()
+        );
+    })
+    .await
+    .unwrap();
 }

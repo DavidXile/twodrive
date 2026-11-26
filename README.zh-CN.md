@@ -56,6 +56,8 @@ TwoDrive 是一个面向 **GNOME/Linux、使用 Rust 编写的实验性 OneDrive
 
 <img src="packaging/icons/hicolor/scalable/emblems/emblem-twodrive-cloud.svg" width="22" height="22" alt="Cloud"> + <img src="packaging/icons/hicolor/scalable/emblems/emblem-twodrive-syncing.svg" width="22" height="22" alt="Syncing"> **等待释放：** 在写入或上传尚未完成时申请了释放空间。必须等上传成功且文件句柄关闭，才会移除本地数据。
 
+<img src="packaging/icons/hicolor/scalable/emblems/emblem-twodrive-cloud.svg" width="22" height="22" alt="Cloud"> + <img src="packaging/icons/hicolor/scalable/emblems/emblem-twodrive-pinned.svg" width="22" height="22" alt="Pinned"> **等待保留：** 已选择始终保留，内容正在等待下载或下载中。缓存落盘后只显示图钉。
+
 文件夹标记汇总子项状态，并不意味着所有文件都已缓存。即使父目录已经固定，新发现的云端文件仍默认保持仅云端。[固定与释放的具体语义 →](doc/usage.zh-CN.md#固定与释放内容)
 
 </details>
@@ -94,3 +96,28 @@ TwoDrive 是一个面向 **GNOME/Linux、使用 Rust 编写的实验性 OneDrive
 欢迎提交可复现的问题、代码和文档改进。[贡献指南（英文）](CONTRIBUTING.md)介绍了 Rust 工作区、测试命令，以及不会触碰真实 OneDrive 的隔离 mock 环境。[版本历史](CHANGELOG.zh-CN.md)和[工程记录](doc/README.md#engineering-notes)单独维护，不再占据项目首页。
 
 采用 [MIT 许可证](LICENSE)。这是独立项目，并非 Microsoft 官方客户端。
+
+## 实验性设备 Peer
+
+`dev` 已整合 `codex/peer-control` 的独立 Windows/Linux `twodrive-peer` 控制进程，
+复用重构后的 provider 架构，使用单独的本地状态，不替换现有挂载或 daemon。
+见[实现与安全边界](doc/peer-implementation.md)及
+[第一次双机联调](doc/peer-quickstart.zh-CN.md)。Windows 原生 exe 由
+Peer native builds CI 生成。本阶段提供认证控制消息和签名更新，不包含文件备份传输。
+
+## Windows、WebDAV 与 QUIC 开发整合版
+
+dev 同时包含 PR #9 的 Windows Full/Lite 浏览和只读缓存，以及 PR #8 的 WebDAV/QUIC 目录共享。组合 Windows 包携带全部工具，分别使用独立状态。配置方式和当前 GUI 范围见[组合指南](doc/dev-integration.md)。这些开发构建不安装或替换稳定 TwoDrive。
+
+Development 桌面通过 IPC 读取提供者表单与能力，WebDAV 细节留在适配器内部；成功的代理兜底使用黄色三角感叹号。见[提供者边界与验证记录](doc/provider-boundaries-2026-10-13.md)。
+
+`dev` 版现已接入 Google Drive 桌面 OAuth 和普通文件读写，使用既有浏览、挂载与备份流程。Google 在线文档显示为网页入口。详见 [Google Drive 接入与验证](doc/google-drive-dev.md)。
+
+连接页现在支持在线添加其他账号、WebDAV/NAS、OneDrive 登录及局域网设备发现与邀请导入。见[存储连接使用与验证](doc/storage-connections-dev.md)。
+
+GNOME/Zorin 的托盘定位现通过图标实际边界支持 X11 与原生 Wayland。见[安装与隔离验证](doc/tray-positioning-2026-10-14.md)；GNOME 新组件首次安装须在新桌面会话加载。
+
+后续第三方网盘接入须遵循[提供者、登录入口、上传与配套组件设计规范](doc/provider-integration-spec.md)，规范随 Development Release 附带。
+
+下载 [Development 0.1.6](https://github.com/LumiaBlack51/twodrive/releases/tag/dev-v0.1.6)：Linux/Windows 完整包、源码、安装器、接入规范、校验和与验证报告。本版为预览版。
+

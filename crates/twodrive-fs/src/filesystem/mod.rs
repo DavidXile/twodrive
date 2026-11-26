@@ -9,6 +9,7 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use twodrive_backend::CloudBackend;
@@ -31,7 +32,13 @@ pub struct TwoDriveFs<B: CloudBackend> {
     cache_dir: PathBuf,
     pub(crate) backend: Arc<B>,
     pub(crate) upload_pool: UploadPool<B>,
+    pub(crate) cache_controls: Option<crate::cache_controls::CacheControls>,
+    pub(crate) refresh_signal: Option<std::sync::mpsc::SyncSender<()>>,
     read_pool: ReadPool,
+    directory_pool: ReadPool,
+    directory_refresh: Option<Arc<crate::directory_refresh::DirectoryRefresh<B>>>,
+    directory_events: std::sync::mpsc::Receiver<DirectoryEvent>,
+    directory_sender: std::sync::mpsc::Sender<DirectoryEvent>,
     hydrating: Mutex<HashSet<String>>,
     inodes: InodeTable,
     read_handles: HashMap<u64, ReadHandle>,
@@ -55,6 +62,13 @@ impl<B: CloudBackend> TwoDriveFs<B> {
         let _ = clear_activity_file(&cache_dir);
         db.finish_pending_releases()?;
         let backend = Arc::new(backend);
+        let directory_refresh = backend.uses_directory_metadata().then(|| {
+            Arc::new(crate::directory_refresh::DirectoryRefresh::new(
+                db.clone(),
+                backend.clone(),
+            ))
+        });
+        let (directory_sender, directory_events) = std::sync::mpsc::channel();
         let upload_pool = UploadPool::new(
             db.clone(),
             cache_dir.clone(),
@@ -66,7 +80,13 @@ impl<B: CloudBackend> TwoDriveFs<B> {
             cache_dir,
             backend,
             upload_pool,
+            cache_controls: None,
+            refresh_signal: None,
             read_pool: ReadPool::new(),
+            directory_pool: ReadPool::new(),
+            directory_refresh,
+            directory_sender,
+            directory_events,
             hydrating: Mutex::new(HashSet::new()),
             inodes: InodeTable::new(&records),
             read_handles: HashMap::new(),
@@ -76,12 +96,56 @@ impl<B: CloudBackend> TwoDriveFs<B> {
         })
     }
 
+    fn import_directory_events(&mut self) {
+        while let Ok(event) = self.directory_events.try_recv() {
+            match event {
+                DirectoryEvent::Lookup(ino, record) => self.inodes.replace_ino_record(ino, record),
+                DirectoryEvent::Snapshot {
+                    ino,
+                    path,
+                    fh,
+                    records,
+                } => {
+                    self.inodes.refresh_children(&path, records);
+                    let entries = self.directory_snapshot(ino, &path);
+                    self.directory_handles.insert(fh, entries);
+                }
+            }
+        }
+    }
+    fn directory_snapshot(&self, ino: u64, path: &str) -> Vec<(u64, FileType, String)> {
+        let mut entries = vec![
+            (ino, FileType::Directory, ".".into()),
+            (
+                self.inodes.parent_ino(path).unwrap_or(ROOT_INO),
+                FileType::Directory,
+                "..".into(),
+            ),
+        ];
+        entries.extend(
+            self.inodes
+                .children_for_ino(ino)
+                .into_iter()
+                .map(|(ino, r)| (ino, file_type(&r.metadata), r.metadata.name)),
+        );
+        entries
+    }
+
     pub(crate) fn record_for_ino(&self, ino: u64) -> Option<FileRecord> {
         if ino == ROOT_INO {
             return None;
         }
 
-        self.inodes.record_for_ino(ino).cloned()
+        let cached = self.inodes.record_for_ino(ino)?;
+        // Background workers can retire a row without updating this table.
+        // A path occupied by another identity must never revive the old inode.
+        match self.db.get_by_remote_id(&cached.metadata.remote_id) {
+            Ok(record) => record,
+            Err(err) => {
+                eprintln!("twodrive refresh inode error: {err:#}");
+                Some(cached.clone())
+            }
+        }
     }
 
     pub(crate) fn attr_for_ino(&self, ino: u64) -> Option<FileAttr> {
@@ -92,10 +156,12 @@ impl<B: CloudBackend> TwoDriveFs<B> {
         if let Some(record) = self.record_for_ino(ino) {
             // Writers publish size in memory before close; clean files may
             // have received new cloud metadata without a directory listing.
-            let record = if self.write_handles.values().any(|handle| handle.ino == ino) {
-                record
+            let record = if self.write_handles.values().any(|handle| {
+                handle.ino == ino && handle.changed && !handle.uploaded && !handle.unlinked
+            }) {
+                self.inodes.record_for_ino(ino).cloned().unwrap_or(record)
             } else {
-                self.refresh_record(&record)
+                record
             };
             return Some(attr_for_record(ino, &record));
         }
@@ -103,15 +169,24 @@ impl<B: CloudBackend> TwoDriveFs<B> {
         // Atomic replacement removes the old directory entry, not an open
         // descriptor. Poppler calls fstat on that descriptor on later saves.
         for handle in self.read_handles.values() {
-            if handle.ino == ino && handle.unlinked {
+            if handle.ino == ino {
                 let mut attr = handle.open_attr;
                 attr.nlink = 0;
+                // In-place saves may have changed the cached file since open.
+                // Never block this dispatcher on a deferred network download.
+                if let Ok(guard) = handle._cache_guard.try_lock()
+                    && let Some(file) = guard.as_ref()
+                    && let Ok(metadata) = file.metadata()
+                {
+                    attr.size = metadata.len();
+                    attr.blocks = attr.size.div_ceil(512);
+                }
                 return Some(attr);
             }
         }
         self.write_handles
             .values()
-            .find(|handle| handle.ino == ino && handle.unlinked)
+            .find(|handle| handle.ino == ino)
             .and_then(|handle| unlinked_file_attr(ino, &handle._cache_guard))
     }
 
@@ -131,7 +206,6 @@ impl<B: CloudBackend> TwoDriveFs<B> {
             .get_by_remote_id(&record.metadata.remote_id)
             .ok()
             .flatten()
-            .or_else(|| self.db.get_by_path(&record.metadata.path).ok().flatten())
             .unwrap_or_else(|| record.clone())
     }
 
@@ -156,6 +230,16 @@ impl<B: CloudBackend> TwoDriveFs<B> {
         result
     }
 }
+enum DirectoryEvent {
+    Lookup(u64, FileRecord),
+    Snapshot {
+        ino: u64,
+        path: String,
+        fh: u64,
+        records: Vec<FileRecord>,
+    },
+}
+
 #[derive(Debug)]
 struct ReadHandle {
     open_attr: FileAttr,
@@ -165,6 +249,7 @@ struct ReadHandle {
     unlinked: bool,
     deferred_record: Option<FileRecord>,
     download_generation: i64,
+    last_cache_touch: AtomicI64,
 }
 
 #[derive(Debug)]
@@ -176,6 +261,7 @@ struct WriteHandle {
     _cache_guard: fs::File,
     activity: Option<ActivityGuard>,
     uploaded: bool,
+    changed: bool,
     created_new_record: bool,
     unlinked: bool,
     base_etag: Option<String>,

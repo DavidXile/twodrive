@@ -1,0 +1,311 @@
+//! Disposable non-DAV provider. IDs intentionally cannot be mistaken for paths.
+use anyhow::{Context, ensure};
+use std::{
+    collections::BTreeMap,
+    io::Write,
+    path::Path,
+    sync::{Arc, Mutex},
+};
+use twodrive_dev::{
+    model::{CloudBackend, DeltaResult, MetadataEntry},
+    provider::{Capabilities, Progress, Provider},
+};
+
+type Files = BTreeMap<String, (MetadataEntry, Vec<u8>)>;
+
+#[derive(Clone)]
+pub struct OpaqueProvider {
+    files: Arc<Mutex<Files>>,
+    pub caps: Capabilities,
+    pub versioned: bool,
+    pub recoverable: bool,
+    pub journaled: bool,
+    pub download_gate: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pub metadata_lookups: Arc<Mutex<Vec<String>>>,
+    pub directory_lookups: Arc<Mutex<Vec<String>>>,
+    pub mutation_gate: Option<Arc<Mutex<()>>>,
+    pub upload_delay: std::time::Duration,
+    pub delete_delay: std::time::Duration,
+    pub before_mutation: Option<Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>>,
+    pub parent_browsing: bool,
+}
+impl Default for OpaqueProvider {
+    fn default() -> Self {
+        Self {
+            files: Arc::default(),
+            versioned: false,
+            recoverable: false,
+            journaled: false,
+            download_gate: None,
+            metadata_lookups: Arc::default(),
+            directory_lookups: Arc::default(),
+            mutation_gate: None,
+            upload_delay: std::time::Duration::ZERO,
+            delete_delay: std::time::Duration::ZERO,
+            before_mutation: None,
+            parent_browsing: false,
+            caps: Capabilities {
+                upload: true,
+                mkdir: true,
+                rename: true,
+                delete: true,
+                conditional_upload: true,
+            },
+        }
+    }
+}
+impl OpaqueProvider {
+    #[allow(dead_code)] // This shared fixture also serves cache-independent test binaries.
+    pub fn with_parent_browsing(mut self) -> Self {
+        self.parent_browsing = true;
+        self
+    }
+    pub fn with_caps(mut self, caps: Capabilities) -> Self {
+        self.caps = caps;
+        self
+    }
+    fn put(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+        version: Option<&str>,
+    ) -> anyhow::Result<MetadataEntry> {
+        let mut files = self.files.lock().unwrap();
+        let old = files
+            .values()
+            .find(|(m, _)| m.path == path)
+            .map(|(m, _)| m.clone());
+        ensure!(
+            match (&old, version) {
+                (None, None) => true,
+                (Some(m), Some(v)) => m.etag == v,
+                _ => false,
+            },
+            "version conflict"
+        );
+        let id = old
+            .as_ref()
+            .map(|m| m.remote_id.clone())
+            .unwrap_or_else(|| format!("object-{}", files.len() + 1));
+        let generation = old
+            .as_ref()
+            .and_then(|m| m.etag.parse::<u64>().ok())
+            .unwrap_or(0)
+            + 1;
+        let m = MetadataEntry::new_file(&id, path, bytes.len() as u64, 42, generation.to_string());
+        files.insert(id, (m.clone(), bytes));
+        Ok(m)
+    }
+    fn by_id(&self, id: &str) -> anyhow::Result<(MetadataEntry, Vec<u8>)> {
+        ensure!(
+            !id.starts_with('/'),
+            "a path was incorrectly used as a remote ID"
+        );
+        self.files
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .context("missing object ID")
+    }
+}
+impl CloudBackend for OpaqueProvider {
+    fn uses_directory_metadata(&self) -> bool {
+        self.recoverable
+    }
+    fn directory_metadata(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
+        Provider::list_directory(self, path)
+    }
+
+    fn is_conflict_error(&self, e: &anyhow::Error) -> bool {
+        e.to_string().contains("version conflict")
+    }
+    fn list_all(&self) -> anyhow::Result<Vec<MetadataEntry>> {
+        Ok(self
+            .files
+            .lock()
+            .unwrap()
+            .values()
+            .map(|(m, _)| m.clone())
+            .collect())
+    }
+    fn list_delta(&self, _: Option<&str>) -> anyhow::Result<DeltaResult> {
+        Ok(DeltaResult {
+            entries: self.list_all()?,
+            deleted_remote_ids: vec![],
+            delta_link: None,
+        })
+    }
+    fn get_metadata(&self, id: &str) -> anyhow::Result<Option<MetadataEntry>> {
+        Ok(self.files.lock().unwrap().get(id).map(|(m, _)| m.clone()))
+    }
+    fn get_metadata_by_path(&self, path: &str) -> anyhow::Result<Option<MetadataEntry>> {
+        self.metadata_lookups.lock().unwrap().push(path.to_owned());
+        if path == "/" {
+            return Ok(Some(MetadataEntry::new_dir("opaque-root", "/", 42, "1")));
+        }
+        Ok(self.list_all()?.into_iter().find(|m| m.path == path))
+    }
+    fn download(&self, id: &str) -> anyhow::Result<Vec<u8>> {
+        Ok(self.by_id(id)?.1)
+    }
+    fn download_to(
+        &self,
+        id: &str,
+        w: &mut dyn Write,
+        progress: &mut dyn FnMut(u64) -> anyhow::Result<()>,
+    ) -> anyhow::Result<u64> {
+        while self
+            .download_gate
+            .as_ref()
+            .is_some_and(|gate| !gate.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            progress(0)?;
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let data = self.download(id)?;
+        w.write_all(&data)?;
+        progress(data.len() as u64)?;
+        Ok(data.len() as u64)
+    }
+    fn upload(&self, path: &str, data: Vec<u8>) -> anyhow::Result<MetadataEntry> {
+        self.put(path, data, None)
+    }
+    fn upload_with_etag(
+        &self,
+        path: &str,
+        data: Vec<u8>,
+        version: Option<&str>,
+    ) -> anyhow::Result<MetadataEntry> {
+        self.put(path, data, version)
+    }
+    fn upload_file_with_version(
+        &self,
+        path: &str,
+        source: &Path,
+        id: Option<&str>,
+        version: Option<&str>,
+        progress: &mut dyn FnMut(u64, u64) -> anyhow::Result<()>,
+    ) -> anyhow::Result<MetadataEntry> {
+        if let Some(id) = id {
+            ensure!(self.by_id(id)?.0.path == path, "wrong upload ID");
+        }
+        let bytes = std::fs::read(source)?;
+        progress(0, bytes.len() as u64)?;
+        let entry = self.put(path, bytes, version)?;
+        progress(entry.size, entry.size)?;
+        Ok(entry)
+    }
+    fn create_folder(&self, path: &str) -> anyhow::Result<MetadataEntry> {
+        let mut files = self.files.lock().unwrap();
+        let id = format!("object-{}", files.len() + 1);
+        let m = MetadataEntry::new_dir(&id, path, 42, "1");
+        files.insert(id, (m.clone(), vec![]));
+        Ok(m)
+    }
+    fn rename(&self, id: &str, path: &str) -> anyhow::Result<MetadataEntry> {
+        let (old, bytes) = self.by_id(id)?;
+        let m = if old.is_dir {
+            MetadataEntry::new_dir(id, path, 42, "2")
+        } else {
+            MetadataEntry::new_file(id, path, old.size, 42, "2")
+        };
+        self.files
+            .lock()
+            .unwrap()
+            .insert(id.into(), (m.clone(), bytes));
+        Ok(m)
+    }
+    fn delete(&self, id: &str) -> anyhow::Result<()> {
+        if let Some(gate) = &self.mutation_gate {
+            drop(gate.lock().unwrap_or_else(|e| e.into_inner()));
+        }
+        std::thread::sleep(self.delete_delay);
+        self.by_id(id)?;
+        self.files.lock().unwrap().remove(id);
+        Ok(())
+    }
+}
+impl Provider for OpaqueProvider {
+    fn backup_replacement_requires_identity(&self) -> bool {
+        self.journaled
+    }
+    fn recoverable_backup(&self) -> bool {
+        self.recoverable
+    }
+    fn manual_upload_supported(&self) -> bool {
+        self.recoverable
+    }
+    fn manual_upload(
+        &self,
+        path: &str,
+        source: &Path,
+        id: Option<&str>,
+        version: Option<&str>,
+        progress: Progress,
+    ) -> anyhow::Result<MetadataEntry> {
+        ensure!(self.recoverable, "manual recovery disabled");
+        crate_snapshot(self, path, id, version)?;
+        self.upload_controlled(path, source, id, version, progress)
+    }
+
+    fn browse_parent_metadata(&self) -> bool {
+        self.parent_browsing
+    }
+    fn capabilities(&self) -> Capabilities {
+        self.caps
+    }
+    fn versioned_backup(&self) -> bool {
+        self.versioned
+    }
+    fn upload_backup_version(
+        &self,
+        path: &str,
+        source: &Path,
+        progress: Progress,
+    ) -> anyhow::Result<()> {
+        ensure!(self.versioned, "versioned backup not enabled");
+        self.upload_controlled(path, source, None, None, progress)?;
+        Ok(())
+    }
+    fn list_directory(&self, path: &str) -> anyhow::Result<Vec<MetadataEntry>> {
+        self.directory_lookups.lock().unwrap().push(path.to_owned());
+        Ok(self
+            .list_all()?
+            .into_iter()
+            .filter(|m| m.parent_path == path)
+            .collect())
+    }
+    fn upload_controlled(
+        &self,
+        path: &str,
+        source: &Path,
+        id: Option<&str>,
+        version: Option<&str>,
+        progress: Progress,
+    ) -> anyhow::Result<MetadataEntry> {
+        if let Some(gate) = &self.mutation_gate {
+            drop(gate.lock().unwrap_or_else(|e| e.into_inner()));
+        }
+        if let Some(before_mutation) = &self.before_mutation {
+            before_mutation()?;
+        }
+        std::thread::sleep(self.upload_delay);
+        self.upload_file_with_version(path, source, id, version, &mut |done, total| {
+            progress(done, total)
+        })
+    }
+}
+
+fn crate_snapshot(
+    backend: &OpaqueProvider,
+    path: &str,
+    id: Option<&str>,
+    version: Option<&str>,
+) -> anyhow::Result<()> {
+    match (backend.get_metadata_by_path(path)?, id, version) {
+        (None, None, None) => Ok(()),
+        (Some(m), Some(id), Some(version)) if m.remote_id == id && m.etag == version => Ok(()),
+        _ => anyhow::bail!("version conflict"),
+    }
+}

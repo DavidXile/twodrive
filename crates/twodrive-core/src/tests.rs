@@ -50,6 +50,67 @@ struct TestDatabase {
     root: PathBuf,
 }
 
+#[test]
+fn repeated_excluded_backup_replacement_preserves_the_last_saved_cloud_baseline() {
+    let test = TestDatabase::new("repeated-excluded-backup");
+    let db = test
+        .db
+        .clone()
+        .with_name_exclusions(NameExclusions::new(vec![r"\.bak$".into()]).unwrap());
+    let original_cache = test.root.join("original");
+    fs::write(&original_cache, b"original").unwrap();
+    let original = MetadataEntry::new_file("cloud-document", "/report.txt", 8, 1, "v0");
+    db.upsert_metadata(&original).unwrap();
+    db.mark_cached("cloud-document", &original_cache).unwrap();
+    db.move_subtree_and_queue("cloud-document", "/report.txt.bak")
+        .unwrap();
+    let first_cache = test.root.join("first");
+    fs::write(&first_cache, b"first save").unwrap();
+    db.create_local_file("local-upload-first", "/report.txt", &first_cache)
+        .unwrap();
+    db.mark_dirty_with_size("local-upload-first", 10).unwrap();
+    let first = db.get_by_path("/report.txt").unwrap().unwrap();
+    let first = db
+        .adopt_excluded_backup_identity(&first, &original)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.metadata.etag, "v0");
+    assert!(db.begin_upload(&first).unwrap());
+    let saved = MetadataEntry::new_file("cloud-document", "/report.txt", 10, 2, "v1");
+    db.commit_uploaded("local-upload-first", "/report.txt", &saved, &first_cache)
+        .unwrap();
+    let backup = db.get_by_path("/report.txt.bak").unwrap().unwrap();
+    assert!(backup.cloud_remote_id.is_none());
+    db.replace_file_locally(
+        "local-upload-first",
+        &backup.metadata.remote_id,
+        "/report.txt.bak",
+    )
+    .unwrap();
+    let second_cache = test.root.join("second");
+    fs::write(&second_cache, b"second save").unwrap();
+    db.create_local_file("local-upload-second", "/report.txt", &second_cache)
+        .unwrap();
+    db.mark_dirty_with_size("local-upload-second", 11).unwrap();
+    // A newer remote version must never become the baseline for these bytes.
+    let remote_winner =
+        MetadataEntry::new_file("cloud-document", "/report.txt", 21, 3, "external-v2");
+    let reopened = Database::new(db.path())
+        .with_name_exclusions(NameExclusions::new(vec![r"\.bak$".into()]).unwrap());
+    let second = reopened.get_by_path("/report.txt").unwrap().unwrap();
+    let adopted = reopened
+        .adopt_excluded_backup_identity(&second, &remote_winner)
+        .unwrap()
+        .expect("the second backup save must retain an owner");
+    assert_eq!(adopted.cloud_remote_id.as_deref(), Some("cloud-document"));
+    assert_eq!(adopted.metadata.etag, "v1");
+    assert_ne!(adopted.metadata.etag, remote_winner.etag);
+    assert!(reopened.pending_deletes().unwrap().is_empty());
+    let backup = reopened.get_by_path("/report.txt.bak").unwrap().unwrap();
+    assert_eq!(fs::read(backup.cache_path.unwrap()).unwrap(), b"first save");
+    assert!(backup.cloud_remote_id.is_none());
+}
+
 impl TestDatabase {
     fn new(name: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
@@ -81,6 +142,229 @@ fn add_dir(db: &Database, id: &str, path: &str) {
 fn add_file(db: &Database, id: &str, path: &str) {
     db.upsert_metadata(&MetadataEntry::new_file(id, path, 4, 1, "etag"))
         .unwrap();
+}
+
+fn recovery_completion_fixture(name: &str) -> (TestDatabase, FileRecord, MetadataEntry, PathBuf) {
+    let test = TestDatabase::new(name);
+    let cache = test.root.join("original-edit.cache");
+    fs::write(&cache, b"edit").unwrap();
+    test.db
+        .create_local_file("local-upload-missing", "/original.txt", &cache)
+        .unwrap();
+    test.db
+        .bind_cloud_identity("local-upload-missing", "missing-cloud-id", "original-v1")
+        .unwrap();
+    test.db
+        .mark_dirty_with_size("local-upload-missing", 4)
+        .unwrap();
+    test.db
+        .mark_state("local-upload-missing", FileState::Conflict)
+        .unwrap();
+    let original = test
+        .db
+        .get_by_remote_id("local-upload-missing")
+        .unwrap()
+        .unwrap();
+    let copy = MetadataEntry::new_file("recovery-cloud-id", "/recovery.txt", 4, 2, "copy-v1");
+    assert!(
+        test.db
+            .begin_conflict_upload(&original, &copy.path, &cache)
+            .unwrap()
+    );
+    (test, original, copy, cache)
+}
+
+#[test]
+fn recovery_copy_deleted_before_acknowledgement_is_not_resurrected() {
+    let (test, original, copy, cache) = recovery_completion_fixture("copy-deleted-before-ack");
+    test.db.upsert_metadata(&copy).unwrap();
+    let imported = test
+        .db
+        .get_by_cloud_remote_id(&copy.remote_id)
+        .unwrap()
+        .unwrap();
+    test.db.queue_pending_delete(&imported).unwrap();
+    assert!(
+        test.db
+            .complete_missing_conflict_upload(&original, &copy, &cache)
+            .unwrap()
+    );
+    assert!(
+        test.db
+            .get_by_cloud_remote_id(&copy.remote_id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        test.db
+            .get_by_remote_id(&original.metadata.remote_id)
+            .unwrap()
+            .is_none()
+    );
+    let delete = test
+        .db
+        .pending_deletes()
+        .unwrap()
+        .into_iter()
+        .find(|d| d.cloud_remote_id.as_deref() == Some(copy.remote_id.as_str()))
+        .unwrap();
+    assert_eq!(delete.cache_path.as_deref(), Some(cache.as_path()));
+    assert_eq!(fs::read(cache).unwrap(), b"edit");
+}
+
+#[test]
+fn completed_delete_evidence_is_atomic_and_does_not_hide_a_later_restore() {
+    let (test, original, copy, cache) = recovery_completion_fixture("copy-delete-evidence");
+    test.db.upsert_metadata(&copy).unwrap();
+    let imported = test
+        .db
+        .get_by_cloud_remote_id(&copy.remote_id)
+        .unwrap()
+        .unwrap();
+    let pending = test.db.queue_pending_delete(&imported).unwrap();
+    let conn = Connection::open(test.db.path()).unwrap();
+    conn.execute_batch("CREATE TRIGGER reject_delete_evidence BEFORE INSERT ON completed_cloud_deletes BEGIN SELECT RAISE(ABORT,'injected evidence failure'); END;").unwrap();
+    assert!(test.db.complete_pending_delete(&pending.remote_id).is_err());
+    assert_eq!(test.db.pending_deletes().unwrap().len(), 1);
+    conn.execute_batch("DROP TRIGGER reject_delete_evidence;")
+        .unwrap();
+    test.db.complete_pending_delete(&pending.remote_id).unwrap();
+    assert!(test.db.pending_deletes().unwrap().is_empty());
+    let restored = MetadataEntry::new_file(&copy.remote_id, &copy.path, 6, 4, "restored-v2");
+    test.db.upsert_metadata(&restored).unwrap();
+    assert!(
+        test.db
+            .complete_missing_conflict_upload(&original, &copy, &cache)
+            .unwrap()
+    );
+    let current = test
+        .db
+        .get_by_cloud_remote_id(&copy.remote_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.metadata.etag, restored.etag);
+    assert_eq!(current.metadata.path, restored.path);
+    assert_eq!(current.metadata.size, restored.size);
+    assert_eq!(current.metadata.modified_unix, restored.modified_unix);
+    assert_eq!(current.state, FileState::OnlineOnly);
+    assert!(current.cache_path.is_none());
+}
+
+#[test]
+fn delayed_recovery_acknowledgement_preserves_an_imported_newer_copy() {
+    let (test, original, copy, cache) = recovery_completion_fixture("copy-newer-before-ack");
+    let newer = MetadataEntry::new_file(&copy.remote_id, &copy.path, 5, 3, "copy-v2");
+    test.db.upsert_metadata(&newer).unwrap();
+    let newer_cache = test.root.join("newer-copy.cache");
+    fs::write(&newer_cache, b"newer").unwrap();
+    test.db.mark_cached(&copy.remote_id, &newer_cache).unwrap();
+    assert!(
+        test.db
+            .complete_missing_conflict_upload(&original, &copy, &cache)
+            .unwrap()
+    );
+    let current = test
+        .db
+        .get_by_cloud_remote_id(&copy.remote_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.metadata.etag, "copy-v2");
+    assert_eq!(current.metadata.size, 5);
+    assert_eq!(current.cache_path.as_deref(), Some(newer_cache.as_path()));
+    assert_eq!(fs::read(newer_cache).unwrap(), b"newer");
+    assert!(
+        test.db
+            .get_by_remote_id(&original.metadata.remote_id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn missing_conflict_copy_rejection_keeps_the_original_generation_and_claim() {
+    let test = TestDatabase::new("missing-conflict-rollback");
+    add_file(&test.db, "old", "/edit.txt");
+    let cache = test.root.join("edit");
+    fs::write(&cache, b"edit").unwrap();
+    test.db.mark_cached("old", &cache).unwrap();
+    test.db.mark_state("old", FileState::Conflict).unwrap();
+    let original = test.db.get_by_remote_id("old").unwrap().unwrap();
+    let copy = MetadataEntry::new_file("copy", "/recovered.txt", 4, 2, "etag-copy");
+    assert!(
+        test.db
+            .begin_conflict_upload(&original, &copy.path, &cache)
+            .unwrap()
+    );
+    let conn = Connection::open(test.db.path()).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER reject_recovery_copy BEFORE INSERT ON files
+        WHEN NEW.remote_id = 'copy' BEGIN SELECT RAISE(IGNORE); END;",
+    )
+    .unwrap();
+    assert!(
+        test.db
+            .complete_missing_conflict_upload(&original, &copy, &cache)
+            .is_err()
+    );
+    assert!(test.db.get_by_remote_id("copy").unwrap().is_none());
+    let kept = test.db.get_by_remote_id("old").unwrap().unwrap();
+    assert_eq!(kept.state, FileState::Conflict);
+    assert_eq!(kept.cache_path.as_deref(), Some(cache.as_path()));
+    let claim: String = conn
+        .query_row(
+            "SELECT upload_path FROM files WHERE remote_id = 'old'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(claim, copy.path);
+    assert_eq!(fs::read(&cache).unwrap(), b"edit");
+    conn.execute_batch("DROP TRIGGER reject_recovery_copy;")
+        .unwrap();
+    assert!(
+        test.db
+            .complete_missing_conflict_upload(&original, &copy, &cache)
+            .unwrap()
+    );
+    assert!(test.db.get_by_remote_id("old").unwrap().is_none());
+    assert_eq!(
+        test.db.get_by_remote_id("copy").unwrap().unwrap().state,
+        FileState::Cached
+    );
+}
+
+#[test]
+fn atomic_save_into_a_renamed_file_keeps_the_pending_cloud_move() {
+    let test = TestDatabase::new("replace-renamed-target");
+    add_file(&test.db, "target", "/old.txt");
+    test.db
+        .move_subtree_and_queue("target", "/final.txt")
+        .unwrap();
+    let cache = test.root.join("new-edit");
+    fs::write(&cache, b"latest saved bytes").unwrap();
+    test.db
+        .create_local_file("local-upload-temp", "/.save-temp", &cache)
+        .unwrap();
+    test.db
+        .mark_dirty_with_size("local-upload-temp", 18)
+        .unwrap();
+    let replaced = test
+        .db
+        .replace_file_locally("local-upload-temp", "target", "/final.txt")
+        .unwrap();
+    assert_eq!(replaced.cloud_remote_id.as_deref(), Some("target"));
+    let reopened = Database::new(test.db.path());
+    reopened.init().unwrap();
+    let pending = reopened
+        .pending_metadata_operation("target")
+        .unwrap()
+        .expect("saving a renamed file must not cancel its cloud move");
+    assert_eq!(pending.kind, PendingMetadataKind::Move);
+    assert_eq!(pending.path, "/final.txt");
+    assert_eq!(
+        fs::read(replaced.cache_path.unwrap()).unwrap(),
+        b"latest saved bytes"
+    );
 }
 
 #[test]
@@ -1612,5 +1896,180 @@ fn delta_metadata_does_not_undo_a_pending_local_move() {
             .pending_metadata_operation(&moved.metadata.remote_id)
             .unwrap()
             .is_some()
+    );
+}
+
+#[test]
+fn excluded_replacement_keeps_both_identities_when_it_cannot_transfer_safely() {
+    for pending_claim in [0, 1, 2] {
+        let test = TestDatabase::new("excluded-replace-protection");
+        let db = test
+            .db
+            .clone()
+            .with_name_exclusions(NameExclusions::new(vec![r"\.bak$".into()]).unwrap());
+        for (id, path) in [("source", "/report.txt"), ("backup", "/report.txt.bak")] {
+            let cache = test.root.join(id);
+            fs::write(&cache, id.as_bytes()).unwrap();
+            db.upsert_metadata(&MetadataEntry::new_file(
+                id,
+                path,
+                id.len() as u64,
+                1,
+                "old-etag",
+            ))
+            .unwrap();
+            db.mark_cached(id, &cache).unwrap();
+        }
+        if pending_claim != 0 {
+            // A detached prior backup, but an unresolved upload on the source.
+            Connection::open(db.path())
+                .unwrap()
+                .execute(
+                    "UPDATE files SET cloud_remote_id=NULL WHERE remote_id='backup'",
+                    [],
+                )
+                .unwrap();
+            if pending_claim == 2 {
+                Connection::open(db.path())
+                    .unwrap()
+                    .execute(
+                        "UPDATE files SET cloud_remote_id=NULL WHERE remote_id='source'",
+                        [],
+                    )
+                    .unwrap();
+            }
+            db.mark_dirty_with_size("source", 6).unwrap();
+            assert!(
+                db.begin_upload(&db.get_by_remote_id("source").unwrap().unwrap())
+                    .unwrap()
+            );
+        }
+        let before_source = db.get_by_remote_id("source").unwrap().unwrap();
+        let before_backup = db.get_by_remote_id("backup").unwrap().unwrap();
+        assert!(
+            db.replace_file_locally("source", "backup", "/report.txt.bak")
+                .is_err()
+        );
+        for (id, before) in [("source", before_source), ("backup", before_backup)] {
+            let after = db.get_by_remote_id(id).unwrap().unwrap();
+            assert_eq!(after.cloud_remote_id, before.cloud_remote_id);
+            assert_eq!(after.metadata.etag, before.metadata.etag);
+            assert_eq!(after.metadata.path, before.metadata.path);
+            assert_eq!(fs::read(after.cache_path.unwrap()).unwrap(), id.as_bytes());
+        }
+        assert!(db.pending_deletes().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn shallow_refresh_preserves_local_identity_and_invalidates_changed_cached_content() {
+    let t = TestDatabase::new("shallow-version");
+    let old = MetadataEntry::new_file("snapshot-v1", "/document", 3, 1, "v1");
+    t.db.reconcile_directory_metadata("/", &[old], t.db.begin_directory_refresh("/").unwrap())
+        .unwrap();
+    let cache = t.root.join("cached");
+    fs::write(&cache, b"old").unwrap();
+    t.db.mark_cached("snapshot-v1", &cache).unwrap();
+    let new = MetadataEntry::new_file("snapshot-v2", "/document", 4, 2, "v2");
+    t.db.reconcile_directory_metadata("/", &[new], t.db.begin_directory_refresh("/").unwrap())
+        .unwrap();
+    let current = t.db.get_by_path("/document").unwrap().unwrap();
+    assert_eq!(current.metadata.remote_id, "snapshot-v1");
+    assert_eq!(current.cloud_remote_id.as_deref(), Some("snapshot-v2"));
+    assert_eq!(current.metadata.etag, "v2");
+    assert!(current.cache_path.is_none());
+    assert!(
+        cache.is_file(),
+        "retired content must remain until safe reclamation"
+    );
+}
+#[test]
+fn shallow_refresh_keeps_dirty_subtrees_and_does_not_resurrect_tombstones() {
+    let t = TestDatabase::new("shallow-protected");
+    let folder = MetadataEntry::new_dir("folder", "/folder", 1, "1");
+    let clean = MetadataEntry::new_file("clean", "/clean", 3, 1, "1");
+    let deleted = MetadataEntry::new_file("deleted", "/deleted", 3, 1, "1");
+    t.db.upsert_metadata_batch([&folder, &clean, &deleted])
+        .unwrap();
+    let cache = t.root.join("edit");
+    fs::write(&cache, b"edit").unwrap();
+    t.db.create_local_file("local-upload-edit", "/folder/edit", &cache)
+        .unwrap();
+    let tombstone = t.db.get_by_path("/deleted").unwrap().unwrap();
+    t.db.queue_pending_delete(&tombstone).unwrap();
+    t.db.reconcile_directory_metadata("/", &[deleted], t.db.begin_directory_refresh("/").unwrap())
+        .unwrap();
+    assert!(t.db.get_by_path("/clean").unwrap().is_none());
+    assert!(t.db.get_by_path("/folder").unwrap().is_some());
+    assert!(t.db.get_by_path("/folder/edit").unwrap().is_some());
+    assert_eq!(t.db.pending_deletes().unwrap().len(), 1);
+    assert!(t.db.get_by_path("/deleted").unwrap().is_none());
+}
+#[test]
+fn malformed_shallow_snapshot_does_not_prune_existing_metadata() {
+    let t = TestDatabase::new("shallow-invalid");
+    let good = MetadataEntry::new_file("good", "/good", 3, 1, "1");
+    t.db.upsert_metadata(&good).unwrap();
+    let nested = MetadataEntry::new_file("nested", "/folder/file", 1, 1, "1");
+    assert!(
+        t.db.reconcile_directory_metadata(
+            "/",
+            &[nested],
+            t.db.begin_directory_refresh("/").unwrap()
+        )
+        .is_err()
+    );
+    assert!(
+        t.db.reconcile_directory_metadata(
+            "/",
+            &[good.clone(), good],
+            t.db.begin_directory_refresh("/").unwrap()
+        )
+        .is_err()
+    );
+    assert!(t.db.get_by_path("/good").unwrap().is_some());
+}
+
+#[test]
+fn older_directory_fetch_cannot_overwrite_a_newer_cross_owner_commit() {
+    let t = TestDatabase::new("directory-fetch-order");
+    let older_owner = Database::new(t.root.join("test.sqlite3"));
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let old = std::thread::spawn(move || {
+        let generation = older_owner.begin_directory_refresh("/").unwrap();
+        started_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+        let stale = MetadataEntry::new_file("old-snapshot", "/document", 3, 1, "v1");
+        older_owner
+            .reconcile_directory_metadata("/", &[stale], generation)
+            .unwrap()
+    });
+    started_rx.recv().unwrap();
+    let generation = t.db.begin_directory_refresh("/").unwrap();
+    let current = MetadataEntry::new_file("current-snapshot", "/document", 3, 2, "v2");
+    let added = MetadataEntry::new_file("new-child", "/new-child", 2, 2, "v2");
+    assert!(
+        t.db.reconcile_directory_metadata("/", &[current, added], generation)
+            .unwrap()
+    );
+    let cache = t.root.join("cached-current");
+    fs::write(&cache, b"new").unwrap();
+    t.db.mark_cached("current-snapshot", &cache).unwrap();
+    release_tx.send(()).unwrap();
+    assert!(!old.join().unwrap(), "a superseded listing must not commit");
+    let current = t.db.get_by_path("/document").unwrap().unwrap();
+    assert_eq!(current.metadata.etag, "v2");
+    assert_eq!(current.cloud_remote_id.as_deref(), Some("current-snapshot"));
+    assert_eq!(current.cache_path.as_deref(), Some(cache.as_path()));
+    assert!(t.db.get_by_path("/new-child").unwrap().is_some());
+    assert_eq!(fs::read(cache).unwrap(), b"new");
+    // Issuing a newer request that fails is not permission to discard a
+    // successful older response. Other directories have independent ordering.
+    let older = t.db.begin_directory_refresh("/other").unwrap();
+    let _failed_newer = t.db.begin_directory_refresh("/other").unwrap();
+    assert!(
+        t.db.reconcile_directory_metadata("/other", &[], older)
+            .unwrap()
     );
 }

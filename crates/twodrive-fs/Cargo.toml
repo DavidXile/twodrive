@@ -1,6 +1,6 @@
 [package]
 name = "twodrive-fs"
-version = "0.2.19"
+version = "0.2.24"
 edition.workspace = true
 
 [dependencies]
@@ -12,3 +12,6 @@ twodrive-core.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 fuser.workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true

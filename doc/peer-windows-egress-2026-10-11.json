@@ -1,0 +1,211 @@
+{
+  "date": "2026-10-11",
+  "run_id": "td-egress-b6468554eb3d4f77badae3a42c836ba7",
+  "expected_sha256": "e3f5b450578d14daf1befb2defacd45b1788e0ecedee3e2f1b3d887908bc2783",
+  "ci_run_id": 38137498647,
+  "source_commit": "e3dc0b76a5b5ad274b6ac809003762146d359842",
+  "script_ci_run_id": 38138971808,
+  "script_source_commit": "733728343cb6b99b70a56f668265b00c0ea2cbfa",
+  "delivery": {
+    "initial_visible_root_entries": 0,
+    "twodrive-dev.exe": {
+      "bytes": 15712768,
+      "sha256": "e3f5b450578d14daf1befb2defacd45b1788e0ecedee3e2f1b3d887908bc2783",
+      "readback_match": true,
+      "seconds": 31.724
+    },
+    "verify-network.ps1": {
+      "bytes": 11020,
+      "sha256": "c88b7b26c2a0fdac07a27cb061c6454e8786e5e2c54ee7a6d8756c459fc70524",
+      "readback_match": true,
+      "seconds": 1.882
+    },
+    "manifest.json": {
+      "bytes": 345,
+      "sha256": "8a5168607ccf31f9793d32078d98107b5f6264428dadc443dc4fcc7270bf648c",
+      "readback_match": true,
+      "seconds": 1.552
+    },
+    "complete": true,
+    "linux": {
+      "samples": 72,
+      "public_tcp_samples": 222,
+      "physical_tcp_samples": 222,
+      "nonphysical_tcp_samples": 0,
+      "interface_bound_samples": 222,
+      "route_unchanged": true,
+      "network_messages": [
+        "network: route=physical interface=wlo1 fallback=reported-system/proxy"
+      ],
+      "selected_paths": [
+        "Selected path: relay:https://usw1-1.relay.n0.iroh.link./ RTT: 1017.9 ms"
+      ],
+      "exit_code": 0
+    }
+  },
+  "preflight_linux_fallback": {
+    "ci_run_id": 38134766370,
+    "linux_source_commit": "1ae7b8f064511d67c1e88be2ee82ef9b0bfa783c",
+    "probe": {
+      "payload_bytes": 2097152,
+      "sha256": "91d3beb88a9b2f778a6c44a1c53b63d3c79931845a9aef84b3fb414610bd1938",
+      "upload_seconds": 6.396,
+      "download_seconds": 5.65,
+      "full_sha256_and_move_range_match": true,
+      "delete_statuses": [
+        404,
+        204
+      ],
+      "both_owned_paths_404": true
+    },
+    "linux": {
+      "samples": 41,
+      "public_tcp_samples": 131,
+      "physical_tcp_samples": 0,
+      "nonphysical_tcp_samples": 131,
+      "interface_bound_samples": 0,
+      "route_unchanged": true,
+      "network_messages": [
+        "network: route=system/proxy fallback; physical setup or relay registration failed",
+        "network: route=system/proxy; physical bypass disabled"
+      ],
+      "selected_paths": [
+        "Selected path: relay:https://usw1-1.relay.n0.iroh.link./ RTT: 450.9 ms"
+      ],
+      "exit_code": 0
+    }
+  },
+  "live": {
+    "status": "failed",
+    "probes": {
+      "both_auto": {
+        "payload_bytes": 2097152,
+        "sha256": "91d3beb88a9b2f778a6c44a1c53b63d3c79931845a9aef84b3fb414610bd1938",
+        "upload_seconds": 4.41,
+        "download_seconds": 2.456,
+        "full_sha256_and_move_range_match": true,
+        "delete_statuses": [
+          404,
+          204
+        ],
+        "both_owned_paths_404": true
+      },
+      "linux_fallback": {
+        "payload_bytes": 2097152,
+        "sha256": "91d3beb88a9b2f778a6c44a1c53b63d3c79931845a9aef84b3fb414610bd1938",
+        "upload_seconds": 8.667,
+        "download_seconds": 10.668,
+        "full_sha256_and_move_range_match": true,
+        "delete_statuses": [
+          404,
+          204
+        ],
+        "both_owned_paths_404": true
+      }
+    },
+    "linux": {
+      "stage_wait": {
+        "samples": 100,
+        "public_tcp_samples": 305,
+        "physical_tcp_samples": 305,
+        "nonphysical_tcp_samples": 0,
+        "interface_bound_samples": 305,
+        "route_unchanged": true,
+        "network_messages": [
+          "network: route=physical interface=wlo1 fallback=reported-system/proxy"
+        ],
+        "selected_paths": [
+          "Selected path: relay:https://usw1-1.relay.n0.iroh.link./ RTT: 782.9 ms"
+        ],
+        "exit_code": 0
+      },
+      "both_auto": {
+        "samples": 21,
+        "public_tcp_samples": 72,
+        "physical_tcp_samples": 72,
+        "nonphysical_tcp_samples": 0,
+        "interface_bound_samples": 72,
+        "route_unchanged": true,
+        "network_messages": [
+          "network: route=physical interface=wlo1 fallback=reported-system/proxy"
+        ],
+        "selected_paths": [
+          "Selected path: relay:https://aps1-1.relay.n0.iroh.link./ RTT: 115.1 ms"
+        ],
+        "exit_code": 0
+      },
+      "linux_fallback": {
+        "samples": 59,
+        "public_tcp_samples": 239,
+        "physical_tcp_samples": 0,
+        "nonphysical_tcp_samples": 239,
+        "interface_bound_samples": 0,
+        "route_unchanged": true,
+        "network_messages": [
+          "network: route=system/proxy fallback; physical setup or relay registration failed",
+          "network: route=system/proxy; physical bypass disabled"
+        ],
+        "selected_paths": [
+          "Selected path: relay:https://aps1-1.relay.n0.iroh.link./ RTT: 1020.9 ms"
+        ],
+        "exit_code": 0
+      },
+      "final_cleanup": {
+        "samples": 72,
+        "public_tcp_samples": 229,
+        "physical_tcp_samples": 180,
+        "nonphysical_tcp_samples": 49,
+        "interface_bound_samples": 180,
+        "route_unchanged": true,
+        "network_messages": [
+          "network: route=physical interface=wlo1 fallback=reported-system/proxy",
+          "network: route=system/proxy fallback; peer transport connection failed; authorization has not been sent",
+          "network: route=system/proxy; physical bypass disabled"
+        ],
+        "selected_paths": [
+          "Selected path: relay:https://usw1-1.relay.n0.iroh.link./ RTT: 407.6 ms"
+        ],
+        "exit_code": 0
+      }
+    },
+    "error_type": "RuntimeError",
+    "local_paired_state_preserved": true,
+    "windows": {
+      "run_id": "td-egress-b6468554eb3d4f77badae3a42c836ba7",
+      "status": "failed",
+      "executable_sha256": "e3f5b450578d14daf1befb2defacd45b1788e0ecedee3e2f1b3d887908bc2783",
+      "stages": {
+        "auto": {
+          "samples": 47,
+          "public_tcp_samples": 94,
+          "physical_tcp_samples": 94,
+          "nonphysical_tcp_samples": 0,
+          "route_unchanged": true,
+          "proxy_fake_ip_present": true,
+          "network_messages": [
+            "network: route=physical interface={A413DAC6-7B2C-4D3D-ADB0-31CB2CC4EAB5} fallback=reported-system/proxy"
+          ]
+        }
+      },
+      "cleanup": {
+        "identity_and_grants_preserved": true,
+        "original_server_restarted": true,
+        "bundle_payloads_removed": true,
+        "temporary_runtime_removed": true
+      },
+      "error_type": "System.Management.Automation.RuntimeException",
+      "startup_error": "Test server exited during fallback startup."
+    },
+    "cleanup": {
+      "owned_bundle_get_404": true,
+      "visible_root_entries_after_cleanup": 0
+    }
+  },
+  "verification_boundary": {
+    "both_default_auto_and_linux_fallback": "actual 2 MiB SHA256/MOVE/Range/DELETE passed with TUN present",
+    "windows_fallback": "child startup exited; core stderr unavailable in legacy script; TD-20261011-10 unresolved",
+    "udp_hole_punching": "not established by relay/TCP samples",
+    "remote_control": "implementation under native verification; not deployed",
+    "dev_promoted": false
+  }
+}
