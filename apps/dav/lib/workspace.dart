@@ -1824,11 +1824,8 @@ class _WorkspaceState extends State<Workspace>
                 tr('当前网盘挂载缓存 · {arg0}', [bytes(cache?['bytes'] as num? ?? 0)]),
               ),
               subtitle: Text(
-                tr('只统计通过挂载读取或编辑的本机缓存；下载副本不计入。') +
-                    '\n' +
-                    tr('待处理或冲突：{arg0} 项。清理保留尚未上传的数据。', [
-                      cache?['pending'] ?? 0,
-                    ]),
+                '${tr('只统计通过挂载读取或编辑的本机缓存；下载副本不计入。')}'
+                '\n${tr('待处理或冲突：{arg0} 项。清理保留尚未上传的数据。', [cache?['pending'] ?? 0])}',
               ),
               trailing: OutlinedButton(
                 onPressed: c.busy || c.selected == null ? null : c.clearCache,
