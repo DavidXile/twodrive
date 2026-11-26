@@ -16,6 +16,10 @@ String tr(String key, [List<Object?> values = const []]) {
 }
 
 const _english = <String, String>{
+  '最小化': 'Minimize',
+  '最大化': 'Maximize',
+  '还原窗口': 'Restore window',
+  '关闭窗口': 'Close window',
   '选择上方的网盘，或前往连接页添加新账号。':
       'Choose a drive above, or add an account in Connections.',
   '前往连接页选择存储提供者，再添加账号或设备。': 'Add an account or device in Connections.',

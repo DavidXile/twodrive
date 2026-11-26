@@ -100,7 +100,51 @@ def exercise(bundle, engines, home, gnome, mutter, quit_from_tray):
         primary = until(lambda: named("Dashboard fixture"), "dashboard")
         until(lambda: (home / "state/run.lock").exists(), "fixture engine")
         time.sleep(3 if gnome else 1)
-        # Compare the Flutter content. GTK repaints its title bar on focus changes.
+
+        def click_window_control(right_offset):
+            left, top, width, _ = panel_geometry(primary)
+            output("xdotool", "mousemove", str(left + width - right_offset),
+                   str(top + 46), "sleep", "0.15", "click", "1")
+
+        def maximized():
+            return "_NET_WM_STATE_MAXIMIZED_VERT" in output("xprop", "-id", primary, "_NET_WM_STATE")
+
+        click_window_control(88)
+        until(maximized, "maximize from the page header")
+
+        # Sample the empty header area above the cards. The workspace canvas
+        # must reach the top of the maximized window.
+        def canvas_at_top():
+            left, top, width, _ = panel_geometry(primary)
+            center = left + width // 2
+            header = ImageGrab.grab(bbox=(center, top + 4, center + 1, top + 24)).convert("RGB")
+            return header.getcolors() == [(20, (237, 240, 250))]
+
+        until(canvas_at_top, "workspace canvas at the top edge")
+        # Let the compositor finish its maximize animation before clicking
+        # the same control in its new location.
+        time.sleep(1)
+        click_window_control(88)
+        until(lambda: not maximized(), "restore from the page header")
+        time.sleep(0.4)
+
+        left, top, width, _ = panel_geometry(primary)
+        start_x, start_y = left + width // 2, top + 46
+        output("xdotool", "mousemove", str(start_x), str(start_y), "sleep", "0.15", "mousedown", "1",
+               "sleep", "0.15", "mousemove", str(start_x), str(start_y + 20),
+               "sleep", "0.15", "mousemove", str(start_x), str(start_y + 55),
+               "sleep", "0.15", "mouseup", "1")
+        until(lambda: panel_geometry(primary)[1] > top + 20, "drag from the page header")
+        time.sleep(0.3)
+
+        click_window_control(48)
+        until(lambda: "IsUnMapped" in output("xwininfo", "-id", primary), "close to tray")
+        output("gdbus", "call", "--session", "--dest", "app.twodrive.twodrive_dav",
+               "--object-path", "/app/twodrive/twodrive_dav",
+               "--method", "org.freedesktop.Application.Activate", "{}")
+        until(lambda: "IsViewable" in output("xwininfo", "-id", primary), "reopen closed dashboard")
+        time.sleep(0.4)
+
         region = (240, 260, 680, 590)
         before = ImageGrab.grab(bbox=region).tobytes()
         click_tray()
@@ -111,7 +155,7 @@ def exercise(bundle, engines, home, gnome, mutter, quit_from_tray):
         assert "Normal" in output("xprop", "-id", primary, "WM_STATE")
         click_tray()
         until(lambda: "IsUnMapped" in output("xwininfo", "-id", panel), "tray dismissal")
-        output("xdotool", "windowminimize", primary)
+        click_window_control(128)
         minimized = lambda: "Iconic" in output("xprop", "-id", primary, "WM_STATE")
         until(minimized, "minimized dashboard")
         time.sleep(0.35)
