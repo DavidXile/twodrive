@@ -1,5 +1,11 @@
 # TwoDrive 故障记录
 
+## TD-20261126-WORKSPACE-TITLEBAR：Linux 主窗口顶部额外灰色标题栏
+
+- 2026-11-26，用户截图显示 Development 0.4.0 在 Zorin 最大化后，仪表盘上方仍有整行 GTK 标题栏。Linux runner 在 GNOME 下显示原生 `GtkHeaderBar`，另占一行。
+- 主窗口改用隐藏的 GTK 标题栏部件，保留窗口边框和缩放操作。最小化、最大化、还原与关闭移入各页现有标题行，标题区域支持拖动和双击最大化。关闭保留原有托盘行为。
+- Linux 原生回归从现有页面标题行操作窗口，检查最大化后的顶边像素、拖动、还原、关闭到托盘和再次打开。旧构建无法从页面标题行最大化，新构建在隔离 X11 桌面验证通过。Flutter 分析、202 项测试及 Linux Release 构建通过。原生 Wayland 未在本轮桌面测试中覆盖。
+
 ## TD-20261125-MOUNT-ROOT-BADGES：Google Drive / OneDrive 根目录角标缺失
 
 - 用户截图中百度和 iCloud 根目录显示云标记，Google Drive / OneDrive 没有。既有 native_states 仅在 files 表有对应行时返回状态；原生 FUSE 的合成根目录不一定有该行，因此漏掉角标。

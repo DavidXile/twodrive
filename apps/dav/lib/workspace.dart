@@ -86,6 +86,7 @@ class _WorkspaceState extends State<Workspace>
   DialogRoute<void>? foregroundPanel;
   bool presenting = false;
   bool _windowHidden = false;
+  bool _windowMaximized = false;
   bool _directoryReadQueued = false;
   int page = WorkspacePage.overview.index;
   _TransferSection? transferSection;
@@ -202,6 +203,12 @@ class _WorkspaceState extends State<Workspace>
 
   @override
   void onWindowMinimize() => hideWorkspace();
+
+  @override
+  void onWindowMaximize() => setState(() => _windowMaximized = true);
+
+  @override
+  void onWindowUnmaximize() => setState(() => _windowMaximized = false);
 
   @override
   void onWindowClose() {
@@ -664,6 +671,11 @@ class _WorkspaceState extends State<Workspace>
 
   Widget buildWorkspace() {
     final theme = Theme.of(context);
+    final linuxWindow = widget.desktop && Platform.isLinux;
+    final pageTitle = Text(
+      WorkspacePage.values[page].label,
+      style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w700),
+    );
     final versionLabel = c.status['version'] is String
         ? 'Development · ${c.status['version']}'
         : tr('文件与同步');
@@ -841,13 +853,9 @@ class _WorkspaceState extends State<Workspace>
                   Row(
                     children: [
                       Expanded(
-                        child: Text(
-                          WorkspacePage.values[page].label,
-                          style: const TextStyle(
-                            fontSize: 28,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
+                        child: linuxWindow
+                            ? DragToMoveArea(child: pageTitle)
+                            : pageTitle,
                       ),
                       if (page != WorkspacePage.files.index)
                         IconButton(
@@ -869,6 +877,30 @@ class _WorkspaceState extends State<Workspace>
                           icon: Icon(c.connected ? Icons.link_off : Icons.link),
                           label: Text(c.connected ? tr('断开') : tr('连接')),
                         ),
+                      if (linuxWindow) ...[
+                        IconButton(
+                          tooltip: tr('最小化'),
+                          onPressed: windowManager.minimize,
+                          icon: const Icon(Icons.remove, size: 18),
+                        ),
+                        IconButton(
+                          tooltip: tr(_windowMaximized ? '还原窗口' : '最大化'),
+                          onPressed: _windowMaximized
+                              ? windowManager.unmaximize
+                              : windowManager.maximize,
+                          icon: Icon(
+                            _windowMaximized
+                                ? Icons.filter_none
+                                : Icons.crop_square,
+                            size: 18,
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: tr('关闭窗口'),
+                          onPressed: windowManager.close,
+                          icon: const Icon(Icons.close, size: 18),
+                        ),
+                      ],
                     ],
                   ),
                   const SizedBox(height: 12),
