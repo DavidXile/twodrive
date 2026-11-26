@@ -389,21 +389,7 @@ void main() {
       tester.view.physicalSize = const Size(1400, 1000);
       await tester.pumpAndSettle();
       await appearanceSnapshot(tester, 'multi-mount-connections');
-      final footer = find.byKey(const ValueKey('mounted-folders'));
-      expect(
-        find.descendant(
-          of: footer,
-          matching: find.textContaining(r'C:\TwoDrive\Example'),
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.descendant(
-          of: footer,
-          matching: find.textContaining(r'D:\TwoDrive\Second'),
-        ),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('mounted-folders')), findsNothing);
       final openB = find.descendant(
         of: b,
         matching: find.widgetWithText(OutlinedButton, '打开挂载'),

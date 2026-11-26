@@ -65,43 +65,34 @@ class CloudTargetPicker extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final profiles = client.profiles;
-    return InputDecorator(
-      decoration: InputDecoration(labelText: label),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          key: fieldKey,
-          isExpanded: true,
-          isDense: true,
-          dropdownColor: panelColor,
-          borderRadius: BorderRadius.circular(14),
-          menuMaxHeight: 360,
-          value: profiles.any((p) => p['id'] == client.selected)
-              ? client.selected
-              : null,
-          hint: Text(tr('选择网盘')),
-          selectedItemBuilder: (_) => [
-            for (final profile in profiles) option(profile),
-          ],
-          items: [
-            for (final profile in profiles)
-              DropdownMenuItem(
-                value: profile['id'] as String,
-                enabled: supportsTarget(profile),
-                child: option(profile, menu: true),
-              ),
-          ],
-          onChanged: onSelect == null || profiles.isEmpty
-              ? null
-              : (id) {
-                  final profile = client.profiles
-                      .where((p) => p['id'] == id)
-                      .firstOrNull;
-                  if (profile != null && supportsTarget(profile)) {
-                    onSelect!(profile);
-                  }
-                },
-        ),
-      ),
+    return WorkspaceSelect<String>(
+      fieldKey: fieldKey,
+      label: label,
+      value: profiles.any((p) => p['id'] == client.selected)
+          ? client.selected
+          : null,
+      hint: Text(tr('选择网盘')),
+      selectedItemBuilder: (_) => [
+        for (final profile in profiles) option(profile),
+      ],
+      items: [
+        for (final profile in profiles)
+          DropdownMenuItem(
+            value: profile['id'] as String,
+            enabled: supportsTarget(profile),
+            child: option(profile, menu: true),
+          ),
+      ],
+      onChanged: onSelect == null || profiles.isEmpty
+          ? null
+          : (id) {
+              final profile = client.profiles
+                  .where((p) => p['id'] == id)
+                  .firstOrNull;
+              if (profile != null && supportsTarget(profile)) {
+                onSelect!(profile);
+              }
+            },
     );
   }
 }

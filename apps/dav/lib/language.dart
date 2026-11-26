@@ -39,6 +39,13 @@ const _english = <String, String>{
   '选择需要自动备份的本地文件夹。原文件保留在本机；服务器上的已有版本受到冲突保护。':
       'Choose local folders to back up.',
   '备份到': 'Back up to',
+  '备份方式': 'Backup mode',
+  '备份任务按网盘分别保存。切换网盘不会迁移已有任务。':
+      'Backup jobs are stored per drive. Switching drives keeps existing jobs in place.',
+  '更新原文件（默认）': 'Update existing files (default)',
+  '每次修改另存版本': 'Save a separate version for each change',
+  '每次修改另存为带版本标记的文件，云端已有副本会保留。':
+      'Each change is saved as a versioned file. Existing cloud copies are kept.',
   '请选择备份网盘': 'Choose a drive',
   '{arg0}（暂不支持自动备份）': '{arg0} (backup unavailable)',
   '请先在“连接”页面添加网盘。': 'Add a drive in Connections first.',
@@ -211,7 +218,7 @@ const _english = <String, String>{
   '此网盘暂不提供容量': 'Storage reporting unsupported',
   '容量暂时无法获取': 'Storage unavailable',
   '容量尚未获取': 'Storage unknown',
-  '更新未完成，显示上次结果': 'Showing last known storage',
+  '容量刷新未完成，显示上次结果': 'Storage refresh failed. Showing previous figures.',
   '挂载需要处理': 'Mount needs attention',
   '打开目录': 'Open folder',
   '管理': 'Manage',
@@ -315,9 +322,9 @@ const _english = <String, String>{
   '无法打开浏览器，请复制发布地址打开': 'Copy the release address into your browser.',
   '系统托盘不可用，关闭窗口将退出客户端。':
       'System tray unavailable. Closing the window will quit TwoDrive.',
-  '退出登录？': 'Sign out?',
-  '断开此账号并移除客户端中保存的登录信息。服务器文件、备份源和独立的设备配对状态会保留。':
-      'Remove saved sign-in details for this account. Remote files, backup sources and device pairings are kept.',
+  '退出登录「{arg0}」？': 'Sign out of {arg0}?',
+  '此操作会断开连接并移除保存的登录信息和连接配置。服务器文件、备份源和设备配对状态会保留。':
+      'This disconnects the account and removes its saved sign-in details and connection profile. Remote files, backup sources and device pairings are kept.',
   '名称': 'Name',
   '请输入有效的单个文件名': 'Enter a valid file name',
   '确定': 'OK',
@@ -331,7 +338,7 @@ const _english = <String, String>{
   '替换 {arg0}？': 'Replace {arg0}?',
   '仅在服务器版本未发生变化时覆盖。': 'Replace only if the server version is unchanged.',
   '文件与同步': 'Files and sync',
-  '● {arg0} 个账号已连接': '● Connected accounts: {arg0}',
+  '● {arg0} 个账号已连接': '● {arg0} accounts online',
   '○ 未连接': '○ Disconnected',
   '正在退出…': 'Quitting…',
   '退出客户端': 'Quit TwoDrive',
@@ -347,6 +354,14 @@ const _english = <String, String>{
   '刷新': 'Refresh',
   '新建文件夹': 'New folder',
   '筛选当前目录': 'Filter this folder',
+  '刷新失败，正在显示上次读取的目录。{arg0}':
+      'Refresh failed. Showing the last loaded folder. {arg0}',
+  '{arg0} 项 · 正在刷新': 'Items: {arg0} · Refreshing',
+  '挂载同步': 'Mount sync',
+  '暂无上传记录': 'No upload history',
+  '暂无下载记录': 'No download history',
+  '暂无备份记录': 'No backup history',
+  '暂无挂载同步记录': 'No mount sync history',
   '当前目录为空': 'Empty folder',
   '上传文件或新建文件夹即可开始。': 'Upload a file or create a folder.',
   '没有匹配的文件。': 'No matching files',

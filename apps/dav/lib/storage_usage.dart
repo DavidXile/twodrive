@@ -121,7 +121,7 @@ class StorageUsageView extends StatelessWidget {
           Padding(
             padding: EdgeInsets.only(top: 4),
             child: Text(
-              tr('更新未完成，显示上次结果'),
+              tr('容量刷新未完成，显示上次结果'),
               style: TextStyle(fontSize: 11, color: Colors.blueGrey),
             ),
           ),

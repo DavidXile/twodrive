@@ -16,6 +16,7 @@ class ConnectionCard extends StatelessWidget {
     this.onSelect,
     this.onReauthenticate,
     this.onDisconnect,
+    this.onSignOut,
     this.onEdit,
     this.onDelete,
     this.onRefresh,
@@ -34,7 +35,12 @@ class ConnectionCard extends StatelessWidget {
   final String connectLabel;
   final Json? usage;
   final String? issue;
-  final VoidCallback? onSelect, onDisconnect, onEdit, onDelete, onRefresh;
+  final VoidCallback? onSelect,
+      onDisconnect,
+      onSignOut,
+      onEdit,
+      onDelete,
+      onRefresh;
   final VoidCallback? onReauthenticate;
   final VoidCallback? onMount, onOpenMount;
   @override
@@ -115,6 +121,7 @@ class ConnectionCard extends StatelessWidget {
       '断开此连接': (Icons.link_off, online ? onDisconnect : null),
       '编辑': (Icons.edit_outlined, onEdit),
       '删除配置': (Icons.delete_outline, onDelete),
+      if (online) '退出登录…': (Icons.logout, onSignOut),
     };
     final title = Row(
       children: [
