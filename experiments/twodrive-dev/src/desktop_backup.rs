@@ -728,9 +728,9 @@ pub fn run(
                         if newly_confirmed {
                             confirmed_files += 1;
                         }
-                        if let Some(size) =
-                            uploaded_size.or_else(|| newly_confirmed.then_some(info.len()))
-                        {
+                        let completed_size =
+                            uploaded_size.or_else(|| newly_confirmed.then_some(info.len()));
+                        if let Some(size) = completed_size {
                             let mut item = transfer;
                             if let Some(path) = &record.version_path {
                                 item["path"] = json!(path);
@@ -746,6 +746,12 @@ pub fn run(
                         }
                         s.save("manifest.json", &manifest)?;
                         fs::remove_file(spool)?;
+                        if completed_size.is_some() {
+                            // The rest of the scan can take much longer than this upload.
+                            status["recent"] = json!(recent);
+                            status["confirmed_files"] = json!(confirmed_files);
+                            s.save("report.json", &status)?;
+                        }
                     }
                     if versioned && !has_content {
                         ensure_directory(
@@ -1082,6 +1088,73 @@ mod tests {
             provider.download(&latest.remote_id).unwrap(),
             b"changed source"
         );
+    }
+
+    #[test]
+    fn confirmed_upload_leaves_the_active_report_before_the_next_upload() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let state = State::new(root.path().join("state")).unwrap();
+        let profile = Profile {
+            id: "backup-progress".into(),
+            mount_path: root.path().join("mount"),
+            ..Default::default()
+        };
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("one.txt"), b"one").unwrap();
+        fs::write(source.join("two.txt"), b"two").unwrap();
+        save_folders(
+            &state,
+            &profile,
+            &[Folder {
+                local: source,
+                remote: "/backup".into(),
+                enabled: true,
+            }],
+        )
+        .unwrap();
+
+        let mut provider = OpaqueProvider::default();
+        provider.create_folder("/backup").unwrap();
+        let dir = directory(&state, &profile).unwrap();
+        let stop_config = dir.dir.join("folders.json");
+        let (observed, snapshots) = mpsc::channel();
+        let uploads = AtomicUsize::new(0);
+        provider.before_mutation = Some(Arc::new(move || {
+            if uploads.fetch_add(1, Ordering::SeqCst) == 1 {
+                let manifest = dir.read::<Manifest>("manifest.json")?;
+                let report = dir.read::<Value>("report.json")?;
+                observed.send((manifest, report))?;
+            }
+            Ok(())
+        }));
+        let worker = thread::spawn(move || {
+            run(
+                &state,
+                &profile,
+                Backend::new(provider),
+                "synthetic-binding".into(),
+                vec![],
+            )
+        });
+        let observed = snapshots.recv_timeout(Duration::from_secs(5));
+        // Stop the worker at its next configuration read.
+        fs::write(stop_config, b"invalid test configuration").unwrap();
+        assert!(worker.join().unwrap().is_err());
+
+        let (manifest, report) = observed.unwrap();
+        assert_eq!(manifest.confirmed_files(), 1);
+        assert_eq!(report["state"], "scanning");
+        assert_eq!(report["active"], json!([]));
+        assert_eq!(report["confirmed_files"], 1);
+        assert_eq!(report["completed_scan"], false);
+        assert_eq!(report["recent"][0]["path"], manifest.recent[0]);
+        assert_eq!(report["recent"][0]["state"], "已备份");
     }
 
     #[test]
