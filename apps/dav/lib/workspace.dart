@@ -20,6 +20,7 @@ import 'profile_dialog.dart';
 import 'connection_card.dart';
 import 'mount_card.dart';
 import 'workspace_navigation.dart';
+import 'workspace_title_bar.dart';
 import 'cfapi_page.dart';
 import 'sync_policy_card.dart';
 import 'overview_page.dart';
@@ -79,6 +80,8 @@ class Workspace extends StatefulWidget {
 class _WorkspaceState extends State<Workspace>
     with WindowListener, WidgetsBindingObserver {
   StorageClient get c => widget.client;
+  bool get _usesCustomTitleBar =>
+      widget.desktop && defaultTargetPlatform == TargetPlatform.windows;
   final tray = StatusTray();
   bool panel = false;
   bool nativeTrayVisible = false;
@@ -326,7 +329,9 @@ class _WorkspaceState extends State<Workspace>
       await windowManager.setAlwaysOnTop(false);
       await windowManager.setSkipTaskbar(false);
       await tray.panel(false);
-      await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+      await windowManager.setTitleBarStyle(
+        _usesCustomTitleBar ? TitleBarStyle.hidden : TitleBarStyle.normal,
+      );
       await windowManager.setMinimumSize(const Size(840, 580));
       await windowManager.setSize(const Size(1120, 760));
       await windowManager.center();
@@ -700,18 +705,19 @@ class _WorkspaceState extends State<Workspace>
       if (widget.desktop) textWidth(quitLabel, theme.textTheme.labelLarge) + 60,
     ].reduce(math.max).ceilToDouble();
     painter.dispose();
+    final railWidth = (sidebarWidth + 2)
+        .clamp(184, math.max(184, MediaQuery.sizeOf(context).width * .38))
+        .toDouble();
 
     return Scaffold(
+      appBar: _usesCustomTitleBar
+          ? WorkspaceTitleBar(sidebarWidth: railWidth)
+          : null,
       body: Row(
         children: [
           Container(
-            width: (sidebarWidth + 2)
-                .clamp(
-                  184,
-                  math.max(184, MediaQuery.sizeOf(context).width * .38),
-                )
-                .toDouble(),
-            color: const Color(0xffe1e5f1),
+            width: railWidth,
+            color: railColor,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [

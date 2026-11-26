@@ -6,7 +6,9 @@ import 'package:twodrive_dav/main.dart';
 import 'package:twodrive_dav/status_tray.dart';
 import 'package:twodrive_dav/workspace.dart';
 import 'package:twodrive_dav/workspace_navigation.dart';
+import 'package:twodrive_dav/workspace_title_bar.dart';
 import 'package:twodrive_dav/tray_panel.dart';
+import 'package:window_manager/window_manager.dart';
 
 class _ViewInterestClient extends StorageClient {
   bool requestsFiles = false;
@@ -31,6 +33,57 @@ class _ViewInterestClient extends StorageClient {
 }
 
 void main() {
+  testWidgets('application caption drives native window controls and drag', (
+    tester,
+  ) async {
+    const channel = MethodChannel('window_manager');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <String>[];
+    var maximized = false;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      if (call.method == 'isMaximized') return maximized;
+      if (call.method == 'isFullScreen') return false;
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(appBar: WorkspaceTitleBar(sidebarWidth: 184)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('最小化'));
+    await tester.tap(find.byTooltip('最大化'));
+    expect(calls, containsAllInOrder(['minimize', 'maximize']));
+
+    maximized = true;
+    await messenger.handlePlatformMessage(
+      channel.name,
+      const StandardMethodCodec().encodeMethodCall(
+        const MethodCall('onEvent', {'eventName': 'maximize'}),
+      ),
+      (_) {},
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('还原窗口'));
+    await tester.tap(find.byTooltip('关闭窗口'));
+    expect(calls, containsAllInOrder(['unmaximize', 'close']));
+
+    final dragArea = find.byType(DragToMoveArea);
+    await tester.drag(dragArea, const Offset(120, 0));
+    expect(calls, contains('startDragging'));
+    final before = calls.where((method) => method == 'unmaximize').length;
+    await tester.tap(dragArea);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(dragArea);
+    await tester.pumpAndSettle();
+    expect(calls.where((method) => method == 'unmaximize').length, before + 1);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('tray to management never exposes native reconfiguration', (
     tester,
   ) async {

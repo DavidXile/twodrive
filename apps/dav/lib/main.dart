@@ -13,9 +13,14 @@ import 'app_theme.dart';
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
+  final server = args.contains('--tdlink-server');
   // Windows creates its taskbar COM interface in this step. Tray transitions
   // must not call setSkipTaskbar before that interface exists.
-  await windowManager.waitUntilReadyToShow();
+  await windowManager.waitUntilReadyToShow(
+    Platform.isWindows && !server
+        ? const WindowOptions(titleBarStyle: TitleBarStyle.hidden)
+        : null,
+  );
   await windowManager.setMinimumSize(const Size(840, 580));
   final home = userHome;
   final data = userData;
@@ -24,7 +29,6 @@ Future<void> main(List<String> args) async {
     return index >= 0 && index + 1 < args.length ? args[index + 1] : fallback;
   }
 
-  final server = args.contains('--tdlink-server');
   await windowManager.setTitle(
     option('--window-title', server ? 'TDLink' : 'TwoDrive'),
   );
