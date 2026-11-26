@@ -15,16 +15,15 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       final client = StorageClient();
       await tester.pumpWidget(DavApp(client: client));
-      final navigation = tester
-          .widgetList<ListTile>(
-            find.descendant(
-              of: find.byKey(const ValueKey('navigation')),
-              matching: find.byType(ListTile),
-            ),
+      final navigation = find.descendant(
+        of: find.byKey(const ValueKey('navigation')),
+        matching: find.byType(ListTile),
+      );
+      final labels = tester
+          .widgetList<Text>(
+            find.descendant(of: navigation, matching: find.byType(Text)),
           )
-          .toList();
-      final labels = navigation
-          .map((item) => (item.title! as Text).data!)
+          .map((label) => label.data!)
           .toList();
       expect(labels, ['仪表盘', '文件', '传输', '连接', '备份', '设置']);
       int? destination;

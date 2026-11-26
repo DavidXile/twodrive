@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'language.dart';
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
@@ -358,12 +359,18 @@ class _WorkspaceState extends State<Workspace>
   }
 
   Future<void> signOut() async {
-    await openDashboardFromTray(2);
+    final profile = c.profile;
+    if (profile == null) return;
+    await openDashboardFromTray(WorkspacePage.connections.index);
+    if (mounted) await confirmSignOut(profile);
+  }
+
+  Future<void> confirmSignOut(Json profile) async {
     if (await confirm(
-      tr('退出登录？'),
-      tr('断开此账号并移除客户端中保存的登录信息。服务器文件、备份源和独立的设备配对状态会保留。'),
+      tr('退出登录「{arg0}」？', [profile['name']]),
+      tr('此操作会断开连接并移除保存的登录信息和连接配置。服务器文件、备份源和设备配对状态会保留。'),
     )) {
-      await c.signOut();
+      await c.signOut(profile['id'] as String);
     }
   }
 
@@ -656,11 +663,54 @@ class _WorkspaceState extends State<Workspace>
   }
 
   Widget buildWorkspace() {
+    final theme = Theme.of(context);
+    final versionLabel = c.status['version'] is String
+        ? 'Development · ${c.status['version']}'
+        : tr('文件与同步');
+    final connectedCount = c.connectedProfiles.length;
+    final accountLabel = connectedCount > 0
+        ? tr('● {arg0} 个账号已连接', [connectedCount])
+        : tr('○ 未连接');
+    final quitLabel = c.quitting ? tr('正在退出…') : tr('退出客户端');
+    const navigationStyle = TextStyle(
+      fontSize: 16,
+      fontWeight: FontWeight.w600,
+    );
+    final painter = TextPainter(
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      locale: Localizations.localeOf(context),
+      maxLines: 1,
+    );
+    double textWidth(String label, TextStyle? style) {
+      painter.text = TextSpan(text: label, style: style);
+      painter.layout();
+      return painter.width;
+    }
+
+    final sidebarWidth = [
+      for (final destination in WorkspacePage.sidebar)
+        textWidth(
+              destination.label,
+              theme.textTheme.bodyLarge?.merge(navigationStyle),
+            ) +
+            66,
+      textWidth(versionLabel, theme.textTheme.bodyMedium) + 24,
+      textWidth(accountLabel, theme.textTheme.bodyMedium) + 40,
+      if (widget.desktop) textWidth(quitLabel, theme.textTheme.labelLarge) + 60,
+    ].reduce(math.max).ceilToDouble();
+    painter.dispose();
+
     return Scaffold(
       body: Row(
         children: [
           Container(
-            width: 184,
+            width: (sidebarWidth + 2)
+                .clamp(
+                  184,
+                  math.max(184, MediaQuery.sizeOf(context).width * .38),
+                )
+                .toDouble(),
             color: const Color(0xffe1e5f1),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -696,13 +746,17 @@ class _WorkspaceState extends State<Workspace>
                         ),
                       ),
                       Padding(
-                        padding: EdgeInsets.only(bottom: 12, top: 3),
-                        child: Text(
-                          c.status['version'] is String
-                              ? 'Development · ${c.status['version']}'
-                              : tr('文件与同步'),
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.blueGrey),
+                        padding: const EdgeInsets.fromLTRB(12, 3, 12, 12),
+                        child: Tooltip(
+                          message: versionLabel,
+                          excludeFromSemantics: true,
+                          child: Text(
+                            versionLabel,
+                            textAlign: TextAlign.center,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.blueGrey),
+                          ),
                         ),
                       ),
                       for (final destination in WorkspacePage.sidebar)
@@ -729,13 +783,18 @@ class _WorkspaceState extends State<Workspace>
                               borderRadius: BorderRadius.circular(12),
                             ),
                             leading: Icon(destination.icon),
-                            title: Text(
-                              destination.label,
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: page == destination.index
-                                    ? FontWeight.w600
-                                    : FontWeight.w400,
+                            title: Tooltip(
+                              message: destination.label,
+                              excludeFromSemantics: true,
+                              child: Text(
+                                destination.label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: page == destination.index
+                                    ? navigationStyle
+                                    : navigationStyle.copyWith(
+                                        fontWeight: FontWeight.w400,
+                                      ),
                               ),
                             ),
                             onTap: () => navigateTo(destination.index),
@@ -746,12 +805,16 @@ class _WorkspaceState extends State<Workspace>
                 ),
                 Padding(
                   padding: const EdgeInsets.all(20),
-                  child: Text(
-                    c.connectedProfiles.isNotEmpty
-                        ? tr('● {arg0} 个账号已连接', [c.connectedProfiles.length])
-                        : tr('○ 未连接'),
-                    style: TextStyle(
-                      color: c.connected ? Colors.teal : Colors.blueGrey,
+                  child: Tooltip(
+                    message: accountLabel,
+                    excludeFromSemantics: true,
+                    child: Text(
+                      accountLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: c.connected ? Colors.teal : Colors.blueGrey,
+                      ),
                     ),
                   ),
                 ),
@@ -759,7 +822,11 @@ class _WorkspaceState extends State<Workspace>
                   TextButton.icon(
                     onPressed: c.quitting ? null : quit,
                     icon: const Icon(Icons.power_settings_new, size: 18),
-                    label: Text(c.quitting ? tr('正在退出…') : tr('退出客户端')),
+                    label: Text(
+                      quitLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 const SizedBox(height: 18),
               ],
@@ -773,14 +840,15 @@ class _WorkspaceState extends State<Workspace>
                 children: [
                   Row(
                     children: [
-                      Text(
-                        WorkspacePage.values[page].label,
-                        style: const TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.w700,
+                      Expanded(
+                        child: Text(
+                          WorkspacePage.values[page].label,
+                          style: const TextStyle(
+                            fontSize: 28,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
-                      const Spacer(),
                       if (page != WorkspacePage.files.index)
                         IconButton(
                           tooltip: tr('刷新状态'),
@@ -803,10 +871,6 @@ class _WorkspaceState extends State<Workspace>
                         ),
                     ],
                   ),
-                  if (page == WorkspacePage.files.index && c.connected)
-                    Text(
-                      '${c.profile?['name'] ?? c.providerLabel} · ${c.account}',
-                    ),
                   const SizedBox(height: 12),
                   if (c.error != null)
                     Container(
@@ -900,27 +964,6 @@ class _WorkspaceState extends State<Workspace>
                         child: Text(tr('查看更新')),
                       ),
                     ),
-                  const SizedBox(height: 10),
-                  if (c.mounts.isNotEmpty)
-                    ConstrainedBox(
-                      key: const ValueKey('mounted-folders'),
-                      constraints: const BoxConstraints(maxHeight: 100),
-                      child: SingleChildScrollView(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            for (final mount in c.mounts)
-                              Text(
-                                '${mount['name']} · ${mount['path']}${mount['failed'] == true ? tr(' · 需要处理') : ''}',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.blueGrey,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
                 ],
               ),
             ),
@@ -968,17 +1011,14 @@ class _WorkspaceState extends State<Workspace>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Surface(
-          padding: const EdgeInsets.all(16),
-          child: CloudTargetPicker(
-            fieldKey: const ValueKey('files-target'),
-            label: tr('查看网盘'),
-            client: c,
-            onSelect:
-                c.available && !c.busy && !c.quitting && !_switchingFileTarget
-                ? (profile) => unawaited(selectFileTarget(profile))
-                : null,
-          ),
+        CloudTargetPicker(
+          fieldKey: const ValueKey('files-target'),
+          label: tr('查看网盘'),
+          client: c,
+          onSelect:
+              c.available && !c.busy && !c.quitting && !_switchingFileTarget
+              ? (profile) => unawaited(selectFileTarget(profile))
+              : null,
         ),
         const SizedBox(height: 16),
         Expanded(
@@ -990,10 +1030,10 @@ class _WorkspaceState extends State<Workspace>
                 ? fileDirectory()
                 : empty(
                     Icons.cloud_outlined,
-                    '连接你的文件',
+                    tr('连接你的文件'),
                     c.profiles.isEmpty
-                        ? '前往连接页选择存储提供者，再添加账号或设备。'
-                        : '选择上方的网盘，或前往连接页添加新账号。',
+                        ? tr('前往连接页选择存储提供者，再添加账号或设备。')
+                        : tr('选择上方的网盘，或前往连接页添加新账号。'),
                     OutlinedButton(
                       onPressed: () =>
                           navigateTo(WorkspacePage.connections.index),
@@ -1032,57 +1072,77 @@ class _WorkspaceState extends State<Workspace>
         .toList();
     final canActOnFiles = !c.busy && c.directoryReady;
     final directoryError = c.directoryError;
+    final navigation = Row(
+      children: [
+        IconButton(
+          tooltip: tr('上一级'),
+          onPressed: c.busy || c.path == '/'
+              ? null
+              : () => c.browse(parentPath(c.path)),
+          icon: const Icon(Icons.arrow_upward),
+        ),
+        Expanded(
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: SelectableText(c.path, maxLines: 2),
+          ),
+        ),
+      ],
+    );
+    final actions = <Widget>[
+      IconButton(
+        tooltip: tr('刷新'),
+        onPressed: c.busy || c.directoryLoading ? null : () => c.browse(c.path),
+        icon: const Icon(Icons.refresh),
+      ),
+      if (c.canMkdir)
+        IconButton(
+          tooltip: tr('新建文件夹'),
+          onPressed: !canActOnFiles
+              ? null
+              : () async {
+                  final identity = c.target;
+                  final directory = c.path;
+                  final name = await nameDialog('新建文件夹');
+                  if (name != null) {
+                    await c.mutate('mkdir', {
+                      'path': childPath(directory, name),
+                      ...identity,
+                    });
+                  }
+                },
+          icon: const Icon(Icons.create_new_folder_outlined),
+        ),
+      if (c.canUpload)
+        FilledButton.icon(
+          onPressed: canActOnFiles ? upload : null,
+          icon: const Icon(Icons.upload_outlined),
+          label: Text(tr('上传')),
+        ),
+    ];
     return Column(
       children: [
-        Row(
-          children: [
-            IconButton(
-              tooltip: tr('上一级'),
-              onPressed: c.busy || c.path == '/'
-                  ? null
-                  : () => c.browse(parentPath(c.path)),
-              icon: const Icon(Icons.arrow_upward),
-            ),
-            Expanded(child: SelectableText(c.path, maxLines: 2)),
-            IconButton(
-              tooltip: tr('刷新'),
-              onPressed: c.busy || c.directoryLoading
-                  ? null
-                  : () => c.browse(c.path),
-              icon: const Icon(Icons.refresh),
-            ),
-            if (c.canMkdir || c.canUpload) ...[
-              if (c.canMkdir)
-                IconButton(
-                  tooltip: tr('新建文件夹'),
-                  onPressed: !canActOnFiles
-                      ? null
-                      : () async {
-                          final identity = c.target;
-                          final directory = c.path;
-                          final name = await nameDialog('新建文件夹');
-                          if (name != null) {
-                            await c.mutate('mkdir', {
-                              'path': childPath(directory, name),
-                              ...identity,
-                            });
-                          }
-                        },
-                  icon: const Icon(Icons.create_new_folder_outlined),
+        LayoutBuilder(
+          builder: (context, box) => fitsScaledWidth(context, box.maxWidth, 280)
+              ? Row(
+                  children: [
+                    Expanded(child: navigation),
+                    ...actions,
+                  ],
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    navigation,
+                    Wrap(alignment: WrapAlignment.end, children: actions),
+                  ],
                 ),
-              if (c.canUpload)
-                FilledButton.icon(
-                  onPressed: canActOnFiles ? upload : null,
-                  icon: const Icon(Icons.upload_outlined),
-                  label: Text(tr('上传')),
-                ),
-            ],
-          ],
         ),
         const SizedBox(height: 12),
         TextField(
           controller: fileFilter,
           decoration: InputDecoration(
+            fillColor: Colors.white,
             prefixIcon: Icon(Icons.search),
             hintText: tr('筛选当前目录'),
           ),
@@ -1092,7 +1152,7 @@ class _WorkspaceState extends State<Workspace>
         Expanded(
           child: !c.directoryLoaded
               ? directoryError != null
-                    ? empty(Icons.error_outline, '无法读取目录', directoryError)
+                    ? empty(Icons.error_outline, tr('无法读取目录'), directoryError)
                     : Center(
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
@@ -1108,8 +1168,8 @@ class _WorkspaceState extends State<Workspace>
               : entries.isEmpty
               ? empty(
                   Icons.folder_open,
-                  c.entries.isEmpty ? '当前目录为空' : '没有匹配的文件',
-                  c.entries.isNotEmpty ? '请调整筛选条件。' : '',
+                  c.entries.isEmpty ? tr('当前目录为空') : tr('没有匹配的文件'),
+                  c.entries.isNotEmpty ? tr('请调整筛选条件。') : '',
                 )
               : ListView.separated(
                   key: ValueKey((fileOwner, c.path)),
@@ -1140,10 +1200,10 @@ class _WorkspaceState extends State<Workspace>
                       ),
                       subtitle: Text(
                         directory
-                            ? '文件夹'
+                            ? tr('文件夹')
                             : size is int
                             ? bytes(size)
-                            : '文件',
+                            : tr('文件'),
                       ),
                       onTap: c.busy
                           ? null
@@ -1192,10 +1252,10 @@ class _WorkspaceState extends State<Workspace>
             alignment: Alignment.centerLeft,
             child: Text(
               directoryError != null
-                  ? '刷新失败，正在显示上次读取的目录。$directoryError'
+                  ? tr('刷新失败，正在显示上次读取的目录。{arg0}', [directoryError])
                   : c.directoryLoading
-                  ? '${entries.length} 项 · 正在刷新'
-                  : '${entries.length} 项',
+                  ? tr('{arg0} 项 · 正在刷新', [entries.length])
+                  : tr('{arg0} 项', [entries.length]),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Colors.blueGrey),
@@ -1237,19 +1297,38 @@ class _WorkspaceState extends State<Workspace>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: sections.length * 132),
-          child: SegmentedButton<_TransferSection>(
-            segments: [
-              for (final section in sections)
-                ButtonSegment(value: section, label: Text(section.label)),
-            ],
-            showSelectedIcon: false,
-            selected: {selected},
-            onSelectionChanged: (selection) => setState(() {
-              transferSection = selection.single;
-            }),
-          ),
+        LayoutBuilder(
+          builder: (context, box) {
+            if (fitsScaledWidth(context, box.maxWidth, sections.length * 132)) {
+              return SegmentedButton<_TransferSection>(
+                segments: [
+                  for (final section in sections)
+                    ButtonSegment(
+                      value: section,
+                      label: Text(tr(section.label)),
+                    ),
+                ],
+                showSelectedIcon: false,
+                selected: {selected},
+                onSelectionChanged: (selection) =>
+                    setState(() => transferSection = selection.single),
+              );
+            }
+            return Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                for (final section in sections)
+                  ChoiceChip(
+                    label: Text(tr(section.label)),
+                    selected: section == selected,
+                    showCheckmark: false,
+                    onSelected: (_) =>
+                        setState(() => transferSection = section),
+                  ),
+              ],
+            );
+          },
         ),
         const SizedBox(height: 14),
         if (c.transferHistoryError case final String message
@@ -1264,7 +1343,7 @@ class _WorkspaceState extends State<Workspace>
           ),
         Expanded(
           child: rows.isEmpty
-              ? empty(Icons.swap_vert, '暂无${selected.label}记录', '')
+              ? empty(Icons.swap_vert, tr('暂无${selected.label}记录'), '')
               : transferList(selected, rows),
         ),
       ],
@@ -1534,30 +1613,9 @@ class _WorkspaceState extends State<Workspace>
 
   Widget connectionsPage() => LayoutBuilder(
     builder: (context, box) {
-      final columns = box.maxWidth >= 900 ? 2 : 1;
+      final columns = fitsScaledWidth(context, box.maxWidth, 900) ? 2 : 1;
       return ListView(
         children: [
-          if (c.connected)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 16),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: OutlinedButton.icon(
-                  onPressed: c.busy
-                      ? null
-                      : () async {
-                          if (await confirm(
-                            tr('退出登录？'),
-                            tr('断开此账号并移除客户端中保存的登录信息。服务器文件、备份源和独立的设备配对状态会保留。'),
-                          )) {
-                            await c.signOut();
-                          }
-                        },
-                  icon: const Icon(Icons.logout),
-                  label: Text(tr('退出登录')),
-                ),
-              ),
-            ),
           Align(
             alignment: Alignment.centerLeft,
             child: FilledButton.icon(
@@ -1637,6 +1695,9 @@ class _WorkspaceState extends State<Workspace>
                     onDisconnect: c.busy || !c.available
                         ? null
                         : () => unawaited(c.disconnect(p['id'] as String)),
+                    onSignOut: c.busy || !c.available
+                        ? null
+                        : () => confirmSignOut(p),
                     onEdit:
                         c.busy ||
                             !c.available ||
@@ -1694,19 +1755,19 @@ class _WorkspaceState extends State<Workspace>
               ),
             ),
           ),
-        ListTile(
-          title: Text(tr('语言')),
-          trailing: DropdownButton<String>(
-            value: c.preferences.language,
-            items: const [
-              DropdownMenuItem(value: 'zh', child: Text('简体中文')),
-              DropdownMenuItem(value: 'en', child: Text('English')),
-            ],
-            onChanged: (value) {
-              if (value != null) c.setLanguage(value);
-            },
-          ),
+        WorkspaceSelect<String>(
+          fieldKey: const ValueKey('workspace-language'),
+          label: tr('语言'),
+          value: c.preferences.language,
+          items: const [
+            DropdownMenuItem(value: 'zh', child: Text('简体中文')),
+            DropdownMenuItem(value: 'en', child: Text('English')),
+          ],
+          onChanged: (value) {
+            if (value != null) c.setLanguage(value);
+          },
         ),
+        const SizedBox(height: 14),
         if (c.status['sync_policy'] is Map) SyncPolicyCard(client: c),
         Card(
           color: Colors.white,

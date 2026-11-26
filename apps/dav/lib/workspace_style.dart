@@ -9,6 +9,12 @@ const inkColor = Color(0xff242a35);
 const mutedColor = Color(0xff707987);
 const successColor = Color(0xff328352);
 
+/// Reserve more room per column when desktop accessibility enlarges the text.
+bool fitsScaledWidth(BuildContext context, double width, double minimum) {
+  final scale = MediaQuery.textScalerOf(context).scale(16) / 16;
+  return width >= minimum * scale.clamp(1, double.infinity);
+}
+
 class Surface extends StatelessWidget {
   const Surface({
     super.key,
@@ -43,6 +49,71 @@ class Surface extends StatelessWidget {
     ),
     clipBehavior: clip ? Clip.antiAlias : Clip.none,
     child: Padding(padding: padding, child: child),
+  );
+}
+
+/// A workspace selector whose label and hint grow with the system text size.
+class WorkspaceSelect<T> extends StatelessWidget {
+  const WorkspaceSelect({
+    super.key,
+    required this.fieldKey,
+    required this.label,
+    required this.value,
+    required this.items,
+    required this.onChanged,
+    this.hint,
+    this.helperText,
+    this.selectedItemBuilder,
+  });
+
+  final Key fieldKey;
+  final String label;
+  final T? value;
+  final List<DropdownMenuItem<T>> items;
+  final ValueChanged<T?>? onChanged;
+  final Widget? hint;
+  final String? helperText;
+  final DropdownButtonBuilder? selectedItemBuilder;
+
+  @override
+  Widget build(BuildContext context) => Surface(
+    color: Colors.white,
+    radius: 20,
+    padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ExcludeSemantics(child: Text(label)),
+        Semantics(
+          label: label,
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<T>(
+              key: fieldKey,
+              isExpanded: true,
+              itemHeight: null,
+              dropdownColor: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              menuMaxHeight: 360,
+              value: value,
+              hint: hint,
+              items: items,
+              selectedItemBuilder: selectedItemBuilder,
+              onChanged: onChanged,
+            ),
+          ),
+        ),
+        if (helperText case final text?)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(
+              text,
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: mutedColor),
+            ),
+          ),
+      ],
+    ),
   );
 }
 

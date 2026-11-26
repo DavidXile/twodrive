@@ -5,6 +5,7 @@ import 'client.dart';
 import 'workspace_navigation.dart';
 import 'storage_usage.dart';
 import 'dashboard_metrics.dart';
+import 'workspace_style.dart';
 
 class OverviewPage extends StatefulWidget {
   const OverviewPage({
@@ -186,6 +187,7 @@ class _OverviewPageState extends State<OverviewPage> {
               height: 236,
             );
             final rates = Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Expanded(
                   child: speedCard(
@@ -208,18 +210,28 @@ class _OverviewPageState extends State<OverviewPage> {
                 ),
               ],
             );
-            if (constraints.maxWidth >= fourColumnWidth) {
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(child: status),
-                  const SizedBox(width: 12),
-                  Expanded(child: rates),
-                ],
+            if (fitsScaledWidth(
+              context,
+              constraints.maxWidth,
+              fourColumnWidth,
+            )) {
+              return IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(child: status),
+                    const SizedBox(width: 12),
+                    Expanded(child: rates),
+                  ],
+                ),
               );
             }
             return Column(
-              children: [status, const SizedBox(height: 12), rates],
+              children: [
+                status,
+                const SizedBox(height: 12),
+                IntrinsicHeight(child: rates),
+              ],
             );
           },
         ),
@@ -264,9 +276,12 @@ class _OverviewPageState extends State<OverviewPage> {
                   ),
                 ],
               ),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
+              padding: const EdgeInsets.symmetric(
+                horizontal: managementInset,
+                vertical: 3,
+              ),
             );
-            return constraints.maxWidth >= 760
+            return fitsScaledWidth(context, constraints.maxWidth, 760)
                 ? Row(
                     children: [
                       Expanded(child: control),
@@ -284,25 +299,51 @@ class _OverviewPageState extends State<OverviewPage> {
           tr('我的云盘 {arg0}', [c.profiles.length]),
           tr('管理连接'),
           () => go(WorkspacePage.connections),
+          actionInset: managementInset,
         ),
         LayoutBuilder(
           builder: (context, constraints) {
-            final columns = constraints.maxWidth >= fourColumnWidth
+            final profiles = c.profiles;
+            if (profiles.isEmpty) {
+              return panel(Text(tr('添加存储账号或已配对设备，即可开始使用。')));
+            }
+            final columns =
+                fitsScaledWidth(context, constraints.maxWidth, fourColumnWidth)
                 ? 4
-                : constraints.maxWidth >= 540
+                : fitsScaledWidth(context, constraints.maxWidth, 540)
                 ? 2
                 : 1;
-            return Wrap(
-              spacing: 12,
-              runSpacing: 12,
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                for (final profile in c.profiles)
-                  SizedBox(
-                    width:
-                        (constraints.maxWidth - 12 * (columns - 1)) / columns,
-                    child: accountCard(profile),
-                  ),
-                if (c.profiles.isEmpty) panel(Text(tr('添加存储账号或已配对设备，即可开始使用。'))),
+                for (
+                  var start = 0;
+                  start < profiles.length;
+                  start += columns
+                ) ...[
+                  if (start > 0) const SizedBox(height: 12),
+                  if (columns == 1)
+                    accountCard(profiles[start])
+                  else
+                    IntrinsicHeight(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (var column = 0; column < columns; column++) ...[
+                            if (column > 0) const SizedBox(width: 12),
+                            Expanded(
+                              child: start + column < profiles.length
+                                  ? accountCard(
+                                      profiles[start + column],
+                                      alignFooter: true,
+                                    )
+                                  : const SizedBox.shrink(),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                ],
               ],
             );
           },
@@ -343,7 +384,11 @@ class _OverviewPageState extends State<OverviewPage> {
               ),
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             );
-            return constraints.maxWidth >= fourColumnWidth
+            return fitsScaledWidth(
+                  context,
+                  constraints.maxWidth,
+                  fourColumnWidth,
+                )
                 ? IntrinsicHeight(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -391,6 +436,7 @@ class _OverviewPageState extends State<OverviewPage> {
   }
 
   static const double fourColumnWidth = 960;
+  static const double managementInset = 16;
   static const blue = Color(0xff2472df);
   static const heading = TextStyle(fontSize: 16, fontWeight: FontWeight.w600);
   static const muted = TextStyle(fontSize: 12, color: Color(0xff778295));
@@ -417,11 +463,19 @@ class _OverviewPageState extends State<OverviewPage> {
       Text(value, style: heading),
     ],
   );
-  Widget section(String label, String action, VoidCallback tap) => Row(
-    children: [
-      Expanded(child: Text(label, style: heading)),
-      TextButton(onPressed: tap, child: Text('$action ›')),
-    ],
+  Widget section(
+    String label,
+    String action,
+    VoidCallback tap, {
+    double actionInset = 0,
+  }) => Padding(
+    padding: EdgeInsets.only(right: actionInset),
+    child: Row(
+      children: [
+        Expanded(child: Text(label, style: heading)),
+        TextButton(onPressed: tap, child: Text('$action ›')),
+      ],
+    ),
   );
   Widget speedCard(
     String label,
@@ -467,7 +521,7 @@ class _OverviewPageState extends State<OverviewPage> {
     height: 236,
   );
 
-  Widget accountCard(Json profile) {
+  Widget accountCard(Json profile, {bool alignFooter = false}) {
     final id = profile['id'] as String;
     final mount = c.mountForProfile(id);
     final online = c.isProfileConnected(id);
@@ -562,7 +616,8 @@ class _OverviewPageState extends State<OverviewPage> {
                 backgroundColor: const Color(0xffe7ecfb),
               ),
             ),
-          if (quota?['stale'] == true) Text(tr('更新未完成，显示上次结果'), style: muted),
+          if (quota?['stale'] == true) Text(tr('容量刷新未完成，显示上次结果'), style: muted),
+          if (alignFooter) const Spacer(),
           const SizedBox(height: 6),
           Row(
             key: ValueKey('overview-account-$id'),

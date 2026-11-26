@@ -2,6 +2,7 @@ import 'language.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'client.dart';
+import 'workspace_style.dart';
 
 class BackupPage extends StatefulWidget {
   const BackupPage({super.key, required this.client});
@@ -157,50 +158,41 @@ class _BackupPageState extends State<BackupPage> {
       const SizedBox(height: 10),
       Text(tr('选择需要自动备份的本地文件夹。原文件保留在本机；服务器上的已有版本受到冲突保护。')),
       const SizedBox(height: 20),
-      InputDecorator(
-        decoration: InputDecoration(labelText: tr('备份到')),
-        child: DropdownButtonHideUnderline(
-          child: DropdownButton<String>(
-            key: const ValueKey('backup-target'),
-            isExpanded: true,
-            isDense: true,
-            value: c.profiles.any((p) => p['id'] == c.selected)
-                ? c.selected
-                : null,
-            hint: Text(tr('请选择备份网盘')),
-            items: [
-              for (final p in c.profiles)
-                DropdownMenuItem(
-                  value: p['id'] as String,
-                  enabled: p['capabilities']?['backup'] == true,
-                  child: Text(
-                    p['capabilities']?['backup'] == true
-                        ? label(p)
-                        : tr('{arg0}（暂不支持自动备份）', [label(p)]),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-            ],
-            onChanged:
-                c.available && !c.busy && !c.quitting && !selecting && !adding
-                ? selectTarget
-                : null,
-          ),
-        ),
+      WorkspaceSelect<String>(
+        fieldKey: const ValueKey('backup-target'),
+        label: tr('备份到'),
+        helperText: tr('备份任务按网盘分别保存。切换网盘不会迁移已有任务。'),
+        value: c.profiles.any((p) => p['id'] == c.selected) ? c.selected : null,
+        hint: Text(tr('请选择备份网盘')),
+        items: [
+          for (final p in c.profiles)
+            DropdownMenuItem(
+              value: p['id'] as String,
+              enabled: p['capabilities']?['backup'] == true,
+              child: Text(
+                p['capabilities']?['backup'] == true
+                    ? label(p)
+                    : tr('{arg0}（暂不支持自动备份）', [label(p)]),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+        ],
+        onChanged:
+            c.available && !c.busy && !c.quitting && !selecting && !adding
+            ? selectTarget
+            : null,
       ),
-      const SizedBox(height: 8),
-      const Text(
-        '备份任务按网盘分别保存。切换网盘不会迁移已有任务。',
-        style: TextStyle(color: Colors.blueGrey, fontSize: 12),
-      ),
-      if (c.profile?['capabilities']?['versioned_backup'] == true)
-        DropdownButtonFormField<String>(
-          initialValue: strategy,
-          decoration: const InputDecoration(labelText: '备份方式'),
-          items: const [
-            DropdownMenuItem(value: 'replace', child: Text('更新原文件（默认）')),
-            DropdownMenuItem(value: 'versioned', child: Text('每次修改另存版本')),
+      if (c.profile?['capabilities']?['versioned_backup'] == true) ...[
+        const SizedBox(height: 12),
+        WorkspaceSelect<String>(
+          fieldKey: const ValueKey('backup-strategy'),
+          label: tr('备份方式'),
+          value: versioned ? 'versioned' : 'replace',
+          helperText: versioned ? tr('每次修改另存为带版本标记的文件，云端已有副本会保留。') : null,
+          items: [
+            DropdownMenuItem(value: 'replace', child: Text(tr('更新原文件（默认）'))),
+            DropdownMenuItem(value: 'versioned', child: Text(tr('每次修改另存版本'))),
           ],
           onChanged: editable
               ? (mode) {
@@ -208,14 +200,7 @@ class _BackupPageState extends State<BackupPage> {
                 }
               : null,
         ),
-      if (versioned)
-        const Padding(
-          padding: EdgeInsets.only(top: 6),
-          child: Text(
-            '每次修改另存为带版本标记的文件，云端已有副本会保留。',
-            style: TextStyle(color: Colors.blueGrey, fontSize: 12),
-          ),
-        ),
+      ],
       if (c.profiles.isEmpty)
         Padding(
           padding: EdgeInsets.only(top: 12),
